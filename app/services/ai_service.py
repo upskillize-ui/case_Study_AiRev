@@ -89,7 +89,7 @@ def _analyze_with_huggingface(
     for provider_name, model in models:
         try:
             print(f"   Trying {provider_name}/{model}...")
-            client = InferenceClient(provider=provider_name, token=token)
+            client = InferenceClient(model=model, token=token)
 
             response = client.chat_completion(
                 model=model,
