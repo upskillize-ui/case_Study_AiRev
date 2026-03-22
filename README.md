@@ -2,7 +2,7 @@
 title: Upskillize AiRev
 emoji: ⚡
 colorFrom: indigo
-colorTo: teal
+colorTo: blue
 sdk: docker
 pinned: false
 ---
