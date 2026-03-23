@@ -2,8 +2,9 @@
 # THE BRAIN — calls Hugging Face (free) or Claude (paid)
 
 import os
+import re
 import time
-from huggingface_hub import InferenceClient
+import httpx
 from app.prompts import build_review_prompt, parse_ai_response
 
 
@@ -89,21 +90,29 @@ def _analyze_with_huggingface(
     for provider_name, model in models:
         try:
             print(f"   Trying {provider_name}/{model}...")
-            client = InferenceClient(model=model, token=token)
-            response = client.chat_completion(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_msg},
-                    {"role": "user",   "content": prompt},
-                ],
-                max_tokens=2000,
-                temperature=0.3,
+            resp = httpx.post(
+                "https://router.huggingface.co/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_msg},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "max_tokens": 2000,
+                    "temperature": 0.3,
+                    "provider": provider_name,
+                },
+                timeout=120.0,
             )
-
-            text = response.choices[0].message.content
+            resp.raise_for_status()
+            data = resp.json()
+            text = data["choices"][0]["message"]["content"]
 
             # DeepSeek wraps reasoning in <think> tags — strip them
-            import re
             text = re.sub(r"<think>[\s\S]*?</think>", "", text).strip()
 
             parsed = parse_ai_response(text)
@@ -127,7 +136,6 @@ def _analyze_with_claude(
         case_study, model_answer, student_answer, grading_rubric, key_concepts
     )
 
-    # FIX: Correct model name
     model = "claude-sonnet-4-6"
 
     response = client.messages.create(
