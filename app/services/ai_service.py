@@ -89,8 +89,7 @@ def _analyze_with_huggingface(
     for provider_name, model in models:
         try:
             print(f"   Trying {provider_name}/{model}...")
-            client = InferenceClient(model=model, token=token, api_url="https://router.huggingface.co")
-
+            client = InferenceClient(model=model, token=token)
             response = client.chat_completion(
                 model=model,
                 messages=[

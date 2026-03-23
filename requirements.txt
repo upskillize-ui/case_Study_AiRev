@@ -7,4 +7,4 @@ huggingface-hub==0.27.1
 anthropic==0.42.0
 pydantic==2.10.4
 python-multipart==0.0.20
-huggingface_hub>=0.25.0
+huggingface_hub>=0.28.0
