@@ -136,7 +136,7 @@ def _analyze_with_claude(
         case_study, model_answer, student_answer, grading_rubric, key_concepts
     )
 
-    model = "claude-sonnet-4-6"
+    model = "claude-sonnet-4-20250514"
 
     response = client.messages.create(
         model=model,
