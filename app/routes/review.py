@@ -214,3 +214,14 @@ async def debug_publish_case_study(cid: int):
     execute("UPDATE case_studies SET status = 'published' WHERE id = %s", (cid,))
     rows = query("SELECT id, title, status FROM case_studies WHERE id = %s", (cid,))
     return {"updated": rows}
+
+
+# ── GET /api/review/debug/columns ─────────────────────────────────────────
+# TEMPORARY: shows the actual columns of the case_studies table and a
+# full row dump so we can see real column names. Remove after debugging.
+@router.get("/debug/columns")
+async def debug_columns():
+    from app.database import query
+    cols = query("SHOW COLUMNS FROM case_studies")
+    sample = query("SELECT * FROM case_studies WHERE id = 1")
+    return {"columns": cols, "sample_row": sample}
