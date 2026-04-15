@@ -8,23 +8,97 @@ from app.database import query, execute
 # ===== CASE STUDIES =====
 
 def get_case_study_by_id(case_study_id: int) -> dict | None:
-    rows = query("SELECT * FROM case_studies WHERE id = %s AND status = 'published'", (case_study_id,))
+    """
+    Reads a case study from MySQL.
+
+    The LMS-created `case_studies` table uses a different schema than what
+    this AI agent originally expected. We adapt: read whatever columns exist,
+    synthesize sensible defaults for what's missing, and convert the LMS
+    rubric format to what scoring_service wants.
+    """
+    rows = query(
+        "SELECT * FROM case_studies WHERE id = %s AND status = 'published'",
+        (case_study_id,),
+    )
     if not rows:
         return None
     cs = rows[0]
+
+    # Helper to JSON-decode a column that may be string, list/dict, or None
+    def jload(val, default):
+        if val is None:
+            return default
+        if isinstance(val, str):
+            try:
+                return json.loads(val)
+            except Exception:
+                return default
+        return val
+
+    # --- questions: stored as JSON array, may be empty ---
+    questions = jload(cs.get("questions"), [])
+
+    # --- model_answers: column doesn't exist in LMS schema ---
+    # Use empty list — the AI prompt handles this gracefully (it treats the
+    # model answer as a "reference, not the only correct answer").
+    model_answers = []
+
+    # --- rubric: LMS stores as [{"name":"X","points":25}, ...] ---
+    # scoring_service expects {"criteria":[{"name":"X","maxScore":25}, ...]}
+    raw_rubric = jload(cs.get("rubric_criteria"), [])
+    if isinstance(raw_rubric, list):
+        criteria = [
+            {
+                "name": c.get("name", "Criterion"),
+                "maxScore": c.get("points", c.get("maxScore", 25)),
+                "weight": (c.get("points", 25) / 100),
+            }
+            for c in raw_rubric
+        ]
+    else:
+        # Already in the expected dict form
+        criteria = raw_rubric.get("criteria", []) if isinstance(raw_rubric, dict) else []
+
+    if not criteria:
+        # Sensible default rubric if nothing is configured
+        criteria = [
+            {"name": "Understanding",  "maxScore": 25, "weight": 0.25},
+            {"name": "Application",    "maxScore": 25, "weight": 0.25},
+            {"name": "Depth",          "maxScore": 25, "weight": 0.25},
+            {"name": "Structure",      "maxScore": 25, "weight": 0.25},
+        ]
+    grading_rubric = {"criteria": criteria}
+
+    # --- key concepts: not in LMS schema. Derive light hints from
+    # company/industry/learning_objectives so the AI has *something* ---
+    key_concepts = [
+        s for s in [
+            cs.get("company_name"),
+            cs.get("industry"),
+            cs.get("learning_objectives"),
+        ]
+        if s and isinstance(s, str)
+    ]
+
+    # --- word limits: LMS has a single `word_limit`. Treat as the max,
+    # set min as half of that with a sane floor. ---
+    word_limit = cs.get("word_limit") or 500
+    word_limit_max = int(word_limit)
+    word_limit_min = max(50, word_limit_max // 2)
+
     return {
         "id": cs["id"],
-        "courseId": cs["course_id"],
-        "title": cs["title"],
-        "description": cs["description"],
-        "questions": json.loads(cs["questions"]) if isinstance(cs["questions"], str) else cs["questions"],
-        "modelAnswers": json.loads(cs["model_answers"]) if isinstance(cs["model_answers"], str) else cs["model_answers"],
-        "gradingRubric": json.loads(cs["grading_rubric"]) if isinstance(cs["grading_rubric"], str) else cs["grading_rubric"],
-        "keyConcepts": json.loads(cs["key_concepts"]) if isinstance(cs["key_concepts"], str) else cs["key_concepts"],
-        "maxScore": cs["max_score"],
-        "wordLimitMin": cs["word_limit_min"],
-        "wordLimitMax": cs["word_limit_max"],
-        "deadline": cs.get("deadline"),
+        "courseId": cs.get("course_id"),
+        "title": cs.get("title", ""),
+        "description": cs.get("description") or cs.get("learning_objectives") or "",
+        "questions": questions,
+        "modelAnswers": model_answers,
+        "gradingRubric": grading_rubric,
+        "keyConcepts": key_concepts,
+        "maxScore": cs.get("total_marks", 100),
+        "wordLimitMin": word_limit_min,
+        "wordLimitMax": word_limit_max,
+        "deadline": cs.get("due_date") or cs.get("deadline"),
     }
 
 
