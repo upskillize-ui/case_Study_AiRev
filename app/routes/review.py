@@ -193,3 +193,14 @@ async def mentor_approve(submission_id: int, req: MentorApproveRequest):
 async def list_case_studies(course_id: int):
     case_studies = db_service.get_all_case_studies(course_id)
     return {"success": True, "caseStudies": case_studies}
+
+
+# ── GET /api/review/debug/case-study/{cid} ────────────────────────────────
+# TEMPORARY DEBUG ENDPOINT — remove after debugging.
+# Used to check whether case_studies exist in the DB and what their status is.
+@router.get("/debug/case-study/{cid}")
+async def debug_case_study(cid: int):
+    from app.database import query
+    rows = query("SELECT id, title, status FROM case_studies WHERE id = %s", (cid,))
+    all_rows = query("SELECT id, title, status FROM case_studies LIMIT 10")
+    return {"found_with_id": rows, "all_case_studies": all_rows}

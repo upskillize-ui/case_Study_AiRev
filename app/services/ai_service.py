@@ -64,7 +64,26 @@ def analyze_answer(
 def _analyze_with_huggingface(
     case_study, model_answer, student_answer, grading_rubric, key_concepts
 ):
+    """
+    Calls the Hugging Face router.
+
+    FIXES vs original:
+      1. Provider is encoded in the model id as "<model>:<provider>".
+         The router does NOT accept a "provider" body field — that's
+         SDK-only. Sending it causes silent 400s, which is why every
+         model in your old list was failing.
+      2. DeepSeek-R1 is a reasoning model that consumes tokens inside
+         <think> tags before producing JSON. 2000 tokens is too small;
+         it needs ~6000. We also try a fast instruct model first so
+         most requests don't hit R1 at all.
+      3. We surface the actual HTTP body when a model fails so you can
+         see WHY it failed in the logs (auth, quota, bad model id, etc.)
+         instead of a vague "unavailable".
+    """
     token = os.getenv("HF_ACCESS_TOKEN")
+    if not token:
+        raise Exception("HF_ACCESS_TOKEN env var is not set")
+
     prompt = build_review_prompt(
         case_study, model_answer, student_answer, grading_rubric, key_concepts
     )
@@ -78,48 +97,61 @@ def _analyze_with_huggingface(
         "no explanation. Just pure JSON."
     )
 
-    # Models tried in order — first success wins
+    # (model_id_with_provider_suffix, max_tokens)
+    # Order: fast non-reasoning models first; R1 last with extra room.
     models = [
-        ("novita",   "deepseek-ai/DeepSeek-R1-0528"),
-        ("novita",   "meta-llama/Llama-3.3-70B-Instruct"),
-        ("cerebras", "meta-llama/Llama-3.3-70B-Instruct"),
+        ("meta-llama/Llama-3.3-70B-Instruct:cerebras", 2000),
+        ("meta-llama/Llama-3.3-70B-Instruct:novita",   2000),
+        ("deepseek-ai/DeepSeek-V3-0324:novita",        2000),
+        ("deepseek-ai/DeepSeek-R1:novita",             6000),  # reasoning — needs room
     ]
 
+    url = "https://router.huggingface.co/v1/chat/completions"
     last_error = None
 
-    for provider_name, model in models:
+    for model, max_tokens in models:
         try:
-            print(f"   Trying {provider_name}/{model}...")
+            print(f"   Trying {model} (max_tokens={max_tokens})...")
             resp = httpx.post(
-                "https://router.huggingface.co/v1/chat/completions",
+                url,
                 headers={
                     "Authorization": f"Bearer {token}",
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": model,
+                    "model": model,        # provider lives in the suffix
                     "messages": [
                         {"role": "system", "content": system_msg},
-                        {"role": "user", "content": prompt},
+                        {"role": "user",   "content": prompt},
                     ],
-                    "max_tokens": 2000,
+                    "max_tokens": max_tokens,
                     "temperature": 0.3,
-                    "provider": provider_name,
+                    # NOTE: deliberately no "provider" key here.
                 },
                 timeout=120.0,
             )
-            resp.raise_for_status()
-            data = resp.json()
-            text = data["choices"][0]["message"]["content"]
 
-            # DeepSeek wraps reasoning in <think> tags — strip them
+            if resp.status_code >= 400:
+                raise Exception(
+                    f"HTTP {resp.status_code} from router: {resp.text[:400]}"
+                )
+
+            data = resp.json()
+            text = data["choices"][0]["message"]["content"] or ""
+
+            # DeepSeek-R1 wraps reasoning in <think> tags — strip them
             text = re.sub(r"<think>[\s\S]*?</think>", "", text).strip()
 
+            if not text:
+                raise Exception(
+                    "Model returned empty content (likely truncated inside <think>)"
+                )
+
             parsed = parse_ai_response(text)
-            return parsed, f"{provider_name}/{model}"
+            return parsed, model
 
         except Exception as e:
-            print(f"   {provider_name}/{model} unavailable: {e}")
+            print(f"   {model} unavailable: {e}")
             last_error = e
             continue
 
