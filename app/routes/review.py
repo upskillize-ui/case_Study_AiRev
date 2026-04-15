@@ -217,11 +217,22 @@ async def debug_publish_case_study(cid: int):
 
 
 # ── GET /api/review/debug/columns ─────────────────────────────────────────
-# TEMPORARY: shows the actual columns of the case_studies table and a
-# full row dump so we can see real column names. Remove after debugging.
+# TEMPORARY: shows the actual columns of every table this app touches,
+# plus a sample row where useful. Remove after debugging.
 @router.get("/debug/columns")
 async def debug_columns():
     from app.database import query
-    cols = query("SHOW COLUMNS FROM case_studies")
-    sample = query("SELECT * FROM case_studies WHERE id = 1")
-    return {"columns": cols, "sample_row": sample}
+    out = {}
+    for table in [
+        "case_studies",
+        "case_study_submissions",
+        "student_performance_tracker",
+        "ai_review_logs",
+    ]:
+        try:
+            cols = query(f"SHOW COLUMNS FROM {table}")
+            sample = query(f"SELECT * FROM {table} LIMIT 1")
+            out[table] = {"exists": True, "columns": cols, "sample_row": sample}
+        except Exception as e:
+            out[table] = {"exists": False, "error": str(e)}
+    return out
