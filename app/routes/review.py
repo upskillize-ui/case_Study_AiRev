@@ -197,10 +197,20 @@ async def list_case_studies(course_id: int):
 
 # ── GET /api/review/debug/case-study/{cid} ────────────────────────────────
 # TEMPORARY DEBUG ENDPOINT — remove after debugging.
-# Used to check whether case_studies exist in the DB and what their status is.
 @router.get("/debug/case-study/{cid}")
 async def debug_case_study(cid: int):
     from app.database import query
     rows = query("SELECT id, title, status FROM case_studies WHERE id = %s", (cid,))
     all_rows = query("SELECT id, title, status FROM case_studies LIMIT 10")
     return {"found_with_id": rows, "all_case_studies": all_rows}
+
+
+# ── GET /api/review/debug/publish/{cid} ───────────────────────────────────
+# TEMPORARY: sets a case study's status to 'published' so it becomes
+# usable by the /submit endpoint. Remove after debugging.
+@router.get("/debug/publish/{cid}")
+async def debug_publish_case_study(cid: int):
+    from app.database import query, execute
+    execute("UPDATE case_studies SET status = 'published' WHERE id = %s", (cid,))
+    rows = query("SELECT id, title, status FROM case_studies WHERE id = %s", (cid,))
+    return {"updated": rows}
