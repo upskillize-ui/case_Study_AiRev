@@ -7,6 +7,7 @@ from app.services import ai_service, scoring_service, feedback_service, db_servi
 from app.utils.text_processor import (
     count_words, clean_text, calculate_text_overlap, find_mentioned_concepts
 )
+from app.utils.file_extractor import extract_text_from_url
 
 router = APIRouter(prefix="/api/review", tags=["review"])
 
@@ -24,6 +25,24 @@ async def submit_and_review(req: SubmitAnswerRequest):
     cleaned    = clean_text(req.answerText)
     word_count = count_words(cleaned)
 
+    # ── If the inline answer is short, see if there's a previously-uploaded
+    #    file (PDF/DOCX) for this student+case study and use its contents. ──
+    file_used = None
+    if word_count < 50:
+        prior = db_service.get_latest_submission_file(req.caseStudyId, req.studentId)
+        if prior and prior.get("file_url"):
+            extracted, why = extract_text_from_url(prior["file_url"], prior.get("file_name", ""))
+            if extracted and len(extracted.split()) >= max(word_count, 30):
+                # Combine: use file as primary, append the inline notes if any
+                cleaned = (cleaned + "\n\n" + extracted).strip() if cleaned else extracted
+                word_count = count_words(cleaned)
+                file_used = prior.get("file_name") or prior["file_url"]
+                print(f"📄 Using uploaded file content: {file_used} "
+                      f"({word_count} words extracted)")
+            else:
+                print(f"📄 File extraction skipped/failed for "
+                      f"{prior.get('file_name', '?')}: {why or 'too little text'}")
+
     text_overlap  = calculate_text_overlap(cleaned, case_study["description"])
     concept_check = find_mentioned_concepts(cleaned, case_study["keyConcepts"])
 
@@ -32,6 +51,21 @@ async def submit_and_review(req: SubmitAnswerRequest):
     )
     print(f"✅ Submission saved: id={submission['submissionId']}, attempt={submission['attemptNumber']}")
 
+    # ── Pre-AI cheap garbage check (saves an AI call for obvious junk) ──
+    pre_garbage_reason = _pre_garbage_check(cleaned, word_count)
+    if pre_garbage_reason:
+        print(f"⚠️  Pre-AI garbage check tripped: {pre_garbage_reason}")
+        garbage_payload = _build_garbage_response(
+            submission, case_study, cleaned, word_count, pre_garbage_reason, start_time,
+        )
+        try:
+            db_service.update_submission_with_ai_results(submission["submissionId"], garbage_payload["_internal"])
+            db_service.update_performance_tracker(req.studentId, req.caseStudyId, 0)
+        except Exception as db_err:
+            print(f"⚠️  DB update (garbage path) failed: {db_err}")
+        return garbage_payload["response"]
+
+    # ── Real AI review ──
     try:
         ai_analysis = ai_service.analyze_answer(
             case_study={
@@ -85,19 +119,27 @@ async def submit_and_review(req: SubmitAnswerRequest):
     )
 
     result = {
-        "totalScore":       scores["totalScore"],
-        "grade":            scores["grade"],
-        "rubricScores":     scores["rubricBreakdown"],
-        "strengths":        feedback["strengths"],
-        "improvements":     feedback["improvements"],
-        "missingConcepts":  ai_analysis.get("conceptsMissing", []),
-        "coveredConcepts":  ai_analysis.get("conceptsCovered", []),
-        "suggestedModules": feedback["suggestedModules"],
-        "detailedFeedback": feedback["detailed"],
-        "wordCount":        word_count,
-        "wordCountMessage": feedback["wordCountMessage"],
-        "plagiarismFlag":   ai_analysis.get("plagiarismRisk", "low"),
-        "needsMentorHelp":  scores["totalScore"] < 40 or ai_analysis.get("mentorAlert", False),
+        "totalScore":             scores["totalScore"],
+        "grade":                  scores["grade"],
+        "rubricScores":           scores["rubricBreakdown"],
+        "strengths":              feedback["strengths"],
+        "improvements":           feedback["improvements"],
+        "missingConcepts":        ai_analysis.get("conceptsMissing", []),
+        "coveredConcepts":        ai_analysis.get("conceptsCovered", []),
+        "suggestedModules":       feedback["suggestedModules"],
+        "detailedFeedback":       feedback["detailed"],
+        "wordCount":              word_count,
+        "wordCountMessage":       feedback["wordCountMessage"],
+        "plagiarismFlag":         ai_analysis.get("plagiarismRisk", "low"),
+        "needsMentorHelp":        scores["totalScore"] < 40 or ai_analysis.get("mentorAlert", False),
+        # NEW — surfaced for storage + frontend display
+        "scoreEmoji":             feedback["scoreEmoji"],
+        "aiLikelihoodPercent":    feedback["aiLikelihoodPercent"],
+        "humanLikelihoodPercent": feedback["humanLikelihoodPercent"],
+        "aiDetectionReason":      feedback["aiDetectionReason"],
+        "aiVerdict":              feedback["aiVerdict"],
+        "isGarbage":              feedback["isGarbage"],
+        "garbageWarning":         feedback["garbageWarning"],
     }
 
     try:
@@ -108,25 +150,34 @@ async def submit_and_review(req: SubmitAnswerRequest):
         print(f"⚠️  DB update failed after AI review: {db_err} — returning result anyway")
 
     total_time = int((time.time() - start_time) * 1000)
-    print(f"✅ Review complete: score={scores['totalScore']}, grade={scores['grade']}, time={total_time}ms")
+    print(f"✅ Review complete: score={scores['totalScore']}, grade={scores['grade']}, "
+          f"ai={feedback['aiLikelihoodPercent']}%, time={total_time}ms")
 
     return {
         "success":    True,
         "submission": submission,
         "feedback": {
-            "score":            result["totalScore"],
-            "grade":            result["grade"],
-            "summary":          feedback["studentFeedback"]["summary"],
-            "rubricScores":     result["rubricScores"],
-            "strengths":        result["strengths"],
-            "improvements":     result["improvements"],
-            "missingConcepts":  result["missingConcepts"],
-            "coveredConcepts":  result["coveredConcepts"],
-            "suggestions":      result["suggestedModules"],
-            "detailedFeedback": result["detailedFeedback"],
-            "wordCount":        result["wordCount"],
-            "wordCountMessage": result["wordCountMessage"],
-            "encouragement":    feedback["studentFeedback"]["encouragement"],
+            "score":                  result["totalScore"],
+            "grade":                  result["grade"],
+            "scoreEmoji":             result["scoreEmoji"],
+            "summary":                feedback["studentFeedback"]["summary"],
+            "rubricScores":           result["rubricScores"],
+            "strengths":              result["strengths"],
+            "improvements":           result["improvements"],
+            "missingConcepts":        result["missingConcepts"],
+            "coveredConcepts":        result["coveredConcepts"],
+            "suggestions":            result["suggestedModules"],
+            "detailedFeedback":       result["detailedFeedback"],
+            "wordCount":              result["wordCount"],
+            "wordCountMessage":       result["wordCountMessage"],
+            "encouragement":          feedback["studentFeedback"]["encouragement"],
+            # NEW —
+            "aiLikelihoodPercent":    result["aiLikelihoodPercent"],
+            "humanLikelihoodPercent": result["humanLikelihoodPercent"],
+            "aiDetectionReason":      result["aiDetectionReason"],
+            "aiVerdict":              result["aiVerdict"],
+            "isGarbage":              result["isGarbage"],
+            "garbageWarning":         result["garbageWarning"],
         },
         "mentorReport":     feedback["mentorSummary"],
         "processingTimeMs": total_time,
@@ -195,44 +246,120 @@ async def list_case_studies(course_id: int):
     return {"success": True, "caseStudies": case_studies}
 
 
-# ── GET /api/review/debug/case-study/{cid} ────────────────────────────────
-# TEMPORARY DEBUG ENDPOINT — remove after debugging.
-@router.get("/debug/case-study/{cid}")
-async def debug_case_study(cid: int):
-    from app.database import query
-    rows = query("SELECT id, title, status FROM case_studies WHERE id = %s", (cid,))
-    all_rows = query("SELECT id, title, status FROM case_studies LIMIT 10")
-    return {"found_with_id": rows, "all_case_studies": all_rows}
+# ──────────────────────────────────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────────────────────────────────
+
+def _pre_garbage_check(text: str, word_count: int) -> str:
+    """Cheap heuristics that catch obvious junk before paying for an AI call.
+    Returns a short reason string if junk, or '' if the text deserves a real review."""
+    if not text or not text.strip():
+        return "Submission is empty."
+    if word_count < 10:
+        return f"Submission is only {word_count} words — too short to evaluate meaningfully."
+
+    stripped = text.strip()
+    unique_chars = len(set(stripped.lower().replace(" ", "")))
+    if unique_chars <= 3:
+        return "Submission consists of repeated characters."
+
+    letters = [c for c in stripped.lower() if c.isalpha()]
+    if letters:
+        vowel_ratio = sum(1 for c in letters if c in "aeiou") / len(letters)
+        if vowel_ratio < 0.10 and len(letters) > 20:
+            return "Submission appears to be keyboard mashing rather than real writing."
+
+    return ""
 
 
-# ── GET /api/review/debug/publish/{cid} ───────────────────────────────────
-# TEMPORARY: sets a case study's status to 'published' so it becomes
-# usable by the /submit endpoint. Remove after debugging.
-@router.get("/debug/publish/{cid}")
-async def debug_publish_case_study(cid: int):
-    from app.database import query, execute
-    execute("UPDATE case_studies SET status = 'published' WHERE id = %s", (cid,))
-    rows = query("SELECT id, title, status FROM case_studies WHERE id = %s", (cid,))
-    return {"updated": rows}
+def _build_garbage_response(submission, case_study, text, word_count, reason, start_time):
+    """Same response shape as a normal review but score=0 and a clear garbageWarning."""
+    rubric_breakdown = [
+        {"criteria": c["name"], "maxScore": c["maxScore"], "score": 0,
+         "percentage": 0, "status": "needs_improvement"}
+        for c in case_study["gradingRubric"].get("criteria", [])
+    ]
 
+    warning = (
+        "Your submission did not appear to be a genuine attempt at the case study. "
+        f"Reason: {reason} Please re-read the case study and submit a thoughtful response."
+    )
 
-# ── GET /api/review/debug/columns ─────────────────────────────────────────
-# TEMPORARY: shows the actual columns of every table this app touches,
-# plus a sample row where useful. Remove after debugging.
-@router.get("/debug/columns")
-async def debug_columns():
-    from app.database import query
-    out = {}
-    for table in [
-        "case_studies",
-        "case_study_submissions",
-        "student_performance_tracker",
-        "ai_review_logs",
-    ]:
-        try:
-            cols = query(f"SHOW COLUMNS FROM {table}")
-            sample = query(f"SELECT * FROM {table} LIMIT 1")
-            out[table] = {"exists": True, "columns": cols, "sample_row": sample}
-        except Exception as e:
-            out[table] = {"exists": False, "error": str(e)}
-    return out
+    student_feedback = {
+        "score": 0,
+        "grade": "F",
+        "scoreEmoji": "🤝",
+        "summary": "Your submission was flagged as not a genuine attempt — score 0/100.",
+        "rubricScores":           rubric_breakdown,
+        "strengths":              [],
+        "improvements":           ["Read the case study carefully and write your own thoughts.",
+                                   "Aim for at least the suggested word count.",
+                                   "Reach out to your mentor if you'd like guidance on how to start."],
+        "missingConcepts":        case_study.get("keyConcepts", []),
+        "coveredConcepts":        [],
+        "suggestions":            [],
+        "detailedFeedback":       warning,
+        "wordCount":              word_count,
+        "wordCountMessage":       f"Your answer is {word_count} words — too short to evaluate.",
+        "encouragement":          "Take another look at the case study and try again — you can do this. 🤝",
+        "aiLikelihoodPercent":    0,
+        "humanLikelihoodPercent": 100,
+        "aiDetectionReason":      "Not analysed (submission flagged as non-genuine).",
+        "aiVerdict":              "uncertain",
+        "isGarbage":              True,
+        "garbageWarning":         warning,
+    }
+
+    mentor_report = {
+        "score":             0,
+        "grade":             "F",
+        "gradeLabel":        "Needs Significant Improvement",
+        "scoreEmoji":        "🤝",
+        "needsAttention":    True,
+        "performanceLevel":  "developing",
+        "plagiarismRisk":    "low",
+        "plagiarismNote":    "",
+        "quickAction":       "Review required: submission appears to be non-genuine — please verify.",
+        "keyMissing":        case_study.get("keyConcepts", []),
+        "rubricBreakdown":   rubric_breakdown,
+        "mentorAlert":       True,
+        "mentorAlertReason": f"Non-genuine submission flagged: {reason}",
+        "wordCount":         word_count,
+        "isGarbage":         True,
+        "aiLikelihoodPercent":    0,
+        "humanLikelihoodPercent": 100,
+    }
+
+    internal = {
+        "totalScore":             0,
+        "grade":                  "F",
+        "rubricScores":           rubric_breakdown,
+        "strengths":              [],
+        "improvements":           student_feedback["improvements"],
+        "missingConcepts":        case_study.get("keyConcepts", []),
+        "coveredConcepts":        [],
+        "suggestedModules":       [],
+        "detailedFeedback":       warning,
+        "wordCount":              word_count,
+        "wordCountMessage":       student_feedback["wordCountMessage"],
+        "plagiarismFlag":         "low",
+        "needsMentorHelp":        True,
+        "scoreEmoji":             "🤝",
+        "aiLikelihoodPercent":    0,
+        "humanLikelihoodPercent": 100,
+        "aiDetectionReason":      student_feedback["aiDetectionReason"],
+        "aiVerdict":              "uncertain",
+        "isGarbage":              True,
+        "garbageWarning":         warning,
+    }
+
+    return {
+        "_internal": internal,
+        "response": {
+            "success":    True,
+            "submission": submission,
+            "feedback":   student_feedback,
+            "mentorReport": mentor_report,
+            "processingTimeMs": int((time.time() - start_time) * 1000),
+        },
+    }

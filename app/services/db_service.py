@@ -99,6 +99,32 @@ def get_all_case_studies(course_id: int) -> list:
     )
 
 
+def get_latest_submission_file(case_study_id: int, student_id: int,
+                               exclude_submission_id: int | None = None) -> dict | None:
+    """
+    Find the most recent submission row for this student on this case study
+    that has an attached file_url. Used by the review pipeline to pull the
+    PDF/DOCX content when the inline answerText is too short.
+
+    Excludes the just-created row so we don't pick up the empty-text row
+    that the AI agent itself just inserted.
+    """
+    sql = (
+        "SELECT id, file_url, file_name, notes "
+        "FROM case_study_submissions "
+        "WHERE case_study_id = %s AND student_id = %s "
+        "AND file_url IS NOT NULL AND file_url <> '' "
+    )
+    params: tuple = (case_study_id, student_id)
+    if exclude_submission_id is not None:
+        sql += "AND id <> %s "
+        params = (case_study_id, student_id, exclude_submission_id)
+    sql += "ORDER BY submitted_at DESC LIMIT 1"
+
+    rows = query(sql, params)
+    return rows[0] if rows else None
+
+
 # ===== SUBMISSIONS =====
 
 def save_submission(case_study_id: int, student_id: int, answer_text: str, word_count: int) -> dict:
@@ -142,6 +168,7 @@ def update_submission_with_ai_results(submission_id: int, result: dict):
     feedback_payload = {
         "grade":            result.get("grade"),
         "totalScore":       result.get("totalScore"),
+        "scoreEmoji":       result.get("scoreEmoji"),
         "strengths":        result.get("strengths", []),
         "improvements":     result.get("improvements", []),
         "missingConcepts":  result.get("missingConcepts", []),
@@ -152,6 +179,13 @@ def update_submission_with_ai_results(submission_id: int, result: dict):
         "needsMentorHelp":  bool(result.get("needsMentorHelp")),
         "wordCount":        result.get("wordCount"),
         "wordCountMessage": result.get("wordCountMessage", ""),
+        # NEW — Human/AI detection + garbage flag
+        "aiLikelihoodPercent":    result.get("aiLikelihoodPercent"),
+        "humanLikelihoodPercent": result.get("humanLikelihoodPercent"),
+        "aiDetectionReason":      result.get("aiDetectionReason", ""),
+        "aiVerdict":              result.get("aiVerdict", ""),
+        "isGarbage":              bool(result.get("isGarbage")),
+        "garbageWarning":         result.get("garbageWarning", ""),
     }
 
     execute(

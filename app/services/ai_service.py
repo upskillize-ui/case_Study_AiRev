@@ -99,8 +99,9 @@ def _analyze_with_huggingface(
 
     # (model_id_with_provider_suffix, max_tokens)
     # Order: fast non-reasoning models first; R1 last with extra room.
+    # Note: cerebras dropped — meta-llama/Llama-3.3-70B-Instruct was
+    # deprecated by Cerebras provider (HTTP 410).
     models = [
-        ("meta-llama/Llama-3.3-70B-Instruct:cerebras", 2000),
         ("meta-llama/Llama-3.3-70B-Instruct:novita",   2000),
         ("deepseek-ai/DeepSeek-V3-0324:novita",        2000),
         ("deepseek-ai/DeepSeek-R1:novita",             6000),  # reasoning — needs room
