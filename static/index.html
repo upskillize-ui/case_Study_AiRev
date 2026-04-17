@@ -2,392 +2,277 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Upskillize - AI Case Study Review</title>
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>AiRev · Upskillize AI Case Study Review</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
 <style>
-:root {
-  --bg: #f4f6fb;
-  --white: #ffffff;
-  --surface: #ffffff;
-  --card: #ffffff;
-  --card-hover: #f8f9fc;
-  --border: #e2e8f0;
-  --border-active: #1a237e;
-  --indigo: #1a237e;
-  --indigo-light: #e8eaf6;
-  --indigo-mid: #3949ab;
-  --teal: #00796b;
-  --teal-light: #e0f2f1;
-  --teal-dark: #004d40;
-  --accent: #10b981;
-  --accent-soft: rgba(16,185,129,0.1);
-  --warn: #f59e0b;
-  --warn-soft: rgba(245,158,11,0.1);
-  --danger: #ef4444;
-  --danger-soft: rgba(239,68,68,0.08);
-  --text: #1e293b;
-  --text-muted: #64748b;
-  --text-dim: #94a3b8;
-  --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
-  --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
-}
-* { margin:0; padding:0; box-sizing:border-box; }
-body { font-family:'Plus Jakarta Sans',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; }
-input,textarea,button,select { font-family:inherit; }
-
-/* Header */
-.header { background:var(--indigo); padding:14px 28px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; }
-.logo { display:flex; align-items:center; gap:12px; }
-.logo-icon { width:38px; height:38px; border-radius:10px; background:linear-gradient(135deg, var(--teal), #26a69a); display:flex; align-items:center; justify-content:center; font-weight:800; font-size:17px; color:#fff; }
-.logo h1 { font-size:17px; font-weight:700; color:#fff; letter-spacing:-0.3px; }
-.logo p { font-size:11px; color:rgba(255,255,255,0.65); }
-.header-right { display:flex; align-items:center; gap:12px; }
-.health-badge { display:flex; align-items:center; gap:6px; font-size:12px; color:rgba(255,255,255,0.7); background:rgba(255,255,255,0.1); padding:5px 12px; border-radius:20px; }
-.health-dot { width:7px; height:7px; border-radius:50%; }
-.settings-btn { background:rgba(255,255,255,0.12); border:1px solid rgba(255,255,255,0.2); color:#fff; border-radius:8px; padding:6px 14px; cursor:pointer; font-size:12px; font-weight:600; transition:all 0.2s; }
-.settings-btn:hover { background:rgba(255,255,255,0.2); }
-
-/* Settings Bar */
-.settings-bar { background:var(--white); border-bottom:1px solid var(--border); padding:14px 28px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; box-shadow:var(--shadow); }
-.settings-bar label { font-size:13px; color:var(--text-muted); font-weight:600; }
-.settings-bar input { background:var(--bg); border:1px solid var(--border); color:var(--text); border-radius:8px; padding:8px 12px; font-size:13px; }
-.settings-bar .test-btn { background:var(--teal); color:#fff; border:none; border-radius:8px; padding:8px 16px; font-size:13px; font-weight:600; cursor:pointer; }
-
-/* Tabs */
-.tabs { padding:20px 28px 0; display:flex; gap:6px; flex-wrap:wrap; }
-.tab-btn { padding:10px 20px; border-radius:10px; border:1.5px solid var(--border); background:var(--white); color:var(--text-muted); cursor:pointer; font-weight:600; font-size:13px; transition:all 0.2s; box-shadow:var(--shadow); }
-.tab-btn:hover { border-color:var(--indigo); color:var(--indigo); }
-.tab-btn.active { border-color:var(--indigo); background:var(--indigo); color:#fff; box-shadow:0 2px 8px rgba(26,35,126,0.3); }
-
-/* Main */
-.main { padding:24px 28px; max-width:1100px; margin:0 auto; }
-.card { background:var(--card); border-radius:14px; border:1px solid var(--border); padding:24px; margin-bottom:16px; box-shadow:var(--shadow); }
-.card-title { font-size:15px; font-weight:700; color:var(--text-muted); margin-bottom:14px; }
-.section-title { font-size:24px; font-weight:800; color:var(--indigo); margin-bottom:6px; }
-.section-sub { color:var(--text-muted); margin-bottom:24px; font-size:14px; }
-
-/* Inputs */
-.input-group { margin-bottom:16px; }
-.input-group label { display:block; font-size:13px; color:var(--text-muted); margin-bottom:6px; font-weight:600; }
-.input-group input, .input-group textarea, .input-group select { width:100%; background:var(--bg); border:1.5px solid var(--border); color:var(--text); border-radius:10px; padding:12px 16px; font-size:14px; transition:all 0.2s; }
-.input-group input:focus, .input-group textarea:focus { border-color:var(--indigo); outline:none; box-shadow:0 0 0 3px rgba(26,35,126,0.1); }
-textarea { resize:vertical; line-height:1.8; }
-
-/* Buttons */
-.btn-primary { width:100%; padding:14px; border-radius:10px; border:none; background:var(--indigo); color:#fff; font-size:15px; font-weight:700; cursor:pointer; transition:all 0.2s; letter-spacing:0.3px; }
-.btn-primary:hover { background:var(--indigo-mid); transform:translateY(-1px); box-shadow:var(--shadow-md); }
-.btn-primary:disabled { opacity:0.5; cursor:wait; transform:none; }
-.btn-sm { padding:8px 18px; border-radius:8px; border:none; font-weight:600; font-size:13px; cursor:pointer; }
-.btn-teal { background:var(--teal); color:#fff; }
-.btn-teal:hover { background:var(--teal-dark); }
-
-.row { display:flex; gap:16px; flex-wrap:wrap; }
-.row > * { flex:1; min-width:200px; }
-
-/* Score */
-.score-circle { width:110px; height:110px; border-radius:50%; display:flex; flex-direction:column; align-items:center; justify-content:center; flex-shrink:0; }
-.score-circle .num { font-size:34px; font-weight:800; }
-.score-circle .lbl { font-size:12px; color:var(--text-muted); }
-
-/* Progress */
-.progress-bar { height:6px; border-radius:3px; background:var(--bg); margin-top:6px; }
-.progress-fill { height:6px; border-radius:3px; transition:width 1s ease; }
-
-/* Chips */
-.chip { display:inline-block; padding:4px 12px; border-radius:6px; font-size:12px; font-weight:600; margin:3px; }
-.chip-green { background:var(--teal-light); color:var(--teal); }
-.chip-red { background:var(--danger-soft); color:var(--danger); }
-
-/* Stats */
-.stats-grid { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:20px; }
-.stat-card { flex:1; min-width:110px; text-align:center; padding:16px 12px; background:var(--white); border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow); }
-.stat-card .num { font-size:26px; font-weight:800; }
-.stat-card .lbl { font-size:11px; color:var(--text-dim); margin-top:2px; font-weight:600; text-transform:uppercase; letter-spacing:0.3px; }
-
-/* Table */
-.data-table { width:100%; border-collapse:collapse; font-size:13px; }
-.data-table th { padding:10px 12px; text-align:left; color:var(--text-muted); font-weight:700; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; border-bottom:2px solid var(--border); background:var(--bg); }
-.data-table td { padding:11px 12px; border-bottom:1px solid var(--border); }
-.data-table tr:hover td { background:var(--card-hover); }
-
-/* Alerts */
-.alert-red { background:var(--danger-soft); border-left:4px solid var(--danger); border-radius:10px; padding:14px 18px; margin-bottom:16px; }
-.alert-teal { background:var(--teal-light); border:1px solid var(--teal); border-radius:12px; padding:18px; margin-bottom:16px; }
-
-/* Upload Area */
-.upload-area { border:2px dashed var(--border); border-radius:12px; padding:28px; text-align:center; cursor:pointer; transition:all 0.25s; background:var(--bg); }
-.upload-area:hover { border-color:var(--teal); background:var(--teal-light); }
-.upload-area.active { border-color:var(--teal); background:var(--teal-light); }
-.upload-icon { font-size:32px; margin-bottom:8px; }
-.upload-text { font-size:14px; color:var(--text-muted); }
-.upload-text strong { color:var(--teal); }
-.file-preview { display:flex; align-items:center; gap:10px; background:var(--bg); padding:10px 14px; border-radius:8px; margin-top:10px; border:1px solid var(--border); }
-.file-preview .name { font-size:13px; font-weight:600; flex:1; }
-.file-preview .remove { color:var(--danger); cursor:pointer; font-weight:700; font-size:16px; }
-
-.hidden { display:none; }
-.footer { text-align:center; padding:28px; border-top:1px solid var(--border); margin-top:40px; font-size:12px; color:var(--text-dim); background:var(--white); }
-@keyframes spin { to { transform:rotate(360deg); } }
-.spinner { display:inline-block; width:18px; height:18px; border:2.5px solid var(--border); border-top-color:var(--indigo); border-radius:50%; animation:spin 0.8s linear infinite; margin-right:8px; vertical-align:middle; }
-
-/* Submission type toggle */
-.toggle-group { display:flex; gap:0; margin-bottom:16px; }
-.toggle-btn { flex:1; padding:10px; border:1.5px solid var(--border); background:var(--bg); color:var(--text-muted); font-weight:600; font-size:13px; cursor:pointer; transition:all 0.2s; }
-.toggle-btn:first-child { border-radius:10px 0 0 10px; }
-.toggle-btn:last-child { border-radius:0 10px 10px 0; }
-.toggle-btn.active { background:var(--indigo); color:#fff; border-color:var(--indigo); }
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--navy:#1a2744;--navy-l:#2c3e6b;--gold:#b8960b;--gold-s:#fdf8ed;--gold-b:#e8d89a;--bg:#f5f6fa;--card:#fff;--border:#e4e5ec;--text:#1a1a1a;--muted:#6b6f76;--subtle:#a1a5ad;--red:#c0392b;--red-s:#fdf1f0;--green:#2d6a2d;--green-s:#edf7ed;--blue:#1e3a6b;--blue-s:#eef2fb}
+body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;-webkit-font-smoothing:antialiased}
+.header{background:var(--navy);padding:16px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:40;box-shadow:0 2px 16px rgba(26,39,68,.2)}
+.header-brand{display:flex;align-items:center;gap:12px}
+.header-logo{width:36px;height:36px;border-radius:10px;background:rgba(184,150,11,.15);border:1.5px solid rgba(184,150,11,.35);display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;color:var(--gold)}
+.header h1{font-size:17px;font-weight:800;color:#fff;letter-spacing:-.3px}
+.header h1 span{color:var(--gold)}
+.header-sub{font-size:11px;color:rgba(255,255,255,.4);margin-top:1px}
+.header-right{display:flex;align-items:center;gap:12px}
+.header-dot{width:8px;height:8px;border-radius:50%;background:#2d6a2d;box-shadow:0 0 8px rgba(45,106,45,.6);animation:pulse 2s infinite}
+.header-status{font-size:12px;color:rgba(255,255,255,.55)}
+.lms-link{font-size:12px;color:var(--gold);text-decoration:none;font-weight:600;padding:5px 12px;border:1px solid rgba(184,150,11,.35);border-radius:6px;transition:all .2s}
+.lms-link:hover{background:rgba(184,150,11,.15)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+.container{max-width:860px;margin:0 auto;padding:24px 20px}
+.tabs{display:flex;gap:4px;margin-bottom:24px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:5px;box-shadow:0 1px 4px rgba(0,0,0,.04)}
+.tab{flex:1;padding:10px 16px;border-radius:9px;font-size:14px;font-weight:700;cursor:pointer;border:none;background:transparent;color:var(--muted);font-family:'DM Sans',sans-serif;transition:all .2s;display:flex;align-items:center;justify-content:center;gap:6px}
+.tab:hover{background:var(--bg);color:var(--text)}
+.tab.active{background:var(--navy);color:#fff;box-shadow:0 2px 8px rgba(26,39,68,.2)}
+.card{background:var(--card);border:1px solid var(--border);border-radius:14px;overflow:hidden;box-shadow:0 1px 6px rgba(0,0,0,.04);margin-bottom:16px}
+.card-head{padding:14px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+.card-title{font-size:14px;font-weight:800;color:var(--navy)}
+.card-body{padding:20px}
+.cs-item{border:1.5px solid var(--border);border-radius:12px;padding:16px;cursor:pointer;transition:all .2s;margin-bottom:10px}
+.cs-item:hover{border-color:var(--navy);box-shadow:0 4px 14px rgba(26,39,68,.08);transform:translateY(-1px)}
+.cs-item.selected{border-color:var(--gold);background:var(--gold-s)}
+.cs-tag{display:inline-block;padding:2px 9px;border-radius:20px;font-size:10px;font-weight:700;letter-spacing:.03em}
+.cs-title{font-size:15px;font-weight:700;color:var(--navy);margin:8px 0 4px}
+.cs-desc{font-size:12px;color:var(--muted);line-height:1.55;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.cs-meta{display:flex;gap:12px;margin-top:8px;font-size:11px;color:var(--subtle);flex-wrap:wrap}
+.form-label{display:block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:6px}
+.form-textarea{width:100%;padding:12px 14px;border:1.5px solid var(--border);border-radius:10px;font-family:'DM Sans',sans-serif;font-size:14px;color:var(--text);resize:vertical;outline:none;transition:border-color .2s;min-height:180px;line-height:1.6}
+.form-textarea:focus{border-color:var(--navy);box-shadow:0 0 0 3px rgba(26,39,68,.06)}
+.word-count{text-align:right;font-size:11px;color:var(--subtle);margin-top:4px;font-family:'JetBrains Mono',monospace}
+.btn{border:none;border-radius:10px;padding:12px 22px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;cursor:pointer;transition:all .2s;display:inline-flex;align-items:center;gap:7px}
+.btn-primary{background:var(--navy);color:#fff;box-shadow:0 2px 8px rgba(26,39,68,.2)}
+.btn-primary:hover{background:var(--navy-l);transform:translateY(-1px)}
+.btn-primary:disabled{opacity:.5;cursor:not-allowed;transform:none}
+.btn-gold{background:var(--gold);color:#fff}
+.btn-ghost{background:transparent;color:var(--muted);border:1.5px solid var(--border)}
+.btn-ghost:hover{border-color:var(--navy);color:var(--navy)}
+.score-hero{background:linear-gradient(135deg,var(--navy) 0%,var(--navy-l) 100%);border-radius:14px;padding:28px;display:flex;align-items:center;gap:28px;margin-bottom:20px;box-shadow:0 4px 20px rgba(26,39,68,.2)}
+.score-ring{position:relative;width:110px;height:110px;flex-shrink:0}
+.score-ring svg{transform:rotate(-90deg)}
+.score-ring-text{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.score-ring-num{font-size:32px;font-weight:800;color:#fff;line-height:1}
+.score-ring-label{font-size:11px;color:rgba(255,255,255,.5);margin-top:2px}
+.score-grade{font-size:36px;font-weight:800;color:#fff}
+.score-emoji{font-size:28px}
+.grade-label{display:inline-block;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700;background:rgba(184,150,11,.2);color:var(--gold)}
+.score-summary{font-size:13px;color:rgba(255,255,255,.65);line-height:1.6;margin-top:10px}
+.rubric-item{display:flex;align-items:center;gap:14px;padding:14px 0;border-bottom:1px solid var(--border)}
+.rubric-item:last-child{border-bottom:none}
+.rubric-name{flex:1;font-size:14px;font-weight:600}
+.rubric-bar{flex:2;height:6px;background:var(--border);border-radius:3px;overflow:hidden}
+.rubric-bar-fill{height:100%;border-radius:3px;transition:width .6s ease}
+.rubric-score{font-size:13px;font-weight:800;min-width:50px;text-align:right;font-family:'JetBrains Mono',monospace}
+.rubric-pct{font-size:11px;color:var(--subtle);min-width:34px;text-align:right}
+.fb-section{border-radius:12px;padding:16px;margin-bottom:12px}
+.fb-section h3{font-size:13px;font-weight:800;margin-bottom:10px;display:flex;align-items:center;gap:6px}
+.fb-item{padding:10px 14px;border-radius:8px;margin-bottom:6px;font-size:13px;line-height:1.6}
+.fb-red{background:var(--red-s);border-left:3px solid var(--red)}
+.fb-green{background:var(--green-s);border-left:3px solid var(--green)}
+.fb-blue{background:var(--blue-s);border-left:3px solid var(--blue)}
+.concept-tag{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;margin:3px}
+.concept-covered{background:var(--green-s);color:var(--green);border:1px solid #b8d9b8}
+.concept-missing{background:var(--red-s);color:var(--red);border:1px solid #f7c1c1}
+.hist-item{display:flex;align-items:center;gap:14px;padding:14px 16px;border-bottom:1px solid var(--border);transition:background .15s}
+.hist-item:last-child{border-bottom:none}
+.hist-score{width:48px;height:48px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:800;border:2.5px solid;flex-shrink:0}
+.mentor-note{background:var(--gold-s);border:1px solid var(--gold-b);border-radius:12px;padding:16px;margin-bottom:16px}
+.mentor-note h4{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:var(--gold);margin-bottom:6px}
+.mentor-note p{font-size:13px;color:#5a4500;line-height:1.6}
+.spinner{width:40px;height:40px;border:3px solid var(--border);border-top-color:var(--navy);border-radius:50%;animation:spin .7s linear infinite;margin:0 auto 16px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-center{text-align:center;padding:60px 20px}
+.loading-msg{font-size:14px;color:var(--muted);font-weight:500;margin-bottom:4px}
+.empty{text-align:center;padding:48px 20px;color:var(--subtle)}
+.empty-icon{font-size:40px;margin-bottom:12px}
+.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px}
+.stat-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center}
+.stat-label{font-size:11px;color:var(--muted);margin-bottom:4px}
+.stat-value{font-size:24px;font-weight:800;color:var(--navy)}
+.footer{text-align:center;padding:20px;font-size:11px;color:var(--subtle)}
+@media(max-width:640px){.score-hero{flex-direction:column;text-align:center;gap:16px}.stats-grid{grid-template-columns:repeat(2,1fr)}.container{padding:16px 14px}}
 </style>
 </head>
 <body>
 
-<!-- HEADER -->
 <div class="header">
-  <div class="logo">
-    <div class="logo-icon">U</div>
-    <div><h1>Upskillize</h1><p>AI Case Study Review Agent</p></div>
+  <div class="header-brand">
+    <div class="header-logo">A</div>
+    <div>
+      <h1><span>AiRev</span> · Case Study Review</h1>
+      <div class="header-sub">Powered by Upskillize AI Agent</div>
+    </div>
   </div>
   <div class="header-right">
-    <div class="health-badge"><div class="health-dot" id="healthDot" style="background:#ef4444"></div><span id="healthText">Checking...</span></div>
-    <button class="settings-btn" onclick="document.getElementById('settingsBar').classList.toggle('hidden')">Settings</button>
-  </div>
-</div>
-
-<!-- SETTINGS -->
-<div class="settings-bar hidden" id="settingsBar">
-  <label>Agent URL:</label><input id="agentUrl" value="http://localhost:7860" style="width:280px">
-  <label>API Key:</label><input id="apiKey" type="password" value="" style="width:240px" placeholder="paste your AGENT_API_KEY">
-  <button class="test-btn" onclick="checkHealth()">Test Connection</button>
-</div>
-
-<!-- TABS -->
-<div class="tabs">
-  <button class="tab-btn active" onclick="switchTab('submit',this)">Submit Answer</button>
-  <button class="tab-btn" onclick="switchTab('feedback',this)">View Feedback</button>
-  <button class="tab-btn" onclick="switchTab('progress',this)">Student Progress</button>
-  <button class="tab-btn" onclick="switchTab('mentor',this)">Mentor Dashboard</button>
-</div>
-
-<div class="main">
-
-<!-- SUBMIT TAB -->
-<div id="tab-submit">
-  <div class="section-title">Submit Case Study Answer</div>
-  <div class="section-sub">Write your analysis or upload a PDF/image to get instant AI feedback</div>
-
-  <div class="row">
-    <div class="input-group"><label>Case Study ID</label><input type="number" id="caseStudyId" value="1"></div>
-    <div class="input-group"><label>Student ID</label><input type="number" id="studentId" value="1"></div>
-  </div>
-
-  <!-- Submission Type Toggle -->
-  <div class="toggle-group">
-    <button class="toggle-btn active" id="toggleText" onclick="setMode('text')">Write Answer</button>
-    <button class="toggle-btn" id="toggleFile" onclick="setMode('file')">Upload PDF / Image</button>
-  </div>
-
-  <!-- Text Input -->
-  <div id="textMode">
-    <div class="input-group">
-      <label>Your Answer</label>
-      <textarea id="answerText" rows="14" placeholder="Write your detailed case study analysis here...&#10;&#10;Tip: Cover key concepts, use real-world examples, and structure your answer with clear paragraphs." oninput="updateWordCount()"></textarea>
-      <div id="wordCount" style="text-align:right;font-size:13px;font-weight:600;margin-top:6px;color:var(--warn)">0 words</div>
-    </div>
-  </div>
-
-  <!-- File Upload -->
-  <div id="fileMode" class="hidden">
-    <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()" ondragover="event.preventDefault();this.classList.add('active')" ondragleave="this.classList.remove('active')" ondrop="event.preventDefault();this.classList.remove('active');handleFile(event.dataTransfer.files[0])">
-      <div class="upload-icon">📄</div>
-      <div class="upload-text">Click to upload or <strong>drag & drop</strong></div>
-      <div style="font-size:12px;color:var(--text-dim);margin-top:6px">Supports PDF, JPG, PNG (max 10MB)</div>
-    </div>
-    <input type="file" id="fileInput" accept=".pdf,.jpg,.jpeg,.png,.webp" style="display:none" onchange="handleFile(this.files[0])">
-    <div id="filePreview" class="hidden"></div>
-    <div style="margin-top:12px;font-size:13px;color:var(--text-dim)">Note: The AI will extract text from your file and review it. For best results, ensure text is clear and readable.</div>
-  </div>
-
-  <div style="margin-top:16px">
-    <button class="btn-primary" id="submitBtn" onclick="submitAnswer()">Submit & Get AI Review</button>
-  </div>
-</div>
-
-<!-- FEEDBACK TAB -->
-<div id="tab-feedback" class="hidden">
-  <div id="feedbackContent">
-    <div style="text-align:center;padding:80px 20px;color:var(--text-dim)">
-      <div style="font-size:48px;margin-bottom:16px">📝</div>
-      <div style="font-size:18px;font-weight:700;margin-bottom:8px;color:var(--text)">No feedback yet</div>
-      <div>Submit a case study answer first to see your AI feedback here.</div>
+    <a href="https://lms.upskillize.com/student/assignments" class="lms-link" target="_blank">← Back to LMS</a>
+    <div style="display:flex;align-items:center;gap:6px">
+      <div class="header-dot" id="statusDot"></div>
+      <span class="header-status" id="statusText">Connecting...</span>
     </div>
   </div>
 </div>
 
-<!-- PROGRESS TAB -->
-<div id="tab-progress" class="hidden">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:12px">
-    <div class="section-title">Student Progress</div>
-    <div style="display:flex;gap:8px;align-items:center">
-      <input type="number" id="progressStudentId" value="1" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:9px 14px;width:110px;font-size:14px">
-      <button class="btn-sm btn-teal" style="padding:9px 18px;border-radius:8px" onclick="loadProgress()">Load</button>
-    </div>
+<div class="container">
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('review')" id="tab-review">📝 Review</button>
+    <button class="tab" onclick="switchTab('history')" id="tab-history">📊 History</button>
   </div>
-  <div id="progressContent"><div style="text-align:center;padding:60px;color:var(--text-dim)">Enter Student ID and click Load</div></div>
-</div>
-
-<!-- MENTOR TAB -->
-<div id="tab-mentor" class="hidden">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:12px">
-    <div class="section-title">Mentor Dashboard</div>
-    <div style="display:flex;gap:8px;align-items:center">
-      <input type="number" id="mentorCaseStudyId" value="1" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:9px 14px;width:130px;font-size:14px">
-      <button class="btn-sm btn-teal" style="padding:9px 18px;border-radius:8px" onclick="loadMentor()">Load Dashboard</button>
+  <div id="panel-review">
+    <div id="step-pick">
+      <div class="card"><div class="card-head"><span class="card-title">📚 Select Case Study</span><span style="font-size:12px;color:var(--subtle)" id="csCount"></span></div>
+      <div class="card-body" id="csList"><div class="loading-center"><div class="spinner"></div><div class="loading-msg">Loading case studies...</div></div></div></div>
     </div>
+    <div id="step-answer" style="display:none">
+      <div class="card">
+        <div class="card-head"><span class="card-title" id="selectedCsTitle">Case Study</span><button class="btn btn-ghost" onclick="goBack()" style="padding:6px 12px;font-size:12px">← Change</button></div>
+        <div class="card-body">
+          <div id="selectedCsQuestions"></div>
+          <label class="form-label">Your Answer / Analysis</label>
+          <textarea class="form-textarea" id="answerText" placeholder="Write your case study analysis here. Address all the questions above. Be thorough and specific..."></textarea>
+          <div class="word-count" id="wordCount">0 words</div>
+          <div style="display:flex;gap:10px;margin-top:16px">
+            <button class="btn btn-primary" onclick="submitReview()" id="submitBtn" style="flex:1;justify-content:center">🤖 Submit for AI Review</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div id="step-loading" style="display:none"><div class="card"><div class="card-body"><div class="loading-center"><div class="spinner"></div><div class="loading-msg" id="loadingMsg">AI is reviewing your answer...</div><div style="font-size:12px;color:var(--subtle)">This takes 15-30 seconds</div></div></div></div></div>
+    <div id="step-results" style="display:none"></div>
   </div>
-  <div id="mentorContent"><div style="text-align:center;padding:60px;color:var(--text-dim)">Enter Case Study ID and click Load Dashboard</div></div>
+  <div id="panel-history" style="display:none"></div>
 </div>
 
-</div>
-
-<div class="footer">Upskillize AI Agent v1.0 &mdash; Bridging Academia and Industry &mdash; upskillize.com</div>
+<div class="footer">Powered by Upskillize AiRev Agent · AI-assisted review for educational purposes</div>
 
 <script>
-const $=id=>document.getElementById(id);
-const url=()=>$('agentUrl').value.replace(/\/$/,'');
-const key=()=>$('apiKey').value;
-const headers=()=>({'x-api-key':key(),'Content-Type':'application/json'});
+const API = location.origin;
+const P = new URLSearchParams(location.search);
+let studentId = parseInt(P.get('student_id')||P.get('sid'))||1;
+let preSelectCs = parseInt(P.get('case_study_id')||P.get('csid'))||null;
+let answerFromLms = P.get('answer')||'';
+let caseStudies=[], selectedCs=null;
 
-function gc(s){return s>=80?'var(--teal)':s>=60?'var(--indigo)':s>=40?'var(--warn)':'var(--danger)'}
-function gb(s){return s>=80?'var(--teal-light)':s>=60?'var(--indigo-light)':s>=40?'var(--warn-soft)':'var(--danger-soft)'}
-function sc(st){return st==='completed'?'var(--teal)':st==='needs_help'?'var(--danger)':'var(--warn)'}
+document.addEventListener('DOMContentLoaded',()=>{
+  loadCaseStudies();
+  document.getElementById('answerText').addEventListener('input',updateWordCount);
+  if(answerFromLms){document.getElementById('answerText').value=answerFromLms;updateWordCount();}
+});
 
-function switchTab(n,btn){document.querySelectorAll('[id^="tab-"]').forEach(t=>t.classList.add('hidden'));document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));$('tab-'+n).classList.remove('hidden');btn.classList.add('active')}
-function updateWordCount(){const t=$('answerText').value.trim();const c=t?t.split(/\s+/).length:0;$('wordCount').textContent=c+' words';$('wordCount').style.color=c>=300?'var(--teal)':'var(--warn)'}
-
-// Upload mode toggle
-let currentMode='text';
-let uploadedFile=null;
-
-function setMode(mode){
-  currentMode=mode;
-  $('toggleText').className='toggle-btn'+(mode==='text'?' active':'');
-  $('toggleFile').className='toggle-btn'+(mode==='file'?' active':'');
-  $('textMode').className=mode==='text'?'':'hidden';
-  $('fileMode').className=mode==='file'?'':'hidden';
+function switchTab(t){
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+  document.getElementById('tab-'+t).classList.add('active');
+  document.getElementById('panel-review').style.display=t==='review'?'block':'none';
+  document.getElementById('panel-history').style.display=t==='history'?'block':'none';
+  if(t==='history')loadHistory();
 }
 
-function handleFile(file){
-  if(!file)return;
-  const maxSize=10*1024*1024;
-  if(file.size>maxSize){alert('File too large. Maximum 10MB.');return}
-  const allowed=['application/pdf','image/jpeg','image/png','image/webp'];
-  if(!allowed.includes(file.type)){alert('Only PDF, JPG, PNG files are supported.');return}
-  uploadedFile=file;
-  const icon=file.type==='application/pdf'?'📄':'🖼️';
-  const size=(file.size/1024).toFixed(1)+'KB';
-  $('filePreview').innerHTML='<div class="file-preview">'+icon+' <span class="name">'+file.name+' ('+size+')</span><span class="remove" onclick="removeFile()">&times;</span></div>';
-  $('filePreview').classList.remove('hidden');
-}
-
-function removeFile(){uploadedFile=null;$('filePreview').classList.add('hidden');$('filePreview').innerHTML='';$('fileInput').value=''}
-
-// Extract text from image using canvas
-function extractTextFromImage(file){
-  return new Promise((resolve)=>{
-    const reader=new FileReader();
-    reader.onload=function(e){
-      resolve('[Image uploaded: '+file.name+'. The AI agent will process this image. For now, please also type your answer in the text box for best results.]');
-    };
-    reader.readAsDataURL(file);
-  });
-}
-
-// Read PDF as text (basic extraction)
-function extractTextFromPDF(file){
-  return new Promise((resolve)=>{
-    const reader=new FileReader();
-    reader.onload=function(e){
-      const text=e.target.result;
-      // Try to extract readable text from PDF
-      const matches=text.match(/[\x20-\x7E\u00A0-\u024F]{20,}/g);
-      if(matches&&matches.length>0){resolve(matches.join(' '))}
-      else{resolve('[PDF uploaded: '+file.name+'. Please also type a summary of your answer in the text box for best results.]')}
-    };
-    reader.readAsText(file);
-  });
-}
-
-// Health check
-async function checkHealth(){
-  try{const r=await fetch(url()+'/health');const d=await r.json();$('healthDot').style.background='var(--accent)';$('healthText').textContent='Online ('+d.aiProvider+')'}
-  catch{$('healthDot').style.background='var(--danger)';$('healthText').textContent='Offline'}}
-checkHealth();
-
-// Submit
-async function submitAnswer(){
-  let answer=$('answerText').value.trim();
-
-  // If file mode, extract text from file
-  if(currentMode==='file'&&uploadedFile){
-    const btn=$('submitBtn');btn.disabled=true;btn.innerHTML='<span class="spinner"></span> Extracting text from file...';
-    if(uploadedFile.type==='application/pdf'){answer=await extractTextFromPDF(uploadedFile)}
-    else{answer=await extractTextFromImage(uploadedFile)}
-    if(!answer||answer.length<20){btn.disabled=false;btn.innerHTML='Submit & Get AI Review';alert('Could not extract enough text. Please type your answer in the text box.');setMode('text');return}
-  }
-
-  if(!answer){alert('Please write your answer or upload a file.');return}
-  if(!key()){alert('Click Settings and paste your API Key.');return}
-
-  const btn=$('submitBtn');btn.disabled=true;btn.innerHTML='<span class="spinner"></span> AI is reviewing... (30-60 seconds)';
-
+async function loadCaseStudies(){
   try{
-    const r=await fetch(url()+'/api/review/submit',{method:'POST',headers:headers(),body:JSON.stringify({caseStudyId:Number($('caseStudyId').value),studentId:Number($('studentId').value),answerText:answer})});
+    const r=await fetch(API+'/api/review/case-studies');
     const d=await r.json();
-    if(d.success&&d.feedback){renderFeedback(d);switchTab('feedback',document.querySelectorAll('.tab-btn')[1])}
-    else{alert('Error: '+(d.error||d.detail||JSON.stringify(d)))}
-  }catch(e){alert('Failed: '+e.message)}
-  btn.disabled=false;btn.innerHTML='Submit & Get AI Review';
+    caseStudies=d.caseStudies||[];
+    renderCsList();
+    document.getElementById('statusText').textContent='Connected';
+    document.getElementById('statusDot').style.background='#2d6a2d';
+    if(preSelectCs){const cs=caseStudies.find(c=>c.id===preSelectCs);if(cs)selectCs(cs);}
+  }catch{
+    document.getElementById('csList').innerHTML='<div class="empty"><div class="empty-icon">⚠️</div><p>Could not connect to AiRev agent</p><p style="font-size:12px;margin-top:8px">The agent may be sleeping. Try refreshing.</p><button class="btn btn-ghost" onclick="loadCaseStudies()" style="margin-top:14px">🔄 Retry</button></div>';
+    document.getElementById('statusText').textContent='Offline';
+    document.getElementById('statusDot').style.background='#c0392b';
+  }
 }
 
-function renderFeedback(data){
-  const fb=data.feedback,sub=data.submission||{},s=fb.score||0,g=fb.grade||'?';
-  let h='<div class="card" style="display:flex;align-items:center;gap:28px;flex-wrap:wrap"><div class="score-circle" style="background:'+gb(s)+';border:4px solid '+gc(s)+'"><div class="num" style="color:'+gc(s)+'">'+s+'</div><div class="lbl">out of 100</div></div><div style="flex:1"><div style="font-size:38px;font-weight:800;color:'+gc(s)+'">'+g+'</div><div style="font-size:14px;color:var(--text-muted);margin-top:4px">'+(fb.summary||'')+'</div><div style="font-size:12px;color:var(--text-dim);margin-top:8px">Attempt #'+(sub.attemptNumber||1)+(data.processingTimeMs?' | '+(data.processingTimeMs/1000).toFixed(1)+'s':'')+'</div></div></div>';
-
-  if(fb.rubricScores&&fb.rubricScores.length){h+='<div class="card"><div class="card-title">Rubric Breakdown</div>';fb.rubricScores.forEach(r=>{h+='<div style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;margin-bottom:4px"><span style="font-size:13px;font-weight:600">'+r.criteria+'</span><span style="font-size:13px;font-weight:700;color:'+gc(r.percentage)+'">'+r.score+'/'+r.maxScore+'</span></div><div class="progress-bar"><div class="progress-fill" style="background:'+gc(r.percentage)+';width:'+r.percentage+'%"></div></div></div>'});h+='</div>'}
-
-  h+='<div class="row">';
-  if(fb.strengths&&fb.strengths.length){h+='<div class="card" style="border-left:4px solid var(--teal)"><div class="card-title" style="color:var(--teal)">Strengths</div>';fb.strengths.forEach(s=>{h+='<div style="font-size:13px;margin-bottom:8px;padding-left:12px;border-left:2px solid var(--teal-light)">'+s+'</div>'});h+='</div>'}
-  if(fb.improvements&&fb.improvements.length){h+='<div class="card" style="border-left:4px solid var(--warn)"><div class="card-title" style="color:var(--warn)">Areas to Improve</div>';fb.improvements.forEach(s=>{h+='<div style="font-size:13px;margin-bottom:8px;padding-left:12px;border-left:2px solid var(--warn-soft)">'+s+'</div>'});h+='</div>'}
-  h+='</div>';
-
-  if(fb.missingConcepts&&fb.missingConcepts.length){h+='<div class="card" style="border-left:4px solid var(--danger)"><div class="card-title" style="color:var(--danger)">Missing Key Concepts</div><div>';fb.missingConcepts.forEach(c=>{h+='<span class="chip chip-red">'+c+'</span>'});h+='</div></div>'}
-  if(fb.coveredConcepts&&fb.coveredConcepts.length){h+='<div class="card" style="border-left:4px solid var(--teal)"><div class="card-title" style="color:var(--teal)">Concepts Covered</div><div>';fb.coveredConcepts.forEach(c=>{h+='<span class="chip chip-green">'+c+'</span>'});h+='</div></div>'}
-  if(fb.detailedFeedback){h+='<div class="card"><div class="card-title">Detailed Feedback</div><p style="font-size:14px;line-height:1.8;white-space:pre-wrap">'+fb.detailedFeedback+'</p></div>'}
-  if(fb.encouragement){h+='<div class="alert-teal"><p style="font-size:15px;font-weight:600;line-height:1.7;color:var(--teal-dark)">'+fb.encouragement+'</p></div>'}
-  $('feedbackContent').innerHTML=h;
+function renderCsList(){
+  const el=document.getElementById('csList');
+  document.getElementById('csCount').textContent=caseStudies.length+' available';
+  if(!caseStudies.length){el.innerHTML='<div class="empty"><div class="empty-icon">📋</div><p>No case studies published yet</p></div>';return;}
+  el.innerHTML=caseStudies.map(cs=>{
+    const d=cs.difficulty||'Medium';
+    const dc=d==='Hard'?'var(--red)':d==='Medium'?'var(--gold)':'var(--green)';
+    const db=d==='Hard'?'var(--red-s)':d==='Medium'?'var(--gold-s)':'var(--green-s)';
+    return`<div class="cs-item" onclick='selectCs(${JSON.stringify(cs).replace(/'/g,"\\'")})'><div style="display:flex;gap:6px;flex-wrap:wrap"><span class="cs-tag" style="background:var(--blue-s);color:var(--blue)">CASE STUDY</span><span class="cs-tag" style="background:${db};color:${dc}">${d}</span>${cs.industry?`<span class="cs-tag" style="background:var(--bg);color:var(--muted)">${cs.industry}</span>`:''}</div><div class="cs-title">${cs.title}</div><div class="cs-desc">${cs.description||''}</div><div class="cs-meta">${cs.company_name?`<span>🏢 ${cs.company_name}</span>`:''}<span>📝 ${cs.word_limit||200} words</span><span>⭐ ${cs.total_marks||100} marks</span>${cs.due_date?`<span>📅 Due: ${new Date(cs.due_date).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'})}</span>`:''}</div></div>`;
+  }).join('');
 }
 
-async function loadProgress(){
-  if(!key())return alert('Enter API Key in Settings.');
-  $('progressContent').innerHTML='<div style="text-align:center;padding:40px"><span class="spinner"></span> Loading...</div>';
-  try{const r=await fetch(url()+'/api/review/student-progress/'+$('progressStudentId').value,{headers:headers()});const d=await r.json();
-  if(d.success){const st=d.student.overallStats;let h='<div class="stats-grid">';
-  [{l:'Avg Current',v:st.averageCurrentScore,c:'var(--indigo)'},{l:'Avg Best',v:st.averageBestScore,c:'var(--teal)'},{l:'Completed',v:st.completedCount,c:'var(--teal)'},{l:'Needs Help',v:st.needsHelpCount,c:'var(--danger)'}].forEach(s=>{h+='<div class="stat-card"><div class="num" style="color:'+s.c+'">'+s.v+'</div><div class="lbl">'+s.l+'</div></div>'});h+='</div>';
-  d.student.caseStudies.forEach(cs=>{h+='<div class="card" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px"><div style="flex:1"><div style="font-weight:700;font-size:15px;margin-bottom:4px">'+cs.title+'</div><div style="font-size:12px;color:var(--text-dim)">Attempts: '+cs.totalAttempts+' | <span style="color:'+sc(cs.status)+';font-weight:600">'+(cs.status||'').replace('_',' ').toUpperCase()+'</span></div></div><div style="display:flex;gap:18px"><div style="text-align:center"><div style="font-size:22px;font-weight:800;color:var(--indigo)">'+cs.currentScore+'</div><div style="font-size:10px;color:var(--text-dim)">Current</div></div><div style="text-align:center"><div style="font-size:22px;font-weight:800;color:var(--teal)">'+cs.bestScore+'</div><div style="font-size:10px;color:var(--text-dim)">Best</div></div><div style="text-align:center"><div style="font-size:22px;font-weight:800;color:'+(cs.improvement>0?'var(--teal)':'var(--text-dim)')+'\">'+(cs.improvement>0?'+':'')+cs.improvement+'</div><div style="font-size:10px;color:var(--text-dim)">Gain</div></div></div></div>'});
-  $('progressContent').innerHTML=h}else{$('progressContent').innerHTML='<div style="text-align:center;padding:60px;color:var(--text-dim)">No data found.</div>'}}catch(e){$('progressContent').innerHTML='<div style="text-align:center;padding:60px;color:var(--danger)">Error: '+e.message+'</div>'}}
+function selectCs(cs){
+  selectedCs=cs;
+  document.getElementById('selectedCsTitle').textContent=cs.title;
+  let qH='';
+  try{const qs=typeof cs.questions==='string'?JSON.parse(cs.questions):cs.questions;
+    if(Array.isArray(qs)&&qs.length)qH='<div style="background:var(--gold-s);border:1px solid var(--gold-b);border-radius:10px;padding:14px;margin-bottom:14px"><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--gold);margin-bottom:8px">Questions to Address</div>'+qs.map((q,i)=>`<div style="font-size:13px;color:#5a4500;margin-bottom:4px;padding-left:10px;border-left:2px solid var(--gold)"><strong>Q${i+1}.</strong> ${q}</div>`).join('')+'</div>';
+  }catch{}
+  document.getElementById('selectedCsQuestions').innerHTML=qH;
+  document.getElementById('step-pick').style.display='none';
+  document.getElementById('step-answer').style.display='block';
+  document.getElementById('answerText').focus();
+}
 
-async function loadMentor(){
-  if(!key())return alert('Enter API Key in Settings.');
-  $('mentorContent').innerHTML='<div style="text-align:center;padding:40px"><span class="spinner"></span> Loading...</div>';
-  try{const r=await fetch(url()+'/api/review/mentor-dashboard/'+$('mentorCaseStudyId').value,{headers:headers()});const d=await r.json();
-  if(d.success){const cs=d.dashboard.classStats;let h='<div class="stats-grid">';
-  [{l:'Submissions',v:cs.totalSubmissions,c:'var(--indigo)'},{l:'Avg Score',v:cs.averageScore,c:'var(--indigo)'},{l:'Above 70%',v:cs.above70,c:'var(--teal)'},{l:'Below 40%',v:cs.below40,c:'var(--danger)'},{l:'Flagged',v:cs.flaggedCount,c:'var(--warn)'},{l:'Pending',v:cs.pendingApproval,c:'var(--warn)'}].forEach(s=>{h+='<div class="stat-card"><div class="num" style="color:'+s.c+'">'+s.v+'</div><div class="lbl">'+s.l+'</div></div>'});h+='</div>';
-  if(d.dashboard.needsHelp&&d.dashboard.needsHelp.length){h+='<div class="alert-red"><div style="font-size:15px;font-weight:700;color:var(--danger);margin-bottom:8px">Students Needing Attention</div>';d.dashboard.needsHelp.forEach(s=>{h+='<div style="font-size:13px;margin-bottom:4px">Student #'+s.studentId+' - Score: <strong style="color:var(--danger)">'+s.score+'</strong></div>'});h+='</div>'}
-  if(d.dashboard.students&&d.dashboard.students.length){h+='<div class="card"><div class="card-title">All Submissions</div><div style="overflow-x:auto"><table class="data-table"><thead><tr>';
-  ['Student','Score','Grade','Current','Best','Attempts','Status','Flagged'].forEach(th=>{h+='<th>'+th+'</th>'});h+='</tr></thead><tbody>';
-  d.dashboard.students.forEach(s=>{h+='<tr><td>#'+s.studentId+'</td><td style="font-weight:700;color:'+gc(s.aiScore)+'">'+s.aiScore+'</td><td><span class="chip" style="background:'+gb(s.aiScore)+';color:'+gc(s.aiScore)+'">'+(s.grade||'-')+'</span></td><td style="color:var(--indigo);font-weight:600">'+(s.currentScore!=null?s.currentScore:'-')+'</td><td style="color:var(--teal);font-weight:600">'+(s.bestScore!=null?s.bestScore:'-')+'</td><td>'+(s.attempts||1)+'</td><td><span style="font-size:11px;font-weight:600;color:'+sc(s.status)+'">'+(s.status||'').replace('_',' ').toUpperCase()+'</span></td><td>'+(s.isFlagged?'<span style="color:var(--danger);font-weight:700">Yes</span>':'<span style="color:var(--text-dim)">No</span>')+'</td></tr>'});
-  h+='</tbody></table></div></div>'}
-  $('mentorContent').innerHTML=h}else{$('mentorContent').innerHTML='<div style="text-align:center;padding:60px;color:var(--text-dim)">No data found.</div>'}}catch(e){$('mentorContent').innerHTML='<div style="text-align:center;padding:60px;color:var(--danger)">Error: '+e.message+'</div>'}}
+function goBack(){
+  document.getElementById('step-pick').style.display='block';
+  document.getElementById('step-answer').style.display='none';
+  document.getElementById('step-results').style.display='none';
+  selectedCs=null;
+}
+
+function updateWordCount(){
+  const t=document.getElementById('answerText').value.trim();
+  document.getElementById('wordCount').textContent=(t?t.split(/\s+/).filter(Boolean).length:0)+' words';
+}
+
+async function submitReview(){
+  const t=document.getElementById('answerText').value.trim();
+  if(!t||t.split(/\s+/).length<10){alert('Please write at least 10 words.');return;}
+  document.getElementById('step-answer').style.display='none';
+  document.getElementById('step-loading').style.display='block';
+  const msgs=['Analyzing your answer...','Checking rubric criteria...','Evaluating key concepts...','Generating feedback...'];
+  let mi=0;const iv=setInterval(()=>{mi++;if(mi<msgs.length)document.getElementById('loadingMsg').textContent=msgs[mi];},5000);
+  try{
+    const r=await fetch(API+'/api/review/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({caseStudyId:selectedCs.id,studentId,answerText:t})});
+    const d=await r.json();clearInterval(iv);
+    document.getElementById('step-loading').style.display='none';
+    if(d.success&&d.feedback)renderResults(d);
+    else{alert('Review failed: '+(d.detail||d.message||'Unknown error'));document.getElementById('step-answer').style.display='block';}
+  }catch{clearInterval(iv);document.getElementById('step-loading').style.display='none';alert('Connection error.');document.getElementById('step-answer').style.display='block';}
+}
+
+function renderResults(data){
+  const fb=data.feedback,score=fb.score||0,grade=fb.grade||'-',emoji=fb.scoreEmoji||'📝';
+  const circ=2*Math.PI*46,off=circ-(score/100)*circ;
+  const sc=score>=70?'#2d6a2d':score>=40?'#d97706':'#c0392b';
+  const gl={A:'Excellent',B:'Good','B+':'Good','B-':'Above Average',C:'Average',D:'Below Average',F:'Needs Improvement'};
+  let h=`<div class="score-hero"><div class="score-ring"><svg width="110" height="110" viewBox="0 0 110 110"><circle cx="55" cy="55" r="46" stroke="rgba(255,255,255,.12)" stroke-width="8" fill="none"/><circle cx="55" cy="55" r="46" stroke="${sc}" stroke-width="8" fill="none" stroke-dasharray="${circ}" stroke-dashoffset="${off}" stroke-linecap="round" style="transition:stroke-dashoffset 1s"/></svg><div class="score-ring-text"><div class="score-ring-num">${score}</div><div class="score-ring-label">/100</div></div></div><div><div style="display:flex;align-items:center;gap:10px;margin-bottom:8px"><span class="score-emoji">${emoji}</span><span class="score-grade">${grade}</span><span class="grade-label">${gl[grade]||gl[grade?.charAt(0)]||'Reviewed'}</span></div><div class="score-summary">${fb.summary||''}</div><div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><span style="font-size:11px;padding:3px 10px;border-radius:20px;background:rgba(255,255,255,.1);color:rgba(255,255,255,.6)">📝 ${fb.wordCount||0} words</span>${fb.humanLikelihoodPercent!=null?`<span style="font-size:11px;padding:3px 10px;border-radius:20px;background:rgba(45,106,45,.2);color:#6dbc6d">👤 Human: ${fb.humanLikelihoodPercent}%</span>`:``}${data.processingTimeMs?`<span style="font-size:11px;padding:3px 10px;border-radius:20px;background:rgba(255,255,255,.1);color:rgba(255,255,255,.5)">⏱ ${(data.processingTimeMs/1000).toFixed(1)}s</span>`:``}</div></div></div>`;
+  if(fb.rubricScores?.length){h+=`<div class="card"><div class="card-head"><span class="card-title">⚙️ Rubric Breakdown</span></div><div class="card-body">`;fb.rubricScores.forEach(r=>{const p=r.maxScore>0?Math.round(r.score/r.maxScore*100):0;const c=p>=70?'var(--green)':p>=40?'var(--gold)':'var(--red)';h+=`<div class="rubric-item"><div class="rubric-name">${r.criteria}</div><div class="rubric-bar"><div class="rubric-bar-fill" style="width:${p}%;background:${c}"></div></div><div class="rubric-score" style="color:${c}">${r.score}/${r.maxScore}</div><div class="rubric-pct">${p}%</div></div>`;});h+=`</div></div>`;}
+  if(fb.improvements?.length){h+=`<div class="fb-section" style="background:var(--red-s);border:1px solid #f7c1c1"><h3 style="color:var(--red)">❌ What Went Wrong</h3>`;fb.improvements.forEach(i=>{h+=`<div class="fb-item fb-red">${i}</div>`;});if(fb.missingConcepts?.length){h+=`<div style="margin-top:10px;font-size:11px;font-weight:700;color:var(--red);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">MISSING:</div>`;fb.missingConcepts.forEach(c=>{h+=`<span class="concept-tag concept-missing">${c}</span>`;});}h+=`</div>`;}
+  if(fb.strengths?.length){h+=`<div class="fb-section" style="background:var(--green-s);border:1px solid #b8d9b8"><h3 style="color:var(--green)">💡 What Could Be Better</h3>`;fb.strengths.forEach(s=>{h+=`<div class="fb-item fb-green">${s}</div>`;});if(fb.coveredConcepts?.length){h+=`<div style="margin-top:10px;font-size:11px;font-weight:700;color:var(--green);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">YOU COVERED WELL:</div>`;fb.coveredConcepts.forEach(c=>{h+=`<span class="concept-tag concept-covered">${c}</span>`;});}h+=`</div>`;}
+  if(fb.suggestions?.length){h+=`<div class="fb-section" style="background:var(--blue-s);border:1px solid #c8d8f0"><h3 style="color:var(--blue)">🚀 Improvement Areas</h3>`;fb.suggestions.forEach(s=>{h+=`<div class="fb-item fb-blue">📖 ${s}</div>`;});h+=`</div>`;}
+  if(fb.encouragement){h+=`<div class="mentor-note"><h4>👋 From Your AI Mentor</h4><p>${fb.encouragement}</p></div>`;}
+  if(fb.isGarbage&&fb.garbageWarning){h+=`<div style="background:var(--red-s);border:2px solid var(--red);border-radius:12px;padding:16px;margin-bottom:16px"><h4 style="color:var(--red);font-size:13px;font-weight:800;margin-bottom:6px">⚠️ Submission Flagged</h4><p style="font-size:13px;color:#8b1a1a;line-height:1.6">${fb.garbageWarning}</p></div>`;}
+  h+=`<div style="display:flex;gap:10px;margin-top:20px;flex-wrap:wrap"><button class="btn btn-ghost" onclick="goBack()">← Back</button><button class="btn btn-primary" onclick="reAnalyze()">🔄 Re-analyse</button><button class="btn btn-ghost" onclick="switchTab('history')">📊 View History</button></div>`;
+  document.getElementById('step-results').innerHTML=h;
+  document.getElementById('step-results').style.display='block';
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+
+function reAnalyze(){document.getElementById('step-results').style.display='none';document.getElementById('step-answer').style.display='block';}
+
+async function loadHistory(){
+  const p=document.getElementById('panel-history');
+  p.innerHTML='<div class="card"><div class="card-body"><div class="loading-center"><div class="spinner"></div><div class="loading-msg">Loading history...</div></div></div></div>';
+  try{
+    const r=await fetch(API+'/api/review/student-progress/'+studentId);
+    const d=await r.json();
+    const items=d.student?.caseStudies||[];
+    if(!items.length){p.innerHTML='<div class="card"><div class="card-body"><div class="empty"><div class="empty-icon">📊</div><p>No reviews yet</p><p style="font-size:12px;margin-top:6px">Submit a case study for your first AI review</p></div></div></div>';return;}
+    const scores=items.map(i=>i.ai_score||i.score||0);
+    const avg=Math.round(scores.reduce((a,b)=>a+b,0)/scores.length);
+    const best=Math.max(...scores);
+    let h=`<div class="stats-grid">${[{l:'Total Reviews',v:items.length,c:'var(--navy)'},{l:'Average Score',v:avg+'%',c:avg>=70?'var(--green)':'var(--gold)'},{l:'Best Score',v:best+'%',c:'var(--green)'},{l:'Latest Score',v:scores[0]+'%',c:scores[0]>=70?'var(--green)':'var(--red)'}].map(m=>`<div class="stat-card" style="border-top:3px solid ${m.c}"><div class="stat-label">${m.l}</div><div class="stat-value">${m.v}</div></div>`).join('')}</div><div class="card"><div class="card-head"><span class="card-title">📋 Review History</span><span style="font-size:12px;color:var(--subtle)">${items.length} reviews</span></div>`;
+    items.forEach((item,i)=>{const s=item.ai_score||item.score||0;const g=item.ai_grade||item.grade||'-';const c=s>=70?'var(--green)':s>=40?'var(--gold)':'var(--red)';const bg=s>=70?'var(--green-s)':s>=40?'var(--gold-s)':'var(--red-s)';h+=`<div class="hist-item"><div class="hist-score" style="border-color:${c};color:${c};background:${bg}">${s}</div><div style="flex:1"><div style="font-size:14px;font-weight:700;color:var(--navy)">Case Study #${item.case_study_id||(i+1)}</div><div style="font-size:12px;color:var(--muted)">Grade: ${g} · Attempt #${item.attempt_number||1}</div></div><div style="font-size:11px;color:var(--subtle)">${item.reviewed_at?new Date(item.reviewed_at).toLocaleDateString('en-IN',{day:'2-digit',month:'short'}):''}</div></div>`;});
+    h+='</div>';p.innerHTML=h;
+  }catch{p.innerHTML='<div class="card"><div class="card-body"><div class="empty"><div class="empty-icon">⚠️</div><p>Could not load history</p></div></div></div>';}
+}
 </script>
 </body>
 </html>
