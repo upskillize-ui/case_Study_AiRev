@@ -71,24 +71,43 @@ async def submit_and_review(req: SubmitAnswerRequest):
                   f"db_notes={'yes' if db_notes and not db_notes_is_description else 'no'}, "
                   f"frontend={'yes' if not frontend_is_description and not extracted else 'no'})")
         else:
-            # No real answer found anywhere — tell the student
-            print(f"⚠️  No real student answer found in DB or frontend")
+            # No real answer found — check WHY and give specific guidance
+            has_file = bool(prior.get("file_url"))
+            file_failed = has_file and not extracted
+            print(f"⚠️  No real student answer found (file={'failed' if file_failed else 'none'}, "
+                  f"notes={'description' if db_notes_is_description else 'empty'})")
             total_time = int((time.time() - start_time) * 1000)
+
+            if file_failed:
+                # PDF/file exists but couldn't be read (Cloudinary 401 etc.)
+                msg = (f"We found your uploaded file ({prior.get('file_name', 'PDF')}) but couldn't read it "
+                       f"due to access restrictions. Please also type or paste your answer in the notes/text box "
+                       f"when submitting, so the AI can review it.")
+                tips = [
+                    f"Your file '{prior.get('file_name', 'PDF')}' was found but the AI agent cannot download it (private storage).",
+                    "Please re-submit: click 'Submit Case Study' and PASTE your answer text in the notes box alongside the PDF.",
+                    "Tip: Copy the key sections from your PDF and paste them into the notes field.",
+                ]
+            else:
+                msg = ("We couldn't find your submitted answer. Please go back and submit your case study answer first "
+                       "(type your analysis in the notes box or upload a PDF), then click AiRev again.")
+                tips = [
+                    "Submit your answer via the 'Submit Case Study' button before requesting AI review.",
+                    "Type your analysis in the notes/text box — make sure it's your own work.",
+                    "If you uploaded a PDF, also paste the key points in the notes box.",
+                ]
+
             return {
                 "success": True,
-                "submission": {"submissionId": 0, "attemptNumber": 0},
+                "submission": {"submissionId": prior.get("id", 0), "attemptNumber": 0},
                 "feedback": {
                     "score": 0, "grade": "-", "scoreEmoji": "📝",
-                    "summary": "We couldn't find your submitted answer. Please go back and submit your case study answer first (type your analysis in the notes box or upload a PDF), then click AiRev again.",
-                    "rubricScores": [], "strengths": [], "improvements": [
-                        "Submit your answer via the 'Submit Case Study' button before requesting AI review.",
-                        "Type your analysis in the notes/text box — make sure it's your own work, not the case study description.",
-                        "If you uploaded a PDF, try pasting the key points in the notes box as well.",
-                    ],
+                    "summary": msg,
+                    "rubricScores": [], "strengths": [], "improvements": tips,
                     "missingConcepts": [], "coveredConcepts": [], "suggestions": [],
-                    "detailedFeedback": "No student answer detected. The system found the case study description but not your actual analysis.",
-                    "wordCount": 0, "wordCountMessage": "No answer text found.",
-                    "encouragement": "Don't worry! Just submit your answer first, then come back for AI review. 📝",
+                    "detailedFeedback": msg,
+                    "wordCount": 0, "wordCountMessage": "No readable answer text found.",
+                    "encouragement": "Just paste your answer in the notes box when submitting, then click AiRev again! 📝",
                     "aiLikelihoodPercent": 0, "humanLikelihoodPercent": 100,
                     "aiDetectionReason": "Not analysed.", "aiVerdict": "uncertain",
                     "isGarbage": False, "garbageWarning": "",
