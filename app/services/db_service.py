@@ -108,7 +108,12 @@ def get_latest_submission_file(case_study_id: int, student_id: int,
 
     Excludes the just-created row so we don't pick up the empty-text row
     that the AI agent itself just inserted.
+
+    If no match is found for the specific student, falls back to looking
+    for ANY submission with a file for this case study (handles student_id
+    mismatch between LMS and AiRev picker).
     """
+    # Try exact match first (student + case study)
     sql = (
         "SELECT id, file_url, file_name, notes "
         "FROM case_study_submissions "
@@ -122,6 +127,22 @@ def get_latest_submission_file(case_study_id: int, student_id: int,
     sql += "ORDER BY submitted_at DESC LIMIT 1"
 
     rows = query(sql, params)
+    if rows:
+        return rows[0]
+
+    # Fallback: any submission with a file for this case study
+    # (handles mismatch where LMS uses student_id=5 but AiRev sends student_id=1)
+    fallback_sql = (
+        "SELECT id, file_url, file_name, notes "
+        "FROM case_study_submissions "
+        "WHERE case_study_id = %s "
+        "AND file_url IS NOT NULL AND file_url <> '' "
+        "ORDER BY submitted_at DESC LIMIT 1"
+    )
+    rows = query(fallback_sql, (case_study_id,))
+    if rows:
+        print(f"📄 Note: found file via fallback (student_id mismatch: sent {student_id}, "
+              f"row belongs to student {rows[0].get('id', '?')})")
     return rows[0] if rows else None
 
 
