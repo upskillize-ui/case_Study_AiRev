@@ -363,3 +363,98 @@ def _build_garbage_response(submission, case_study, text, word_count, reason, st
             "processingTimeMs": int((time.time() - start_time) * 1000),
         },
     }
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# DEMO / TESTING ENDPOINTS — remove these after your demo
+# ═════════════════════════════════════════════════════════════════════════
+
+# ── GET /api/review/case-studies ──────────────────────────────────────────
+# Lists ALL published case studies (across all courses). Used by the AiRev
+# picker in the student dashboard.
+@router.get("/case-studies", tags=["demo"])
+async def list_all_published_case_studies():
+    from app.database import query
+    rows = query(
+        "SELECT id, course_id, title, description, company_name, industry, "
+        "difficulty, total_marks, due_date, word_limit "
+        "FROM case_studies WHERE status = 'published' ORDER BY created_at DESC"
+    )
+    return {"success": True, "caseStudies": rows}
+
+
+# ── GET /api/review/debug/seed-case-study ─────────────────────────────────
+# Inserts a rich, AI-ready case study into the DB so you can demo the agent
+# end-to-end without touching the LMS admin panel. Each call creates a new
+# row and returns its id. Optional query params let you customise.
+@router.get("/debug/seed-case-study", tags=["demo"])
+async def debug_seed_case_study(
+    title: str = "The Rise & Fall of Paytm: Regulatory Lessons for Indian FinTech",
+    course_id: int = 1,
+    faculty_id: int = 1,
+    company: str = "Paytm Payments Bank",
+    industry: str = "FinTech / Digital Banking",
+    difficulty: str = "Hard",
+):
+    from app.database import execute, query
+    import json as _json
+
+    description = (
+        "Paytm Payments Bank, launched in 2017, became one of India's most widely used "
+        "digital payment platforms, serving over 300 million users. By 2024, the Reserve "
+        "Bank of India (RBI) imposed severe operational restrictions on the bank after "
+        "persistent non-compliance issues — including concerns around KYC norms, related-"
+        "party transactions, and data-sharing with parent company One97 Communications. "
+        "The enforcement action wiped out more than 50% of Paytm's market capitalisation "
+        "within weeks and forced the company to migrate wallet balances to partner banks. "
+        "This case examines the regulatory, governance and operational decisions that led "
+        "to the crisis, and the broader lessons for India's rapidly scaling FinTech sector."
+    )
+    questions = [
+        "Analyse the root causes of RBI's action against Paytm Payments Bank. Which compliance failures were most critical and why?",
+        "Discuss the corporate governance lessons from this case. How should FinTech firms structure related-party transactions to avoid similar risks?",
+        "Recommend a regulatory roadmap a FinTech startup should follow in India to scale responsibly in the post-Paytm era (400-500 words).",
+    ]
+    rubric_criteria = [
+        {"name": "Analysis",        "points": 25},
+        {"name": "Recommendations", "points": 25},
+        {"name": "Research",        "points": 25},
+        {"name": "Presentation",    "points": 25},
+    ]
+    learning_objectives = (
+        "Understand how regulatory risk, corporate governance, and KYC compliance shape "
+        "scaling strategy in FinTech. Students should be able to connect policy decisions "
+        "to business outcomes and recommend a compliance-first growth model."
+    )
+
+    new_id = execute(
+        """INSERT INTO case_studies
+           (title, description, course_id, faculty_id, company_name, industry,
+            difficulty, word_limit, learning_objectives, reference_url,
+            questions, rubric_criteria, due_date, total_marks, status)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'published')""",
+        (
+            title, description, course_id, faculty_id, company, industry,
+            difficulty, 500, learning_objectives,
+            "https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx",
+            _json.dumps(questions), _json.dumps(rubric_criteria),
+            "2026-12-31", 100,
+        ),
+    )
+    row = query("SELECT id, title, status FROM case_studies WHERE id = %s", (new_id,))
+    return {
+        "success": True,
+        "message": f"Seeded demo case study #{new_id}. Pick it from the AiRev modal, "
+                   f"or POST to /api/review/submit with caseStudyId={new_id}.",
+        "case_study": row[0] if row else None,
+    }
+
+
+# ── DELETE /api/review/debug/case-study/{cid} ─────────────────────────────
+# Quickly remove a demo case study after testing. Uses soft delete (status).
+@router.delete("/debug/case-study/{cid}", tags=["demo"])
+async def debug_delete_case_study(cid: int):
+    from app.database import execute, query
+    execute("UPDATE case_studies SET status = 'deleted' WHERE id = %s", (cid,))
+    row = query("SELECT id, title, status FROM case_studies WHERE id = %s", (cid,))
+    return {"success": True, "case_study": row[0] if row else None}
