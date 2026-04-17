@@ -40,26 +40,46 @@ def _get_cloudinary_signed_url(file_url: str) -> str | None:
         )
 
         # Parse the public_id and resource_type from the URL
-        # URL formats:
-        #   https://res.cloudinary.com/CLOUD/raw/authenticated/v123/folder/file.pdf
-        #   https://res.cloudinary.com/CLOUD/raw/upload/v123/folder/file.pdf
-        #   https://res.cloudinary.com/CLOUD/image/upload/v123/folder/file.jpg
+        # URL format:
+        #   https://res.cloudinary.com/CLOUD/raw/authenticated/[transformations/]v123/folder/file.pdf
+        # Transformations contain ':' (e.g., fl_attachment:false, w_500:h_300)
+        # We need to skip them to get the real public_id
         import re as _re
-        pattern = rf"cloudinary\.com/{_re.escape(cloud_name)}/(\w+)/(authenticated|upload|private)/(?:v\d+/)?(.*)"
+
+        # Step 1: Extract resource_type and delivery_type
+        pattern = rf"cloudinary\.com/{_re.escape(cloud_name)}/(\w+)/(authenticated|upload|private)/(.*)"
         match = _re.search(pattern, file_url)
+        if not match:
+            pattern = rf"cloudinary\.com/[^/]+/(\w+)/(authenticated|upload|private)/(.*)"
+            match = _re.search(pattern, file_url)
 
         if not match:
-            # Try broader pattern
-            pattern2 = rf"cloudinary\.com/[^/]+/(\w+)/(authenticated|upload|private)/(?:v\d+/)?(.*)"
-            match = _re.search(pattern2, file_url)
-
-        if not match:
-            print(f"📄 Cloudinary: could not parse public_id from URL")
+            print(f"📄 Cloudinary: could not parse URL structure")
             return None
 
         resource_type = match.group(1)   # raw, image, video
         delivery_type = match.group(2)   # authenticated, upload, private
-        public_id     = match.group(3)   # folder/file.pdf
+        remainder     = match.group(3)   # everything after type/
+
+        # Step 2: Strip transformations (segments containing ':') and version (v followed by digits)
+        parts = remainder.split("/")
+        clean_parts = []
+        found_version = False
+        for part in parts:
+            if ":" in part:
+                continue  # skip transformations like fl_attachment:false
+            if _re.match(r"^v\d+$", part):
+                found_version = True
+                continue  # skip version like v1776406075
+            clean_parts.append(part)
+
+        public_id = "/".join(clean_parts)
+
+        if not public_id:
+            print(f"📄 Cloudinary: empty public_id after parsing")
+            return None
+
+        print(f"📄 Cloudinary: parsed public_id = {public_id}")
 
         # Generate signed URL
         signed_url, _ = cloudinary.utils.cloudinary_url(
