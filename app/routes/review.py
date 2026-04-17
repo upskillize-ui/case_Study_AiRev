@@ -458,3 +458,57 @@ async def debug_delete_case_study(cid: int):
     execute("UPDATE case_studies SET status = 'deleted' WHERE id = %s", (cid,))
     row = query("SELECT id, title, status FROM case_studies WHERE id = %s", (cid,))
     return {"success": True, "case_study": row[0] if row else None}
+
+
+# ── GET /api/review/debug/make-paytm/{cid} ────────────────────────────────
+# Converts an existing case study into the Paytm demo case study.
+@router.get("/debug/make-paytm/{cid}", tags=["demo"])
+async def debug_make_paytm(cid: int):
+    from app.database import execute, query
+    import json as _json
+
+    description = (
+        "Paytm Payments Bank, launched in 2017, became one of India's most widely used "
+        "digital payment platforms, serving over 300 million users. By 2024, the Reserve "
+        "Bank of India (RBI) imposed severe operational restrictions on the bank after "
+        "persistent non-compliance issues — including concerns around KYC norms, related-"
+        "party transactions, and data-sharing with parent company One97 Communications. "
+        "The enforcement action wiped out more than 50% of Paytm's market capitalisation "
+        "within weeks and forced the company to migrate wallet balances to partner banks. "
+        "This case examines the regulatory, governance and operational decisions that led "
+        "to the crisis, and the broader lessons for India's rapidly scaling FinTech sector."
+    )
+    questions = _json.dumps([
+        "Analyse the root causes of RBI's action against Paytm Payments Bank. Which compliance failures were most critical and why?",
+        "Discuss the corporate governance lessons from this case. How should FinTech firms structure related-party transactions?",
+        "Recommend a regulatory roadmap a FinTech startup should follow in India to scale responsibly (400-500 words).",
+    ])
+    rubric = _json.dumps([
+        {"name": "Analysis",        "points": 25},
+        {"name": "Recommendations", "points": 25},
+        {"name": "Research",        "points": 25},
+        {"name": "Presentation",    "points": 25},
+    ])
+
+    execute(
+        """UPDATE case_studies SET
+            title = %s, description = %s, company_name = %s, industry = %s,
+            difficulty = %s, word_limit = %s, learning_objectives = %s,
+            questions = %s, rubric_criteria = %s, status = 'published'
+           WHERE id = %s""",
+        (
+            "The Rise & Fall of Paytm: Regulatory Lessons for Indian FinTech",
+            description,
+            "Paytm Payments Bank",
+            "FinTech / Digital Banking",
+            "Hard",
+            500,
+            "Understand how regulatory risk, corporate governance, and KYC compliance shape "
+            "scaling strategy in FinTech.",
+            questions,
+            rubric,
+            cid,
+        ),
+    )
+    row = query("SELECT id, title, status FROM case_studies WHERE id = %s", (cid,))
+    return {"success": True, "case_study": row[0] if row else None}
