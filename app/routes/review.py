@@ -26,14 +26,20 @@ async def submit_and_review(req: SubmitAnswerRequest):
     word_count = count_words(cleaned)
 
     # ── Always look up the student's actual submission for this case study.
-    #    The frontend may send the case study description instead of the
-    #    student's real answer. We prefer: file content > DB notes > frontend text.
+    #    The frontend often sends the case study description instead of the
+    #    student's real answer. We detect this and use the DB submission instead.
     file_used = None
+    frontend_is_description = calculate_text_overlap(cleaned, case_study["description"]) > 50
+    if frontend_is_description:
+        print(f"⚠️  Frontend sent the case study description as answerText — ignoring it")
+
     prior = db_service.get_latest_submission_file(req.caseStudyId, req.studentId)
     if prior:
-        # Use the student's saved notes if they're more substantial than what the frontend sent
+        # Use the student's saved notes from the DB
         db_notes = clean_text(prior.get("notes") or "")
         db_notes_wc = count_words(db_notes)
+        # Check if DB notes are also just the description
+        db_notes_is_description = calculate_text_overlap(db_notes, case_study["description"]) > 50 if db_notes else True
 
         # Try to extract text from the uploaded file (PDF/DOCX)
         extracted = ""
@@ -45,23 +51,30 @@ async def submit_and_review(req: SubmitAnswerRequest):
             elif why:
                 print(f"📄 File extraction failed for {prior.get('file_name', '?')}: {why}")
 
-        # Build the best possible answer text:
-        # Priority: extracted file content > DB notes > frontend answerText
+        # Build the best answer text using priority:
+        # 1. Extracted file content (PDF/DOCX)
+        # 2. DB notes (if they're real answers, not the description)
+        # 3. Frontend text (if it's a real answer, not the description)
         parts = []
         if extracted:
             parts.append(extracted)
-        if db_notes and db_notes != cleaned:
+        if db_notes and not db_notes_is_description:
             parts.append(db_notes)
-        if cleaned and not extracted:
-            # Only include frontend text if we didn't get file content
-            # (frontend often sends the case study description, not the answer)
+        if cleaned and not frontend_is_description and not extracted:
             parts.append(cleaned)
 
         if parts:
             cleaned = "\n\n".join(parts).strip()
             word_count = count_words(cleaned)
-            if file_used:
-                print(f"📄 Using uploaded file content: {file_used} (total {word_count} words)")
+            print(f"📄 Final answer: {word_count} words "
+                  f"(file={'yes' if extracted else 'no'}, "
+                  f"db_notes={'yes' if db_notes and not db_notes_is_description else 'no'}, "
+                  f"frontend={'yes' if not frontend_is_description and not extracted else 'no'})")
+        else:
+            # No real answer found anywhere — use whatever we have
+            print(f"⚠️  No real student answer found — reviewing frontend text ({word_count} words)")
+    elif frontend_is_description:
+        print(f"⚠️  No DB submission found and frontend sent description — will get low score")
 
     text_overlap  = calculate_text_overlap(cleaned, case_study["description"])
     concept_check = find_mentioned_concepts(cleaned, case_study["keyConcepts"])

@@ -1,6 +1,6 @@
 # main.py
 # Upskillize AI Case Study Review Agent — Python + FastAPI
-# UI has been removed — React frontend (CaseStudyReview.jsx) handles all UI
+# Standalone agent with its own frontend UI served from /static
 
 import os
 from dotenv import load_dotenv
@@ -8,6 +8,8 @@ load_dotenv()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from app.routes.review import router as review_router
 from app.database import test_connection
 
@@ -20,14 +22,7 @@ app = FastAPI(
 # ===== CORS =====
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://lms.upskillize.com",
-        "https://upskillize.com",
-        "https://upskillize-lms-backend.onrender.com",
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://localhost:7860",
-    ],
+    allow_origins=["*"],  # standalone agent — accept from anywhere
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -44,32 +39,35 @@ async def health():
         "agent": "upskillize-case-study-reviewer",
         "version": "2.0.0",
         "aiProvider": os.getenv("AI_PROVIDER", "huggingface"),
-        "stack": "Python + FastAPI",
-        "ui": "Served by React frontend (CaseStudyReview.jsx)",
+        "ui": "Standalone — visit / for the web UI",
     }
+
+# ===== Serve frontend UI =====
+@app.get("/")
+async def serve_ui():
+    return FileResponse("static/index.html")
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 # ===== Startup =====
 @app.on_event("startup")
 async def startup():
     print("")
-    print("🚀 Upskillize AI Case Study Review Agent v2.0")
+    print("🚀 Upskillize AI Case Study Review Agent v2.0 (Standalone)")
     print(f"   AI Provider : {os.getenv('AI_PROVIDER', 'huggingface')}")
-    print(f"   Frontend    : https://lms.upskillize.com (React)")
-    print(f"   Backend     : https://upskillize-lms-backend.onrender.com/api")
+    print(f"   Web UI      : Visit / for the standalone frontend")
     print("")
     print("   Testing database connection...")
     db_ok = test_connection()
     print(f"   Database: {'✅ Connected' if db_ok else '❌ Not connected'}")
     print("")
-    print("   Available endpoints:")
+    print("   Endpoints:")
+    print("   GET  /                               — Standalone Web UI")
     print("   POST /api/review/submit              — Submit & get AI feedback")
-    print("   POST /api/review/test                — Test review (no DB)")
-    print("   GET  /api/review/student-progress/id — Student progress")
-    print("   GET  /api/review/mentor-dashboard/id — Mentor dashboard")
-    print("   POST /api/review/mentor-approve/id   — Mentor approve")
-    print("   GET  /api/review/case-studies/id     — List case studies")
-    print("   GET  /health                         — Health check")
+    print("   GET  /api/review/case-studies         — List published case studies")
+    print("   GET  /api/review/student-progress/id  — Student history")
+    print("   GET  /health                          — Health check")
     print("")
 
 
