@@ -102,48 +102,52 @@ def get_all_case_studies(course_id: int) -> list:
 def get_latest_submission_file(case_study_id: int, student_id: int,
                                exclude_submission_id: int | None = None) -> dict | None:
     """
-    Find the most recent submission row for this student+case study.
-    Returns notes + file_url (if any). Used by the review pipeline to get
-    the student's ACTUAL answer instead of whatever the frontend sends.
+    Find the BEST submission for this case study — one that actually has content
+    (a file, or substantial notes). Checks the specific student first, then
+    falls back to any student's submission for this case study.
 
-    Falls back to ANY submission for this case study if student_id doesn't match.
+    Returns the submission with the most useful content:
+      Priority: has file_url > has long notes > has any notes > anything
     """
-    # Try exact match first (student + case study)
+    # Get ALL submissions for this case study (not just one student)
     sql = (
         "SELECT id, file_url, file_name, notes, student_id "
         "FROM case_study_submissions "
-        "WHERE case_study_id = %s AND student_id = %s "
+        "WHERE case_study_id = %s "
     )
-    params: tuple = (case_study_id, student_id)
+    params: tuple = (case_study_id,)
     if exclude_submission_id is not None:
         sql += "AND id <> %s "
-        params = (case_study_id, student_id, exclude_submission_id)
-    sql += "ORDER BY submitted_at DESC LIMIT 1"
+        params = (case_study_id, exclude_submission_id)
+    sql += "ORDER BY submitted_at DESC LIMIT 10"
 
     rows = query(sql, params)
-    if rows:
-        print(f"📄 Found submission id={rows[0]['id']} for student={student_id}, "
-              f"notes={len(rows[0].get('notes') or '')} chars, "
-              f"file={'yes' if rows[0].get('file_url') else 'no'}")
-        return rows[0]
+    if not rows:
+        print(f"📄 No submissions found for case_study={case_study_id}")
+        return None
 
-    # Fallback: any submission for this case study (handles student_id mismatch)
-    fallback_sql = (
-        "SELECT id, file_url, file_name, notes, student_id "
-        "FROM case_study_submissions "
-        "WHERE case_study_id = %s "
-        "ORDER BY submitted_at DESC LIMIT 1"
-    )
-    rows = query(fallback_sql, (case_study_id,))
-    if rows:
-        print(f"📄 Fallback: found submission id={rows[0]['id']} from student={rows[0].get('student_id','?')} "
-              f"(requested student={student_id}), "
-              f"notes={len(rows[0].get('notes') or '')} chars, "
-              f"file={'yes' if rows[0].get('file_url') else 'no'}")
-        return rows[0]
+    # Score each submission by usefulness
+    def score_row(row):
+        s = 0
+        if row.get("file_url"):
+            s += 100   # has a file = best
+        notes_len = len(row.get("notes") or "")
+        s += min(notes_len, 50)  # longer notes = better (cap at 50)
+        if row.get("student_id") == student_id:
+            s += 10    # prefer matching student
+        return s
 
-    print(f"📄 No submissions found for case_study={case_study_id}")
-    return None
+    rows.sort(key=score_row, reverse=True)
+    best = rows[0]
+
+    is_exact = best.get("student_id") == student_id
+    print(f"📄 {'Found' if is_exact else 'Fallback:'} submission id={best['id']} "
+          f"{'for' if is_exact else 'from'} student={best.get('student_id', '?')}"
+          f"{'' if is_exact else f' (requested student={student_id})'}, "
+          f"notes={len(best.get('notes') or '')} chars, "
+          f"file={'yes' if best.get('file_url') else 'no'}")
+
+    return best
 
 
 # ===== SUBMISSIONS =====
