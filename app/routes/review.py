@@ -71,10 +71,55 @@ async def submit_and_review(req: SubmitAnswerRequest):
                   f"db_notes={'yes' if db_notes and not db_notes_is_description else 'no'}, "
                   f"frontend={'yes' if not frontend_is_description and not extracted else 'no'})")
         else:
-            # No real answer found anywhere — use whatever we have
-            print(f"⚠️  No real student answer found — reviewing frontend text ({word_count} words)")
+            # No real answer found anywhere — tell the student
+            print(f"⚠️  No real student answer found in DB or frontend")
+            total_time = int((time.time() - start_time) * 1000)
+            return {
+                "success": True,
+                "submission": {"submissionId": 0, "attemptNumber": 0},
+                "feedback": {
+                    "score": 0, "grade": "-", "scoreEmoji": "📝",
+                    "summary": "We couldn't find your submitted answer. Please go back and submit your case study answer first (type your analysis in the notes box or upload a PDF), then click AiRev again.",
+                    "rubricScores": [], "strengths": [], "improvements": [
+                        "Submit your answer via the 'Submit Case Study' button before requesting AI review.",
+                        "Type your analysis in the notes/text box — make sure it's your own work, not the case study description.",
+                        "If you uploaded a PDF, try pasting the key points in the notes box as well.",
+                    ],
+                    "missingConcepts": [], "coveredConcepts": [], "suggestions": [],
+                    "detailedFeedback": "No student answer detected. The system found the case study description but not your actual analysis.",
+                    "wordCount": 0, "wordCountMessage": "No answer text found.",
+                    "encouragement": "Don't worry! Just submit your answer first, then come back for AI review. 📝",
+                    "aiLikelihoodPercent": 0, "humanLikelihoodPercent": 100,
+                    "aiDetectionReason": "Not analysed.", "aiVerdict": "uncertain",
+                    "isGarbage": False, "garbageWarning": "",
+                },
+                "mentorReport": {},
+                "processingTimeMs": total_time,
+            }
     elif frontend_is_description:
-        print(f"⚠️  No DB submission found and frontend sent description — will get low score")
+        print(f"⚠️  No DB submission found and frontend sent description — asking student to submit")
+        total_time = int((time.time() - start_time) * 1000)
+        return {
+            "success": True,
+            "submission": {"submissionId": 0, "attemptNumber": 0},
+            "feedback": {
+                "score": 0, "grade": "-", "scoreEmoji": "📝",
+                "summary": "Please submit your case study answer first! Go to the case study, click 'Submit Case Study', write your analysis, then click AiRev.",
+                "rubricScores": [], "strengths": [], "improvements": [
+                    "Click 'Submit Case Study' and write your analysis in the notes box.",
+                    "Upload a PDF with your detailed answer if you have one.",
+                ],
+                "missingConcepts": [], "coveredConcepts": [], "suggestions": [],
+                "detailedFeedback": "No submission found for this case study.",
+                "wordCount": 0, "wordCountMessage": "",
+                "encouragement": "Submit your answer first, then come back for AI review! 📝",
+                "aiLikelihoodPercent": 0, "humanLikelihoodPercent": 100,
+                "aiDetectionReason": "Not analysed.", "aiVerdict": "uncertain",
+                "isGarbage": False, "garbageWarning": "",
+            },
+            "mentorReport": {},
+            "processingTimeMs": total_time,
+        }
 
     text_overlap  = calculate_text_overlap(cleaned, case_study["description"])
     concept_check = find_mentioned_concepts(cleaned, case_study["keyConcepts"])

@@ -154,8 +154,8 @@ def save_submission(case_study_id: int, student_id: int, answer_text: str, word_
 
     The LMS schema has a unique constraint on (case_study_id, student_id),
     so we can't insert multiple rows for the same student+case_study.
-    If a row already exists, we update it instead. We track attempt_number
-    in-memory only (not persisted).
+    If a row already exists, DON'T overwrite the notes — the student's
+    original answer must be preserved. Just return the existing submission ID.
     """
     existing = query(
         "SELECT id FROM case_study_submissions "
@@ -164,14 +164,8 @@ def save_submission(case_study_id: int, student_id: int, answer_text: str, word_
     )
 
     if existing:
-        # Update existing submission
+        # Row exists — preserve the student's original notes, don't overwrite
         submission_id = existing[0]["id"]
-        execute(
-            """UPDATE case_study_submissions
-               SET notes = %s, status = 'submitted', reviewed_at = NULL
-               WHERE id = %s""",
-            (answer_text, submission_id),
-        )
         attempt_number = len(existing) + 1
     else:
         # First submission
