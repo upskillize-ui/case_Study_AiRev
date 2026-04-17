@@ -129,25 +129,39 @@ def get_latest_submission_file(case_study_id: int, student_id: int,
 
 def save_submission(case_study_id: int, student_id: int, answer_text: str, word_count: int) -> dict:
     """
-    Insert a row in case_study_submissions.
+    Insert or update a row in case_study_submissions.
 
-    The LMS schema has no attempt_number / answer_text / word_count columns.
-    We compute attempt_number on the fly (count of prior rows + 1) and store
-    the answer text in `notes`. word_count is dropped (not persisted).
+    The LMS schema has a unique constraint on (case_study_id, student_id),
+    so we can't insert multiple rows for the same student+case_study.
+    If a row already exists, we update it instead. We track attempt_number
+    in-memory only (not persisted).
     """
-    attempts = query(
-        "SELECT COUNT(*) as count FROM case_study_submissions "
+    existing = query(
+        "SELECT id FROM case_study_submissions "
         "WHERE case_study_id = %s AND student_id = %s",
         (case_study_id, student_id),
     )
-    attempt_number = attempts[0]["count"] + 1
 
-    submission_id = execute(
-        """INSERT INTO case_study_submissions
-           (case_study_id, student_id, notes, status)
-           VALUES (%s, %s, %s, 'submitted')""",
-        (case_study_id, student_id, answer_text),
-    )
+    if existing:
+        # Update existing submission
+        submission_id = existing[0]["id"]
+        execute(
+            """UPDATE case_study_submissions
+               SET notes = %s, status = 'submitted', reviewed_at = NULL
+               WHERE id = %s""",
+            (answer_text, submission_id),
+        )
+        attempt_number = len(existing) + 1
+    else:
+        # First submission
+        submission_id = execute(
+            """INSERT INTO case_study_submissions
+               (case_study_id, student_id, notes, status)
+               VALUES (%s, %s, %s, 'submitted')""",
+            (case_study_id, student_id, answer_text),
+        )
+        attempt_number = 1
+
     return {"submissionId": submission_id, "attemptNumber": attempt_number}
 
 

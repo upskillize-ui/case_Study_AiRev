@@ -25,23 +25,43 @@ async def submit_and_review(req: SubmitAnswerRequest):
     cleaned    = clean_text(req.answerText)
     word_count = count_words(cleaned)
 
-    # ── If the inline answer is short, see if there's a previously-uploaded
-    #    file (PDF/DOCX) for this student+case study and use its contents. ──
+    # ── Always look up the student's actual submission for this case study.
+    #    The frontend may send the case study description instead of the
+    #    student's real answer. We prefer: file content > DB notes > frontend text.
     file_used = None
-    if word_count < 50:
-        prior = db_service.get_latest_submission_file(req.caseStudyId, req.studentId)
-        if prior and prior.get("file_url"):
+    prior = db_service.get_latest_submission_file(req.caseStudyId, req.studentId)
+    if prior:
+        # Use the student's saved notes if they're more substantial than what the frontend sent
+        db_notes = clean_text(prior.get("notes") or "")
+        db_notes_wc = count_words(db_notes)
+
+        # Try to extract text from the uploaded file (PDF/DOCX)
+        extracted = ""
+        if prior.get("file_url"):
             extracted, why = extract_text_from_url(prior["file_url"], prior.get("file_name", ""))
-            if extracted and len(extracted.split()) >= max(word_count, 30):
-                # Combine: use file as primary, append the inline notes if any
-                cleaned = (cleaned + "\n\n" + extracted).strip() if cleaned else extracted
-                word_count = count_words(cleaned)
+            if extracted:
                 file_used = prior.get("file_name") or prior["file_url"]
-                print(f"📄 Using uploaded file content: {file_used} "
-                      f"({word_count} words extracted)")
-            else:
-                print(f"📄 File extraction skipped/failed for "
-                      f"{prior.get('file_name', '?')}: {why or 'too little text'}")
+                print(f"📄 Extracted file content: {file_used} ({count_words(extracted)} words)")
+            elif why:
+                print(f"📄 File extraction failed for {prior.get('file_name', '?')}: {why}")
+
+        # Build the best possible answer text:
+        # Priority: extracted file content > DB notes > frontend answerText
+        parts = []
+        if extracted:
+            parts.append(extracted)
+        if db_notes and db_notes != cleaned:
+            parts.append(db_notes)
+        if cleaned and not extracted:
+            # Only include frontend text if we didn't get file content
+            # (frontend often sends the case study description, not the answer)
+            parts.append(cleaned)
+
+        if parts:
+            cleaned = "\n\n".join(parts).strip()
+            word_count = count_words(cleaned)
+            if file_used:
+                print(f"📄 Using uploaded file content: {file_used} (total {word_count} words)")
 
     text_overlap  = calculate_text_overlap(cleaned, case_study["description"])
     concept_check = find_mentioned_concepts(cleaned, case_study["keyConcepts"])
