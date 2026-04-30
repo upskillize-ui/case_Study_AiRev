@@ -1,11 +1,19 @@
 # app/routes/review.py
+# FIXED:
+#   - Bug #1 (THE always-0 bug): no longer drops the student's answer just
+#     because it shares vocabulary with the case study description. The new
+#     calculate_text_overlap uses 4-word shingles, so it only fires on real
+#     copy-paste, not on focused thoughtful answers.
+#   - Always trusts the frontend answer text first; DB notes / file are a
+#     secondary enrichment, not a precondition.
+
 import time
 import os
 from fastapi import APIRouter, HTTPException
 from app.models.schemas import SubmitAnswerRequest, TestReviewRequest, MentorApproveRequest
 from app.services import ai_service, scoring_service, feedback_service, db_service
 from app.utils.text_processor import (
-    count_words, clean_text, calculate_text_overlap, find_mentioned_concepts
+    count_words, clean_text, calculate_text_overlap, find_mentioned_concepts, is_likely_copy
 )
 from app.utils.file_extractor import extract_text_from_url
 
@@ -25,114 +33,64 @@ async def submit_and_review(req: SubmitAnswerRequest):
     cleaned    = clean_text(req.answerText)
     word_count = count_words(cleaned)
 
-    # ── Always look up the student's actual submission for this case study.
-    #    The frontend often sends the case study description instead of the
-    #    student's real answer. We detect this and use the DB submission instead.
-    file_used = None
-    frontend_is_description = calculate_text_overlap(cleaned, case_study["description"]) > 50
-    if frontend_is_description:
-        print(f"⚠️  Frontend sent the case study description as answerText — ignoring it")
+    # ── Build best answer text. Priority order, accumulated:
+    #    1. Student's frontend answerText (always taken if non-empty)
+    #    2. Extracted text from any uploaded file (PDF/DOCX) on their last submission
+    #    3. DB notes from their last submission (if different from frontend)
+    # We never DROP the frontend answer just because it shares words with
+    # the description — that was the root cause of the "every score = 0" bug.
 
+    file_used = None
+    parts: list[str] = []
+
+    if cleaned:
+        parts.append(cleaned)
+
+    # Only look up THIS student's prior submissions (privacy fix in db_service)
     prior = db_service.get_latest_submission_file(req.caseStudyId, req.studentId)
     if prior:
-        # Use the student's saved notes from the DB
-        db_notes = clean_text(prior.get("notes") or "")
-        db_notes_wc = count_words(db_notes)
-        # Check if DB notes are also just the description
-        db_notes_is_description = calculate_text_overlap(db_notes, case_study["description"]) > 50 if db_notes else True
-
-        # Try to extract text from the uploaded file (PDF/DOCX)
-        extracted = ""
+        # Try the file
         if prior.get("file_url"):
             extracted, why = extract_text_from_url(prior["file_url"], prior.get("file_name", ""))
             if extracted:
                 file_used = prior.get("file_name") or prior["file_url"]
-                print(f"📄 Extracted file content: {file_used} ({count_words(extracted)} words)")
+                print(f"📄 Extracted file: {file_used} ({count_words(extracted)} words)")
+                # Add file content if it's substantively different from the frontend text
+                if not cleaned or count_words(extracted) > word_count * 1.2:
+                    parts.append(extracted)
             elif why:
                 print(f"📄 File extraction failed for {prior.get('file_name', '?')}: {why}")
 
-        # Build the best answer text using priority:
-        # 1. Extracted file content (PDF/DOCX)
-        # 2. DB notes (if they're real answers, not the description)
-        # 3. Frontend text (if it's a real answer, not the description)
-        parts = []
-        if extracted:
-            parts.append(extracted)
-        if db_notes and not db_notes_is_description:
-            parts.append(db_notes)
-        if cleaned and not frontend_is_description and not extracted:
-            parts.append(cleaned)
+        # Also include DB notes if they're different from frontend
+        db_notes = clean_text(prior.get("notes") or "")
+        if db_notes and db_notes != cleaned:
+            # Avoid double-adding if frontend matches DB
+            if cleaned and len(db_notes) > len(cleaned) * 1.2:
+                parts.append(db_notes)
+            elif not cleaned:
+                parts.append(db_notes)
 
-        if parts:
-            cleaned = "\n\n".join(parts).strip()
-            word_count = count_words(cleaned)
-            print(f"📄 Final answer: {word_count} words "
-                  f"(file={'yes' if extracted else 'no'}, "
-                  f"db_notes={'yes' if db_notes and not db_notes_is_description else 'no'}, "
-                  f"frontend={'yes' if not frontend_is_description and not extracted else 'no'})")
-        else:
-            # No real answer found — check WHY and give specific guidance
-            has_file = bool(prior.get("file_url"))
-            file_failed = has_file and not extracted
-            print(f"⚠️  No real student answer found (file={'failed' if file_failed else 'none'}, "
-                  f"notes={'description' if db_notes_is_description else 'empty'})")
-            total_time = int((time.time() - start_time) * 1000)
-
-            if file_failed:
-                # PDF/file exists but couldn't be read (Cloudinary 401 etc.)
-                msg = (f"We found your uploaded file ({prior.get('file_name', 'PDF')}) but couldn't read it "
-                       f"due to access restrictions. Please also type or paste your answer in the notes/text box "
-                       f"when submitting, so the AI can review it.")
-                tips = [
-                    f"Your file '{prior.get('file_name', 'PDF')}' was found but the AI agent cannot download it (private storage).",
-                    "Please re-submit: click 'Submit Case Study' and PASTE your answer text in the notes box alongside the PDF.",
-                    "Tip: Copy the key sections from your PDF and paste them into the notes field.",
-                ]
-            else:
-                msg = ("We couldn't find your submitted answer. Please go back and submit your case study answer first "
-                       "(type your analysis in the notes box or upload a PDF), then click AiRev again.")
-                tips = [
-                    "Submit your answer via the 'Submit Case Study' button before requesting AI review.",
-                    "Type your analysis in the notes/text box — make sure it's your own work.",
-                    "If you uploaded a PDF, also paste the key points in the notes box.",
-                ]
-
-            return {
-                "success": True,
-                "submission": {"submissionId": prior.get("id", 0), "attemptNumber": 0},
-                "feedback": {
-                    "score": 0, "grade": "-", "scoreEmoji": "📝",
-                    "summary": msg,
-                    "rubricScores": [], "strengths": [], "improvements": tips,
-                    "missingConcepts": [], "coveredConcepts": [], "suggestions": [],
-                    "detailedFeedback": msg,
-                    "wordCount": 0, "wordCountMessage": "No readable answer text found.",
-                    "encouragement": "Just paste your answer in the notes box when submitting, then click AiRev again! 📝",
-                    "aiLikelihoodPercent": 0, "humanLikelihoodPercent": 100,
-                    "aiDetectionReason": "Not analysed.", "aiVerdict": "uncertain",
-                    "isGarbage": False, "garbageWarning": "",
-                },
-                "mentorReport": {},
-                "processingTimeMs": total_time,
-            }
-    elif frontend_is_description:
-        print(f"⚠️  No DB submission found and frontend sent description — asking student to submit")
+    # ── If we still have nothing, return a friendly "no submission yet" ──
+    if not parts:
         total_time = int((time.time() - start_time) * 1000)
+        msg = ("We couldn't find any answer text. Please write your analysis in the "
+               "answer box (or upload a PDF), then click Submit again.")
         return {
             "success": True,
-            "submission": {"submissionId": 0, "attemptNumber": 0},
+            "submission": {"submissionId": (prior or {}).get("id", 0), "attemptNumber": 0},
             "feedback": {
                 "score": 0, "grade": "-", "scoreEmoji": "📝",
-                "summary": "Please submit your case study answer first! Go to the case study, click 'Submit Case Study', write your analysis, then click AiRev.",
+                "summary": msg,
                 "rubricScores": [], "strengths": [], "improvements": [
-                    "Click 'Submit Case Study' and write your analysis in the notes box.",
+                    "Write your analysis directly in the answer box.",
                     "Upload a PDF with your detailed answer if you have one.",
+                    "Aim for at least the suggested word count.",
                 ],
                 "missingConcepts": [], "coveredConcepts": [], "suggestions": [],
-                "detailedFeedback": "No submission found for this case study.",
+                "detailedFeedback": msg,
                 "wordCount": 0, "wordCountMessage": "",
-                "encouragement": "Submit your answer first, then come back for AI review! 📝",
-                "aiLikelihoodPercent": 0, "humanLikelihoodPercent": 100,
+                "encouragement": "Type your answer and click Submit — you've got this! 📝",
+                "aiLikelihoodPercent": None, "humanLikelihoodPercent": None,
                 "aiDetectionReason": "Not analysed.", "aiVerdict": "uncertain",
                 "isGarbage": False, "garbageWarning": "",
             },
@@ -140,6 +98,14 @@ async def submit_and_review(req: SubmitAnswerRequest):
             "processingTimeMs": total_time,
         }
 
+    # Combine and recount
+    cleaned = "\n\n".join(parts).strip()
+    word_count = count_words(cleaned)
+    print(f"📝 Final answer: {word_count} words "
+          f"(frontend={'yes' if req.answerText else 'no'}, "
+          f"file={'yes' if file_used else 'no'})")
+
+    # Plagiarism warning (informational — does NOT block scoring)
     text_overlap  = calculate_text_overlap(cleaned, case_study["description"])
     concept_check = find_mentioned_concepts(cleaned, case_study["keyConcepts"])
 
@@ -189,14 +155,16 @@ async def submit_and_review(req: SubmitAnswerRequest):
             "submission": submission,
         }
 
-    if text_overlap > 60:
-        ai_analysis["plagiarismRisk"]    = "medium"
-        ai_analysis["plagiarismNote"]    = (
-            f"Some sections closely mirror the case study text ({text_overlap}% similarity). "
-            "Try rephrasing ideas in your own words to strengthen your analysis."
+    # Plagiarism overlay (informational)
+    if text_overlap >= 35:
+        ai_analysis["plagiarismRisk"] = "high" if text_overlap >= 60 else "medium"
+        ai_analysis["plagiarismNote"] = (
+            f"Some sections closely mirror the case-study text "
+            f"({text_overlap}% phrase overlap). Try rephrasing in your own words."
         )
-        ai_analysis["mentorAlert"]       = True
-        ai_analysis["mentorAlertReason"] = "High text similarity — mentor review recommended."
+        if text_overlap >= 60:
+            ai_analysis["mentorAlert"] = True
+            ai_analysis["mentorAlertReason"] = "High verbatim overlap — mentor review recommended."
 
     ai_analysis["conceptsCovered"] = list(set(
         (ai_analysis.get("conceptsCovered") or []) + concept_check["mentioned"]
@@ -229,7 +197,6 @@ async def submit_and_review(req: SubmitAnswerRequest):
         "wordCountMessage":       feedback["wordCountMessage"],
         "plagiarismFlag":         ai_analysis.get("plagiarismRisk", "low"),
         "needsMentorHelp":        scores["totalScore"] < 40 or ai_analysis.get("mentorAlert", False),
-        # NEW — surfaced for storage + frontend display
         "scoreEmoji":             feedback["scoreEmoji"],
         "aiLikelihoodPercent":    feedback["aiLikelihoodPercent"],
         "humanLikelihoodPercent": feedback["humanLikelihoodPercent"],
@@ -268,7 +235,6 @@ async def submit_and_review(req: SubmitAnswerRequest):
             "wordCount":              result["wordCount"],
             "wordCountMessage":       result["wordCountMessage"],
             "encouragement":          feedback["studentFeedback"]["encouragement"],
-            # NEW —
             "aiLikelihoodPercent":    result["aiLikelihoodPercent"],
             "humanLikelihoodPercent": result["humanLikelihoodPercent"],
             "aiDetectionReason":      result["aiDetectionReason"],
@@ -286,6 +252,26 @@ async def submit_and_review(req: SubmitAnswerRequest):
 async def test_review(req: TestReviewRequest):
     cleaned    = clean_text(req.studentAnswer)
     word_count = count_words(cleaned)
+
+    # Pre-AI garbage check for /test path too
+    pre_garbage_reason = _pre_garbage_check(cleaned, word_count)
+    if pre_garbage_reason:
+        return {
+            "success": True,
+            "result": {
+                "score": 0, "grade": "F",
+                "rubricScores": [],
+                "feedback": {
+                    "summary": f"Submission flagged: {pre_garbage_reason}",
+                    "encouragement": "Take another look at the case study and try again.",
+                    "isGarbage": True,
+                    "garbageWarning": pre_garbage_reason,
+                    "aiLikelihoodPercent": 0,
+                    "humanLikelihoodPercent": 100,
+                },
+                "aiMeta": None,
+            },
+        }
 
     ai_analysis = ai_service.analyze_answer(
         case_study=req.caseStudy,
@@ -348,8 +334,7 @@ async def list_case_studies(course_id: int):
 # ──────────────────────────────────────────────────────────────────────────
 
 def _pre_garbage_check(text: str, word_count: int) -> str:
-    """Cheap heuristics that catch obvious junk before paying for an AI call.
-    Returns a short reason string if junk, or '' if the text deserves a real review."""
+    """Cheap heuristics that catch obvious junk before paying for an AI call."""
     if not text or not text.strip():
         return "Submission is empty."
     if word_count < 10:
@@ -363,7 +348,8 @@ def _pre_garbage_check(text: str, word_count: int) -> str:
     letters = [c for c in stripped.lower() if c.isalpha()]
     if letters:
         vowel_ratio = sum(1 for c in letters if c in "aeiou") / len(letters)
-        if vowel_ratio < 0.10 and len(letters) > 20:
+        # Loosened from 0.10 → 0.08 to be friendlier to acronym-heavy answers
+        if vowel_ratio < 0.08 and len(letters) > 30:
             return "Submission appears to be keyboard mashing rather than real writing."
 
     return ""
@@ -463,12 +449,9 @@ def _build_garbage_response(submission, case_study, text, word_count, reason, st
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# DEMO / TESTING ENDPOINTS — remove these after your demo
+# DEMO / TESTING ENDPOINTS
 # ═════════════════════════════════════════════════════════════════════════
 
-# ── GET /api/review/case-studies ──────────────────────────────────────────
-# Lists ALL published case studies (across all courses). Used by the AiRev
-# picker in the student dashboard.
 @router.get("/case-studies", tags=["demo"])
 async def list_all_published_case_studies():
     from app.database import query
@@ -478,134 +461,3 @@ async def list_all_published_case_studies():
         "FROM case_studies WHERE status = 'published' ORDER BY created_at DESC"
     )
     return {"success": True, "caseStudies": rows}
-
-
-# ── GET /api/review/debug/seed-case-study ─────────────────────────────────
-# Inserts a rich, AI-ready case study into the DB so you can demo the agent
-# end-to-end without touching the LMS admin panel. Each call creates a new
-# row and returns its id. Optional query params let you customise.
-@router.get("/debug/seed-case-study", tags=["demo"])
-async def debug_seed_case_study(
-    title: str = "The Rise & Fall of Paytm: Regulatory Lessons for Indian FinTech",
-    course_id: int = 1,
-    faculty_id: int = 1,
-    company: str = "Paytm Payments Bank",
-    industry: str = "FinTech / Digital Banking",
-    difficulty: str = "Hard",
-):
-    from app.database import execute, query
-    import json as _json
-
-    description = (
-        "Paytm Payments Bank, launched in 2017, became one of India's most widely used "
-        "digital payment platforms, serving over 300 million users. By 2024, the Reserve "
-        "Bank of India (RBI) imposed severe operational restrictions on the bank after "
-        "persistent non-compliance issues — including concerns around KYC norms, related-"
-        "party transactions, and data-sharing with parent company One97 Communications. "
-        "The enforcement action wiped out more than 50% of Paytm's market capitalisation "
-        "within weeks and forced the company to migrate wallet balances to partner banks. "
-        "This case examines the regulatory, governance and operational decisions that led "
-        "to the crisis, and the broader lessons for India's rapidly scaling FinTech sector."
-    )
-    questions = [
-        "Analyse the root causes of RBI's action against Paytm Payments Bank. Which compliance failures were most critical and why?",
-        "Discuss the corporate governance lessons from this case. How should FinTech firms structure related-party transactions to avoid similar risks?",
-        "Recommend a regulatory roadmap a FinTech startup should follow in India to scale responsibly in the post-Paytm era (400-500 words).",
-    ]
-    rubric_criteria = [
-        {"name": "Analysis",        "points": 25},
-        {"name": "Recommendations", "points": 25},
-        {"name": "Research",        "points": 25},
-        {"name": "Presentation",    "points": 25},
-    ]
-    learning_objectives = (
-        "Understand how regulatory risk, corporate governance, and KYC compliance shape "
-        "scaling strategy in FinTech. Students should be able to connect policy decisions "
-        "to business outcomes and recommend a compliance-first growth model."
-    )
-
-    new_id = execute(
-        """INSERT INTO case_studies
-           (title, description, course_id, faculty_id, company_name, industry,
-            difficulty, word_limit, learning_objectives, reference_url,
-            questions, rubric_criteria, due_date, total_marks, status)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'published')""",
-        (
-            title, description, course_id, faculty_id, company, industry,
-            difficulty, 500, learning_objectives,
-            "https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx",
-            _json.dumps(questions), _json.dumps(rubric_criteria),
-            "2026-12-31", 100,
-        ),
-    )
-    row = query("SELECT id, title, status FROM case_studies WHERE id = %s", (new_id,))
-    return {
-        "success": True,
-        "message": f"Seeded demo case study #{new_id}. Pick it from the AiRev modal, "
-                   f"or POST to /api/review/submit with caseStudyId={new_id}.",
-        "case_study": row[0] if row else None,
-    }
-
-
-# ── DELETE /api/review/debug/case-study/{cid} ─────────────────────────────
-# Quickly remove a demo case study after testing. Uses soft delete (status).
-@router.delete("/debug/case-study/{cid}", tags=["demo"])
-async def debug_delete_case_study(cid: int):
-    from app.database import execute, query
-    execute("UPDATE case_studies SET status = 'deleted' WHERE id = %s", (cid,))
-    row = query("SELECT id, title, status FROM case_studies WHERE id = %s", (cid,))
-    return {"success": True, "case_study": row[0] if row else None}
-
-
-# ── GET /api/review/debug/make-paytm/{cid} ────────────────────────────────
-# Converts an existing case study into the Paytm demo case study.
-@router.get("/debug/make-paytm/{cid}", tags=["demo"])
-async def debug_make_paytm(cid: int):
-    from app.database import execute, query
-    import json as _json
-
-    description = (
-        "Paytm Payments Bank, launched in 2017, became one of India's most widely used "
-        "digital payment platforms, serving over 300 million users. By 2024, the Reserve "
-        "Bank of India (RBI) imposed severe operational restrictions on the bank after "
-        "persistent non-compliance issues — including concerns around KYC norms, related-"
-        "party transactions, and data-sharing with parent company One97 Communications. "
-        "The enforcement action wiped out more than 50% of Paytm's market capitalisation "
-        "within weeks and forced the company to migrate wallet balances to partner banks. "
-        "This case examines the regulatory, governance and operational decisions that led "
-        "to the crisis, and the broader lessons for India's rapidly scaling FinTech sector."
-    )
-    questions = _json.dumps([
-        "Analyse the root causes of RBI's action against Paytm Payments Bank. Which compliance failures were most critical and why?",
-        "Discuss the corporate governance lessons from this case. How should FinTech firms structure related-party transactions?",
-        "Recommend a regulatory roadmap a FinTech startup should follow in India to scale responsibly (400-500 words).",
-    ])
-    rubric = _json.dumps([
-        {"name": "Analysis",        "points": 25},
-        {"name": "Recommendations", "points": 25},
-        {"name": "Research",        "points": 25},
-        {"name": "Presentation",    "points": 25},
-    ])
-
-    execute(
-        """UPDATE case_studies SET
-            title = %s, description = %s, company_name = %s, industry = %s,
-            difficulty = %s, word_limit = %s, learning_objectives = %s,
-            questions = %s, rubric_criteria = %s, status = 'published'
-           WHERE id = %s""",
-        (
-            "The Rise & Fall of Paytm: Regulatory Lessons for Indian FinTech",
-            description,
-            "Paytm Payments Bank",
-            "FinTech / Digital Banking",
-            "Hard",
-            500,
-            "Understand how regulatory risk, corporate governance, and KYC compliance shape "
-            "scaling strategy in FinTech.",
-            questions,
-            rubric,
-            cid,
-        ),
-    )
-    row = query("SELECT id, title, status FROM case_studies WHERE id = %s", (cid,))
-    return {"success": True, "case_study": row[0] if row else None}

@@ -3,275 +3,1017 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>AiRev · Upskillize AI Case Study Review</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>">
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<title>AiRev · Upskillize AI Case Study Reviewer</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%230B1628'/><text x='32' y='44' text-anchor='middle' font-family='Georgia,serif' font-size='38' font-weight='700' fill='%23F5B800'>U</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Playfair+Display:ital,wght@0,600;0,700;1,600&family=DM+Mono:wght@500&display=swap" rel="stylesheet">
 <style>
+/* ── Upskillize Brand Tokens ───────────────────────────────────────── */
+:root{
+  --navy:#0B1628; --navy-2:#1a2744; --navy-3:#2c3e6b;
+  --gold:#C8992A; --gold-bright:#F5B800; --gold-soft:#FBF6E7; --gold-border:#E6D596;
+  --teal:#00C4A0; --teal-soft:#E6FAF5; --teal-border:#A6E8D6;
+  --orange:#E8521A;
+
+  --bg:#F7F8FB; --card:#ffffff; --border:#E5E7EE; --border-strong:#D2D6E0;
+  --text:#0B1628; --muted:#5C6376; --subtle:#9AA0AE;
+
+  --green:#16A34A; --green-soft:#E6F7EC;
+  --amber:#D97706; --amber-soft:#FEF3E0;
+  --red:#DC2626;   --red-soft:#FDECEC;
+  --blue:#1E40AF;  --blue-soft:#E8EDFB;
+}
+
 *{margin:0;padding:0;box-sizing:border-box}
-:root{--navy:#1a2744;--navy-l:#2c3e6b;--gold:#b8960b;--gold-s:#fdf8ed;--gold-b:#e8d89a;--bg:#f5f6fa;--card:#fff;--border:#e4e5ec;--text:#1a1a1a;--muted:#6b6f76;--subtle:#a1a5ad;--red:#c0392b;--red-s:#fdf1f0;--green:#2d6a2d;--green-s:#edf7ed;--blue:#1e3a6b;--blue-s:#eef2fb}
-body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;-webkit-font-smoothing:antialiased}
-.header{background:var(--navy);padding:16px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:40;box-shadow:0 2px 16px rgba(26,39,68,.2)}
-.header-brand{display:flex;align-items:center;gap:12px}
-.header-logo{width:36px;height:36px;border-radius:10px;background:rgba(184,150,11,.15);border:1.5px solid rgba(184,150,11,.35);display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;color:var(--gold)}
-.header h1{font-size:17px;font-weight:800;color:#fff;letter-spacing:-.3px}
-.header h1 span{color:var(--gold)}
-.header-sub{font-size:11px;color:rgba(255,255,255,.4);margin-top:1px}
-.header-right{display:flex;align-items:center;gap:12px}
-.header-dot{width:8px;height:8px;border-radius:50%;background:#2d6a2d;box-shadow:0 0 8px rgba(45,106,45,.6);animation:pulse 2s infinite}
-.header-status{font-size:12px;color:rgba(255,255,255,.55)}
-.lms-link{font-size:12px;color:var(--gold);text-decoration:none;font-weight:600;padding:5px 12px;border:1px solid rgba(184,150,11,.35);border-radius:6px;transition:all .2s}
-.lms-link:hover{background:rgba(184,150,11,.15)}
+html,body{height:100%}
+body{
+  font-family:'Plus Jakarta Sans',system-ui,sans-serif;
+  background:var(--bg);
+  color:var(--text);
+  -webkit-font-smoothing:antialiased;
+  font-feature-settings:'cv11','ss01';
+}
+
+/* ── Icon system ───────────────────────────────────────────────────── */
+.icon{
+  width:18px;height:18px;flex-shrink:0;
+  stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;
+  fill:none;
+}
+.icon-sm{width:14px;height:14px;stroke-width:1.7}
+.icon-lg{width:22px;height:22px;stroke-width:1.5}
+
+/* Vertical accent bar — replaces icons for card titles */
+.accent-bar{
+  display:inline-block;width:3px;height:16px;border-radius:2px;
+  background:var(--gold);margin-right:11px;vertical-align:-3px;
+}
+.accent-bar.teal{background:var(--teal)}
+.accent-bar.navy{background:var(--navy)}
+
+/* Eyebrow label */
+.eyebrow{
+  font-size:10.5px;font-weight:700;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--gold);
+}
+
+/* ── Header ────────────────────────────────────────────────────────── */
+.header{
+  background:linear-gradient(135deg,var(--navy) 0%,var(--navy-2) 100%);
+  padding:14px 28px;
+  display:flex;align-items:center;justify-content:space-between;
+  position:sticky;top:0;z-index:40;
+  box-shadow:0 1px 0 rgba(255,255,255,.05) inset, 0 4px 24px rgba(11,22,40,.18);
+}
+.header-brand{display:flex;align-items:center;gap:14px}
+.header-logo{
+  width:40px;height:40px;border-radius:11px;
+  background:linear-gradient(135deg,var(--gold) 0%,var(--gold-bright) 100%);
+  display:flex;align-items:center;justify-content:center;
+  font-family:'Playfair Display',serif;font-size:22px;font-weight:700;
+  color:var(--navy);
+  box-shadow:0 4px 12px rgba(200,153,42,.35);
+}
+.header h1{
+  font-family:'Playfair Display',serif;
+  font-size:19px;font-weight:700;color:#fff;letter-spacing:-.2px;line-height:1.1;
+}
+.header h1 em{font-style:italic;color:var(--gold-bright);font-weight:600}
+.header-sub{
+  font-size:10.5px;color:rgba(255,255,255,.55);margin-top:3px;
+  letter-spacing:.1em;text-transform:uppercase;font-weight:600;
+}
+.header-right{display:flex;align-items:center;gap:14px}
+.header-status{
+  display:flex;align-items:center;gap:7px;
+  font-size:12px;color:rgba(255,255,255,.7);font-weight:500;
+}
+.status-dot{
+  width:8px;height:8px;border-radius:50%;background:var(--teal);
+  box-shadow:0 0 12px rgba(0,196,160,.6);animation:pulse 2s ease-in-out infinite;
+}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
-.container{max-width:860px;margin:0 auto;padding:24px 20px}
-.tabs{display:flex;gap:4px;margin-bottom:24px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:5px;box-shadow:0 1px 4px rgba(0,0,0,.04)}
-.tab{flex:1;padding:10px 16px;border-radius:9px;font-size:14px;font-weight:700;cursor:pointer;border:none;background:transparent;color:var(--muted);font-family:'DM Sans',sans-serif;transition:all .2s;display:flex;align-items:center;justify-content:center;gap:6px}
+.lms-link{
+  font-size:12px;color:var(--gold-bright);text-decoration:none;font-weight:600;
+  padding:6px 14px;border:1px solid rgba(245,184,0,.4);border-radius:8px;
+  transition:all .2s;display:inline-flex;align-items:center;gap:6px;
+}
+.lms-link:hover{background:rgba(245,184,0,.12);border-color:var(--gold-bright)}
+
+/* ── Layout ────────────────────────────────────────────────────────── */
+.container{max-width:920px;margin:0 auto;padding:28px 20px 80px}
+
+/* ── Tabs ──────────────────────────────────────────────────────────── */
+.tabs{
+  display:flex;gap:4px;margin-bottom:28px;
+  background:var(--card);border:1px solid var(--border);border-radius:14px;
+  padding:6px;box-shadow:0 2px 8px rgba(11,22,40,.04);
+}
+.tab{
+  flex:1;padding:12px 16px;border-radius:9px;
+  font-size:13.5px;font-weight:600;cursor:pointer;border:none;
+  background:transparent;color:var(--muted);
+  font-family:inherit;transition:all .2s;
+  letter-spacing:.01em;
+}
 .tab:hover{background:var(--bg);color:var(--text)}
-.tab.active{background:var(--navy);color:#fff;box-shadow:0 2px 8px rgba(26,39,68,.2)}
-.card{background:var(--card);border:1px solid var(--border);border-radius:14px;overflow:hidden;box-shadow:0 1px 6px rgba(0,0,0,.04);margin-bottom:16px}
-.card-head{padding:14px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
-.card-title{font-size:14px;font-weight:800;color:var(--navy)}
-.card-body{padding:20px}
-.cs-item{border:1.5px solid var(--border);border-radius:12px;padding:16px;cursor:pointer;transition:all .2s;margin-bottom:10px}
-.cs-item:hover{border-color:var(--navy);box-shadow:0 4px 14px rgba(26,39,68,.08);transform:translateY(-1px)}
-.cs-item.selected{border-color:var(--gold);background:var(--gold-s)}
-.cs-tag{display:inline-block;padding:2px 9px;border-radius:20px;font-size:10px;font-weight:700;letter-spacing:.03em}
-.cs-title{font-size:15px;font-weight:700;color:var(--navy);margin:8px 0 4px}
-.cs-desc{font-size:12px;color:var(--muted);line-height:1.55;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.cs-meta{display:flex;gap:12px;margin-top:8px;font-size:11px;color:var(--subtle);flex-wrap:wrap}
-.form-label{display:block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:6px}
-.form-textarea{width:100%;padding:12px 14px;border:1.5px solid var(--border);border-radius:10px;font-family:'DM Sans',sans-serif;font-size:14px;color:var(--text);resize:vertical;outline:none;transition:border-color .2s;min-height:180px;line-height:1.6}
-.form-textarea:focus{border-color:var(--navy);box-shadow:0 0 0 3px rgba(26,39,68,.06)}
-.word-count{text-align:right;font-size:11px;color:var(--subtle);margin-top:4px;font-family:'JetBrains Mono',monospace}
-.btn{border:none;border-radius:10px;padding:12px 22px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;cursor:pointer;transition:all .2s;display:inline-flex;align-items:center;gap:7px}
-.btn-primary{background:var(--navy);color:#fff;box-shadow:0 2px 8px rgba(26,39,68,.2)}
-.btn-primary:hover{background:var(--navy-l);transform:translateY(-1px)}
-.btn-primary:disabled{opacity:.5;cursor:not-allowed;transform:none}
-.btn-gold{background:var(--gold);color:#fff}
+.tab.active{
+  background:linear-gradient(135deg,var(--navy) 0%,var(--navy-2) 100%);
+  color:#fff;font-weight:700;
+  box-shadow:0 3px 12px rgba(11,22,40,.22);
+}
+
+/* ── Cards ─────────────────────────────────────────────────────────── */
+.card{
+  background:var(--card);border:1px solid var(--border);border-radius:16px;
+  overflow:hidden;box-shadow:0 2px 12px rgba(11,22,40,.05);margin-bottom:18px;
+}
+.card-head{
+  padding:16px 22px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;justify-content:space-between;
+  background:linear-gradient(180deg,#fff 0%,#fafbfd 100%);
+}
+.card-title{
+  font-size:15px;font-weight:800;color:var(--navy);letter-spacing:-.2px;
+  display:flex;align-items:center;
+}
+.card-body{padding:24px}
+
+/* ── Case study list ───────────────────────────────────────────────── */
+.cs-item{
+  border:1.5px solid var(--border);border-radius:14px;padding:18px;
+  cursor:pointer;transition:all .2s;margin-bottom:12px;background:#fff;
+}
+.cs-item:hover{
+  border-color:var(--navy);box-shadow:0 6px 20px rgba(11,22,40,.08);
+  transform:translateY(-2px);
+}
+.cs-item.selected{border-color:var(--gold);background:var(--gold-soft)}
+.cs-tag{
+  display:inline-block;padding:3px 11px;border-radius:20px;
+  font-size:10.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
+}
+.cs-title{
+  font-family:'Playfair Display',serif;
+  font-size:18px;font-weight:700;color:var(--navy);margin:10px 0 6px;letter-spacing:-.3px;
+}
+.cs-desc{
+  font-size:13px;color:var(--muted);line-height:1.6;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+}
+.cs-meta{
+  display:flex;gap:18px;margin-top:12px;font-size:11.5px;color:var(--subtle);
+  flex-wrap:wrap;font-weight:500;
+}
+.cs-meta span{display:inline-flex;align-items:center;gap:5px}
+.cs-meta .icon{width:13px;height:13px;stroke-width:1.7;color:var(--subtle)}
+
+/* ── Forms ─────────────────────────────────────────────────────────── */
+.form-label{
+  display:block;font-size:11px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.1em;color:var(--muted);margin-bottom:8px;
+}
+.form-textarea{
+  width:100%;padding:14px 16px;border:1.5px solid var(--border);border-radius:12px;
+  font-family:inherit;font-size:14px;color:var(--text);
+  resize:vertical;outline:none;transition:all .2s;
+  min-height:200px;line-height:1.65;background:#fff;
+}
+.form-textarea:focus{border-color:var(--navy);box-shadow:0 0 0 4px rgba(11,22,40,.08)}
+.word-count{
+  text-align:right;font-size:11px;color:var(--subtle);margin-top:6px;
+  font-family:'DM Mono',monospace;font-weight:500;
+}
+.word-count strong{color:var(--navy);font-weight:700}
+
+/* ── Buttons ───────────────────────────────────────────────────────── */
+.btn{
+  border:none;border-radius:11px;padding:13px 24px;
+  font-family:inherit;font-size:14px;font-weight:700;cursor:pointer;
+  transition:all .2s;display:inline-flex;align-items:center;gap:8px;
+  letter-spacing:-.1px;justify-content:center;
+}
+.btn-primary{
+  background:linear-gradient(135deg,var(--navy) 0%,var(--navy-2) 100%);
+  color:#fff;box-shadow:0 4px 14px rgba(11,22,40,.22);
+}
+.btn-primary:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(11,22,40,.3)}
+.btn-primary:disabled{opacity:.55;cursor:not-allowed;transform:none;box-shadow:none}
+.btn-gold{
+  background:linear-gradient(135deg,var(--gold) 0%,var(--gold-bright) 100%);
+  color:var(--navy);box-shadow:0 4px 14px rgba(200,153,42,.32);
+}
 .btn-ghost{background:transparent;color:var(--muted);border:1.5px solid var(--border)}
-.btn-ghost:hover{border-color:var(--navy);color:var(--navy)}
-.score-hero{background:linear-gradient(135deg,var(--navy) 0%,var(--navy-l) 100%);border-radius:14px;padding:28px;display:flex;align-items:center;gap:28px;margin-bottom:20px;box-shadow:0 4px 20px rgba(26,39,68,.2)}
-.score-ring{position:relative;width:110px;height:110px;flex-shrink:0}
+.btn-ghost:hover{border-color:var(--navy);color:var(--navy);background:var(--bg)}
+
+/* ── Score Hero ────────────────────────────────────────────────────── */
+.score-hero{
+  background:linear-gradient(135deg,var(--navy) 0%,var(--navy-2) 50%,var(--navy-3) 100%);
+  border-radius:18px;padding:32px;
+  display:flex;align-items:center;gap:32px;margin-bottom:20px;
+  box-shadow:0 8px 32px rgba(11,22,40,.25);position:relative;overflow:hidden;
+}
+.score-hero::before{
+  content:'';position:absolute;top:-40%;right:-15%;width:60%;height:180%;
+  background:radial-gradient(ellipse,rgba(245,184,0,.18) 0%,transparent 65%);
+  pointer-events:none;
+}
+.score-ring{position:relative;width:130px;height:130px;flex-shrink:0;z-index:1}
 .score-ring svg{transform:rotate(-90deg)}
-.score-ring-text{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
-.score-ring-num{font-size:32px;font-weight:800;color:#fff;line-height:1}
-.score-ring-label{font-size:11px;color:rgba(255,255,255,.5);margin-top:2px}
-.score-grade{font-size:36px;font-weight:800;color:#fff}
-.score-emoji{font-size:28px}
-.grade-label{display:inline-block;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700;background:rgba(184,150,11,.2);color:var(--gold)}
-.score-summary{font-size:13px;color:rgba(255,255,255,.65);line-height:1.6;margin-top:10px}
-.rubric-item{display:flex;align-items:center;gap:14px;padding:14px 0;border-bottom:1px solid var(--border)}
+.score-ring-text{
+  position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+}
+.score-ring-num{
+  font-family:'Playfair Display',serif;font-size:44px;font-weight:700;
+  color:#fff;line-height:1;letter-spacing:-.5px;
+}
+.score-ring-label{
+  font-size:10.5px;color:rgba(255,255,255,.55);margin-top:4px;
+  letter-spacing:.1em;font-weight:600;text-transform:uppercase;
+}
+.score-content{flex:1;z-index:1;min-width:0}
+.score-eyebrow{
+  font-size:10.5px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--gold-bright);margin-bottom:6px;
+}
+.score-row{display:flex;align-items:baseline;gap:14px;margin-bottom:8px;flex-wrap:wrap}
+.score-grade{
+  font-family:'Playfair Display',serif;font-size:42px;font-weight:700;
+  color:#fff;letter-spacing:-.6px;line-height:1;
+}
+.grade-label{
+  display:inline-block;padding:5px 13px;border-radius:20px;
+  font-size:11.5px;font-weight:700;letter-spacing:.04em;
+  background:rgba(245,184,0,.22);color:var(--gold-bright);
+  border:1px solid rgba(245,184,0,.3);
+}
+.score-summary{font-size:14px;color:rgba(255,255,255,.78);line-height:1.6;margin-top:10px}
+.meta-pills{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
+.meta-pill{
+  font-size:11px;font-weight:600;padding:5px 12px;border-radius:20px;
+  background:rgba(255,255,255,.1);color:rgba(255,255,255,.78);
+  border:1px solid rgba(255,255,255,.12);
+  display:inline-flex;align-items:center;gap:5px;
+}
+.meta-pill .icon{width:11px;height:11px;stroke-width:1.8;color:rgba(255,255,255,.7)}
+
+/* ── HUMAN vs AI BAR (showcase feature) ────────────────────────────── */
+.aih-card{
+  background:var(--card);border:1px solid var(--border);border-radius:16px;
+  padding:24px;margin-bottom:18px;
+  box-shadow:0 2px 12px rgba(11,22,40,.05);
+}
+.aih-head{
+  display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;
+}
+.aih-title{
+  font-size:11.5px;font-weight:800;color:var(--navy);
+  letter-spacing:.12em;text-transform:uppercase;
+  display:flex;align-items:center;
+}
+.aih-verdict-pill{
+  font-size:11px;font-weight:700;padding:5px 12px;border-radius:20px;
+  letter-spacing:.03em;
+}
+.aih-sub{font-size:13px;color:var(--muted);margin-bottom:18px;line-height:1.55}
+.aih-bar{
+  display:flex;height:48px;border-radius:14px;overflow:hidden;
+  box-shadow:inset 0 1px 3px rgba(0,0,0,.08);
+  border:1px solid var(--border);
+}
+.aih-seg{
+  display:flex;align-items:center;justify-content:center;gap:10px;
+  font-weight:700;font-size:12.5px;color:#fff;
+  transition:flex .8s ease;letter-spacing:.08em;text-transform:uppercase;
+  min-width:0;overflow:hidden;white-space:nowrap;
+}
+.aih-seg .seg-pct{font-family:'DM Mono',monospace;font-size:14px;letter-spacing:0;font-weight:600}
+.aih-seg-human{background:linear-gradient(135deg,var(--teal) 0%,#00A586 100%)}
+.aih-seg-ai{background:linear-gradient(135deg,var(--orange) 0%,#C73E0B 100%)}
+.aih-legend{
+  display:flex;justify-content:space-between;margin-top:10px;
+  font-size:11.5px;color:var(--muted);font-weight:500;gap:14px;
+}
+.aih-legend strong{color:var(--text);font-weight:700}
+.aih-reason{
+  margin-top:14px;padding:12px 14px 12px 18px;background:var(--bg);
+  border-radius:10px;font-size:12.5px;color:var(--muted);line-height:1.6;
+  border-left:3px solid var(--gold);
+}
+.aih-reason strong{color:var(--navy);font-weight:700}
+
+/* ── Rubric ────────────────────────────────────────────────────────── */
+.rubric-item{
+  display:flex;align-items:center;gap:16px;padding:16px 0;
+  border-bottom:1px solid var(--border);
+}
 .rubric-item:last-child{border-bottom:none}
-.rubric-name{flex:1;font-size:14px;font-weight:600}
-.rubric-bar{flex:2;height:6px;background:var(--border);border-radius:3px;overflow:hidden}
-.rubric-bar-fill{height:100%;border-radius:3px;transition:width .6s ease}
-.rubric-score{font-size:13px;font-weight:800;min-width:50px;text-align:right;font-family:'JetBrains Mono',monospace}
-.rubric-pct{font-size:11px;color:var(--subtle);min-width:34px;text-align:right}
-.fb-section{border-radius:12px;padding:16px;margin-bottom:12px}
-.fb-section h3{font-size:13px;font-weight:800;margin-bottom:10px;display:flex;align-items:center;gap:6px}
-.fb-item{padding:10px 14px;border-radius:8px;margin-bottom:6px;font-size:13px;line-height:1.6}
-.fb-red{background:var(--red-s);border-left:3px solid var(--red)}
-.fb-green{background:var(--green-s);border-left:3px solid var(--green)}
-.fb-blue{background:var(--blue-s);border-left:3px solid var(--blue)}
-.concept-tag{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;margin:3px}
-.concept-covered{background:var(--green-s);color:var(--green);border:1px solid #b8d9b8}
-.concept-missing{background:var(--red-s);color:var(--red);border:1px solid #f7c1c1}
-.hist-item{display:flex;align-items:center;gap:14px;padding:14px 16px;border-bottom:1px solid var(--border);transition:background .15s}
-.hist-item:last-child{border-bottom:none}
-.hist-score{width:48px;height:48px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:800;border:2.5px solid;flex-shrink:0}
-.mentor-note{background:var(--gold-s);border:1px solid var(--gold-b);border-radius:12px;padding:16px;margin-bottom:16px}
-.mentor-note h4{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:var(--gold);margin-bottom:6px}
-.mentor-note p{font-size:13px;color:#5a4500;line-height:1.6}
-.spinner{width:40px;height:40px;border:3px solid var(--border);border-top-color:var(--navy);border-radius:50%;animation:spin .7s linear infinite;margin:0 auto 16px}
+.rubric-name{flex:1;font-size:14px;font-weight:600;color:var(--text)}
+.rubric-bar{flex:2.4;height:8px;background:var(--border);border-radius:4px;overflow:hidden}
+.rubric-bar-fill{height:100%;border-radius:4px;transition:width .8s ease}
+.rubric-score{
+  font-size:14px;font-weight:800;min-width:60px;text-align:right;
+  font-family:'DM Mono',monospace;
+}
+.rubric-pct{font-size:11.5px;color:var(--subtle);min-width:40px;text-align:right;font-weight:600}
+
+/* ── Feedback sections ─────────────────────────────────────────────── */
+.fb-section{border-radius:14px;padding:22px;margin-bottom:14px}
+.fb-section h3{
+  font-family:'Playfair Display',serif;
+  font-size:18px;font-weight:700;margin-bottom:14px;
+  display:flex;align-items:center;gap:10px;letter-spacing:-.2px;
+}
+.fb-section h3 .icon{width:20px;height:20px;stroke-width:1.6}
+.fb-item{
+  padding:12px 16px;border-radius:10px;margin-bottom:8px;
+  font-size:13.5px;line-height:1.6;background:#fff;
+  display:flex;gap:11px;align-items:flex-start;
+}
+.fb-item-bullet{
+  width:6px;height:6px;border-radius:50%;margin-top:8px;flex-shrink:0;
+}
+.fb-green{background-color:var(--green-soft);border-left:3px solid var(--green)}
+.fb-green .fb-item{background:rgba(255,255,255,.7)}
+.fb-green .fb-item-bullet{background:var(--green)}
+.fb-amber{background-color:var(--amber-soft);border-left:3px solid var(--amber)}
+.fb-amber .fb-item{background:rgba(255,255,255,.7)}
+.fb-amber .fb-item-bullet{background:var(--amber)}
+.fb-blue{background-color:var(--blue-soft);border-left:3px solid var(--blue)}
+.fb-blue .fb-item{background:rgba(255,255,255,.7)}
+.fb-blue .fb-item-bullet{background:var(--blue)}
+
+/* ── Concept tags ──────────────────────────────────────────────────── */
+.concept-tag{
+  display:inline-block;padding:5px 12px;border-radius:20px;
+  font-size:11.5px;font-weight:600;margin:3px;
+}
+.concept-covered{background:var(--green-soft);color:var(--green);border:1px solid #B8E5C8}
+.concept-missing{background:var(--amber-soft);color:var(--amber);border:1px solid #F4D29B}
+.concept-label{
+  font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;
+  margin:14px 0 6px;
+}
+
+/* ── Mentor note ───────────────────────────────────────────────────── */
+.mentor-note{
+  background:linear-gradient(135deg,var(--gold-soft) 0%,#FCFAEF 100%);
+  border:1px solid var(--gold-border);border-radius:14px;
+  padding:24px 26px;margin:14px 0;position:relative;
+}
+.mentor-note::before{
+  content:'';position:absolute;left:0;top:18px;bottom:18px;width:3px;
+  background:var(--gold);border-radius:0 2px 2px 0;
+}
+.mentor-eyebrow{
+  font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.14em;
+  color:var(--gold);margin-bottom:6px;
+}
+.mentor-note h4{
+  font-family:'Playfair Display',serif;font-style:italic;
+  font-size:19px;font-weight:600;
+  color:var(--navy);margin-bottom:10px;letter-spacing:-.3px;
+}
+.mentor-note p{font-size:13.5px;color:#5a4500;line-height:1.7}
+
+/* ── Garbage warning ───────────────────────────────────────────────── */
+.garbage-warn{
+  background:var(--red-soft);border:2px solid var(--red);border-radius:14px;
+  padding:18px 20px;margin-bottom:18px;
+}
+.garbage-warn h4{
+  color:var(--red);font-size:13.5px;font-weight:800;margin-bottom:8px;
+  display:flex;align-items:center;gap:9px;letter-spacing:.02em;text-transform:uppercase;
+}
+.garbage-warn p{font-size:13.5px;color:#8B1A1A;line-height:1.65}
+
+/* ── Loading state ─────────────────────────────────────────────────── */
+.loading-card{
+  background:linear-gradient(135deg,var(--navy) 0%,var(--navy-2) 100%);
+  border-radius:18px;padding:60px 32px;text-align:center;
+  box-shadow:0 8px 32px rgba(11,22,40,.22);
+}
+.spinner{
+  width:56px;height:56px;margin:0 auto 22px;position:relative;
+}
+.spinner svg{
+  width:100%;height:100%;animation:spin 1.4s linear infinite;
+}
 @keyframes spin{to{transform:rotate(360deg)}}
-.loading-center{text-align:center;padding:60px 20px}
-.loading-msg{font-size:14px;color:var(--muted);font-weight:500;margin-bottom:4px}
-.empty{text-align:center;padding:48px 20px;color:var(--subtle)}
-.empty-icon{font-size:40px;margin-bottom:12px}
-.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px}
-.stat-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center}
-.stat-label{font-size:11px;color:var(--muted);margin-bottom:4px}
-.stat-value{font-size:24px;font-weight:800;color:var(--navy)}
-.footer{text-align:center;padding:20px;font-size:11px;color:var(--subtle)}
-@media(max-width:640px){.score-hero{flex-direction:column;text-align:center;gap:16px}.stats-grid{grid-template-columns:repeat(2,1fr)}.container{padding:16px 14px}}
+.loading-msg{
+  font-size:18px;font-weight:600;color:#fff;margin-bottom:8px;
+  font-family:'Playfair Display',serif;font-style:italic;letter-spacing:-.2px;
+}
+.loading-sub{
+  font-size:11.5px;color:rgba(255,255,255,.55);
+  letter-spacing:.1em;text-transform:uppercase;font-weight:600;
+}
+.progress-bar{
+  width:240px;height:3px;border-radius:2px;background:rgba(255,255,255,.12);
+  overflow:hidden;margin:24px auto 0;
+}
+.progress-bar div{
+  width:30%;height:100%;background:var(--gold-bright);border-radius:2px;
+  animation:progressSlide 1.4s ease-in-out infinite;
+}
+@keyframes progressSlide{
+  0%{transform:translateX(-100%)}100%{transform:translateX(366%)}
+}
+
+/* ── Empty state ───────────────────────────────────────────────────── */
+.empty{padding:50px 20px;text-align:center}
+.empty-icon{
+  width:48px;height:48px;margin:0 auto 14px;
+  color:var(--subtle);opacity:.5;
+}
+.empty-icon .icon{width:48px;height:48px;stroke-width:1.4}
+.empty p{font-size:14px;color:var(--muted)}
+.empty p.empty-sub{font-size:12px;margin-top:6px;color:var(--subtle)}
+
+/* ── History ───────────────────────────────────────────────────────── */
+.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}
+.stat-card{
+  background:var(--card);border:1px solid var(--border);border-radius:14px;
+  padding:20px 16px;text-align:center;
+  box-shadow:0 1px 6px rgba(11,22,40,.04);
+}
+.stat-label{
+  font-size:10px;color:var(--subtle);font-weight:700;
+  letter-spacing:.12em;text-transform:uppercase;margin-bottom:8px;
+}
+.stat-value{
+  font-family:'Playfair Display',serif;font-size:30px;font-weight:700;
+  letter-spacing:-.6px;line-height:1;
+}
+.hist-item{
+  display:flex;align-items:center;gap:16px;padding:16px 22px;
+  border-bottom:1px solid var(--border);transition:background .15s;
+}
+.hist-item:last-child{border-bottom:none}
+.hist-item:hover{background:var(--bg)}
+.hist-score{
+  width:54px;height:54px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  font-size:15px;font-weight:800;border:3px solid;flex-shrink:0;
+  font-family:'DM Mono',monospace;
+}
+
+/* ── Footer ────────────────────────────────────────────────────────── */
+.footer{
+  text-align:center;padding:24px 20px;font-size:11.5px;color:var(--subtle);
+  border-top:1px solid var(--border);background:#fff;
+  font-weight:500;letter-spacing:.02em;
+}
+.footer strong{color:var(--navy);font-weight:700}
+
+/* ── Question card ─────────────────────────────────────────────────── */
+.q-card{
+  background:linear-gradient(135deg,var(--gold-soft) 0%,#FCFAEF 100%);
+  border:1px solid var(--gold-border);border-radius:12px;
+  padding:18px 20px;margin-bottom:18px;
+}
+.q-label{
+  font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.12em;
+  color:var(--gold);margin-bottom:12px;
+}
+.q-item{
+  font-size:13.5px;color:#5a4500;margin-bottom:10px;padding-left:14px;
+  border-left:2.5px solid var(--gold);line-height:1.6;
+}
+.q-item:last-child{margin-bottom:0}
+.q-item strong{color:var(--navy);font-weight:700;margin-right:4px}
+
+/* ── Mobile ────────────────────────────────────────────────────────── */
+@media (max-width:640px){
+  .container{padding:18px 14px 60px}
+  .header{padding:12px 16px}
+  .header h1{font-size:16px}
+  .header-sub{display:none}
+  .lms-link{display:none}
+  .stats-grid{grid-template-columns:repeat(2,1fr)}
+  .score-hero{flex-direction:column;text-align:center;padding:24px;gap:18px}
+  .score-row{justify-content:center}
+  .meta-pills{justify-content:center}
+  .aih-bar{height:42px}
+  .aih-seg{font-size:11.5px}
+  .rubric-item{flex-wrap:wrap;gap:10px}
+  .rubric-bar{order:3;flex-basis:100%}
+  .fb-section h3{font-size:16px}
+}
 </style>
 </head>
 <body>
 
 <div class="header">
   <div class="header-brand">
-    <div class="header-logo">A</div>
+    <div class="header-logo">U</div>
     <div>
-      <h1><span>AiRev</span> · Case Study Review</h1>
-      <div class="header-sub">Powered by Upskillize AI Agent</div>
+      <h1>Ai<em>Rev</em> · Case Study Reviewer</h1>
+      <div class="header-sub">Bridging Academia & Industry</div>
     </div>
   </div>
   <div class="header-right">
-    <a href="https://lms.upskillize.com/student/assignments" class="lms-link" target="_blank">← Back to LMS</a>
-    <div style="display:flex;align-items:center;gap:6px">
-      <div class="header-dot" id="statusDot"></div>
-      <span class="header-status" id="statusText">Connecting...</span>
+    <div class="header-status">
+      <div class="status-dot" id="statusDot"></div>
+      <span id="statusText">Connected</span>
     </div>
+    <a class="lms-link" href="https://lms.upskillize.com" target="_blank" rel="noopener">
+      Open LMS
+      <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M7 17 17 7M9 7h8v8"/></svg>
+    </a>
   </div>
 </div>
 
 <div class="container">
   <div class="tabs">
-    <button class="tab active" onclick="switchTab('review')" id="tab-review">📝 Review</button>
-    <button class="tab" onclick="switchTab('history')" id="tab-history">📊 History</button>
+    <button class="tab active" id="tab-review" onclick="switchTab('review')">New Review</button>
+    <button class="tab" id="tab-history" onclick="switchTab('history')">Review History</button>
   </div>
+
   <div id="panel-review">
     <div id="step-pick">
-      <div class="card"><div class="card-head"><span class="card-title">📚 Select Case Study</span><span style="font-size:12px;color:var(--subtle)" id="csCount"></span></div>
-      <div class="card-body" id="csList"><div class="loading-center"><div class="spinner"></div><div class="loading-msg">Loading case studies...</div></div></div></div>
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title"><span class="accent-bar"></span>Select a Case Study</span>
+          <span style="font-size:11px;color:var(--subtle);font-weight:700;letter-spacing:.1em;text-transform:uppercase" id="csCount">Loading</span>
+        </div>
+        <div class="card-body" id="csList">
+          <div class="empty"><div class="empty-icon"><svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div><p>Loading case studies…</p></div>
+        </div>
+      </div>
     </div>
+
     <div id="step-answer" style="display:none">
       <div class="card">
-        <div class="card-head"><span class="card-title" id="selectedCsTitle">Case Study</span><button class="btn btn-ghost" onclick="goBack()" style="padding:6px 12px;font-size:12px">← Change</button></div>
+        <div class="card-head">
+          <span class="card-title"><span class="accent-bar"></span><span id="selectedCsTitle">Case Study</span></span>
+          <button class="btn btn-ghost" onclick="goBack()" style="padding:8px 14px;font-size:12px">← Change</button>
+        </div>
         <div class="card-body">
           <div id="selectedCsQuestions"></div>
           <label class="form-label">Your Answer / Analysis</label>
-          <textarea class="form-textarea" id="answerText" placeholder="Write your case study analysis here. Address all the questions above. Be thorough and specific..."></textarea>
-          <div class="word-count" id="wordCount">0 words</div>
-          <div style="display:flex;gap:10px;margin-top:16px">
-            <button class="btn btn-primary" onclick="submitReview()" id="submitBtn" style="flex:1;justify-content:center">🤖 Submit for AI Review</button>
+          <textarea class="form-textarea" id="answerText" placeholder="Write your case study analysis here. Address all the questions above. Be thorough, specific, and bring your own perspective…"></textarea>
+          <div class="word-count">Words: <strong id="wordCount">0</strong></div>
+          <div style="display:flex;gap:10px;margin-top:18px">
+            <button class="btn btn-primary" onclick="submitReview()" id="submitBtn" style="flex:1">
+              Submit for AI Review
+              <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+            </button>
           </div>
         </div>
       </div>
     </div>
-    <div id="step-loading" style="display:none"><div class="card"><div class="card-body"><div class="loading-center"><div class="spinner"></div><div class="loading-msg" id="loadingMsg">AI is reviewing your answer...</div><div style="font-size:12px;color:var(--subtle)">This takes 15-30 seconds</div></div></div></div></div>
+
+    <div id="step-loading" style="display:none">
+      <div class="loading-card">
+        <div class="spinner">
+          <svg viewBox="0 0 50 50">
+            <circle cx="25" cy="25" r="20" stroke="rgba(245,184,0,.18)" stroke-width="3" fill="none"/>
+            <circle cx="25" cy="25" r="20" stroke="#F5B800" stroke-width="3" fill="none" stroke-linecap="round" stroke-dasharray="40 86"/>
+          </svg>
+        </div>
+        <div class="loading-msg" id="loadingMsg">Reading your answer carefully…</div>
+        <div class="loading-sub">Usually 15–30 seconds</div>
+        <div class="progress-bar"><div></div></div>
+      </div>
+    </div>
+
     <div id="step-results" style="display:none"></div>
   </div>
+
   <div id="panel-history" style="display:none"></div>
 </div>
 
-<div class="footer">Powered by Upskillize AiRev Agent · AI-assisted review for educational purposes</div>
+<div class="footer">
+  Powered by <strong>Upskillize AiRev</strong> · AI-assisted academic review · Built for the era of India 3.0
+</div>
 
 <script>
 const API = location.origin;
 const P = new URLSearchParams(location.search);
-let studentId = parseInt(P.get('student_id')||P.get('sid'))||1;
-let preSelectCs = parseInt(P.get('case_study_id')||P.get('csid'))||null;
-let answerFromLms = P.get('answer')||'';
-let caseStudies=[], selectedCs=null;
+const API_KEY = P.get('api_key') || '';
+let studentId = parseInt(P.get('student_id') || P.get('sid')) || 1;
+let preSelectCs = parseInt(P.get('case_study_id') || P.get('csid')) || null;
+let answerFromLms = P.get('answer') || '';
+let caseStudies = [], selectedCs = null;
 
-document.addEventListener('DOMContentLoaded',()=>{
-  loadCaseStudies();
-  document.getElementById('answerText').addEventListener('input',updateWordCount);
-  if(answerFromLms){document.getElementById('answerText').value=answerFromLms;updateWordCount();}
-});
+/* ── Inline SVG icon library (Lucide-style, 1.6 stroke) ────────────── */
+const ICON = {
+  building: '<svg class="icon" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M9 8h.01M15 8h.01M9 12h.01M15 12h.01M9 16h.01M15 16h.01"/></svg>',
+  text:     '<svg class="icon" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>',
+  award:    '<svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="9" r="6"/><path d="m9 14-2 7 5-3 5 3-2-7"/></svg>',
+  calendar: '<svg class="icon" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/></svg>',
+  clock:    '<svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  refresh:  '<svg class="icon" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 15-6.7L21 8M21 3v5h-5M21 12a9 9 0 0 1-15 6.7L3 16M3 21v-5h5"/></svg>',
+  alert:    '<svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>',
+  wifiOff:  '<svg class="icon" viewBox="0 0 24 24"><path d="M3 3l18 18M5 12.5a14 14 0 0 1 4-2.4M16 16a5 5 0 0 0-7 0M19 12.5a14 14 0 0 0-3-2"/><path d="M12 20h.01"/></svg>',
+  inbox:    '<svg class="icon" viewBox="0 0 24 24"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5 6h14l3 6v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6z"/></svg>',
+  doc:      '<svg class="icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h4"/></svg>',
+  check:    '<svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg>',
+  upArrow:  '<svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 16V8M8 12l4-4 4 4"/></svg>',
+  book:     '<svg class="icon" viewBox="0 0 24 24"><path d="M2 4a2 2 0 0 1 2-2h6v18H4a2 2 0 0 1-2-2zM22 4a2 2 0 0 0-2-2h-6v18h6a2 2 0 0 0 2-2zM10 2v18M14 2v18"/></svg>',
+  shield:   '<svg class="icon" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>',
+  trend:    '<svg class="icon" viewBox="0 0 24 24"><path d="m3 17 6-6 4 4 8-8M14 7h7v7"/></svg>',
+  chart:    '<svg class="icon" viewBox="0 0 24 24"><path d="M3 21V3M21 21H3M7 17v-5M12 17v-9M17 17V8"/></svg>',
+};
 
-function switchTab(t){
-  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
-  document.getElementById('tab-'+t).classList.add('active');
-  document.getElementById('panel-review').style.display=t==='review'?'block':'none';
-  document.getElementById('panel-history').style.display=t==='history'?'block':'none';
-  if(t==='history')loadHistory();
+function authHeaders(extra) {
+  const h = Object.assign({'Content-Type':'application/json'}, extra || {});
+  if (API_KEY) h['x-api-key'] = API_KEY;
+  return h;
 }
 
-async function loadCaseStudies(){
-  try{
-    const r=await fetch(API+'/api/review/case-studies');
-    const d=await r.json();
-    caseStudies=d.caseStudies||[];
+document.addEventListener('DOMContentLoaded', () => {
+  loadCaseStudies();
+  document.getElementById('answerText').addEventListener('input', updateWordCount);
+  if (answerFromLms) {
+    document.getElementById('answerText').value = answerFromLms;
+    updateWordCount();
+  }
+});
+
+function switchTab(t) {
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+  document.getElementById('tab-' + t).classList.add('active');
+  document.getElementById('panel-review').style.display = t === 'review' ? 'block' : 'none';
+  document.getElementById('panel-history').style.display = t === 'history' ? 'block' : 'none';
+  if (t === 'history') loadHistory();
+}
+
+async function loadCaseStudies() {
+  try {
+    const r = await fetch(API + '/api/review/case-studies', {headers: authHeaders()});
+    const d = await r.json();
+    caseStudies = d.caseStudies || [];
     renderCsList();
-    document.getElementById('statusText').textContent='Connected';
-    document.getElementById('statusDot').style.background='#2d6a2d';
-    if(preSelectCs){const cs=caseStudies.find(c=>c.id===preSelectCs);if(cs)selectCs(cs);}
-  }catch{
-    document.getElementById('csList').innerHTML='<div class="empty"><div class="empty-icon">⚠️</div><p>Could not connect to AiRev agent</p><p style="font-size:12px;margin-top:8px">The agent may be sleeping. Try refreshing.</p><button class="btn btn-ghost" onclick="loadCaseStudies()" style="margin-top:14px">🔄 Retry</button></div>';
-    document.getElementById('statusText').textContent='Offline';
-    document.getElementById('statusDot').style.background='#c0392b';
+    document.getElementById('statusText').textContent = 'Connected';
+    document.getElementById('statusDot').style.background = 'var(--teal)';
+    if (preSelectCs) {
+      const cs = caseStudies.find(c => c.id === preSelectCs);
+      if (cs) selectCs(cs);
+    }
+  } catch {
+    document.getElementById('csList').innerHTML =
+      `<div class="empty">
+        <div class="empty-icon">${ICON.wifiOff}</div>
+        <p>Could not connect to AiRev agent</p>
+        <p class="empty-sub">The agent may be sleeping. Try refreshing.</p>
+        <button class="btn btn-ghost" onclick="loadCaseStudies()" style="margin-top:14px">
+          ${ICON.refresh.replace('class="icon"', 'class="icon icon-sm"')} Retry
+        </button>
+      </div>`;
+    document.getElementById('statusText').textContent = 'Offline';
+    document.getElementById('statusDot').style.background = 'var(--red)';
   }
 }
 
-function renderCsList(){
-  const el=document.getElementById('csList');
-  document.getElementById('csCount').textContent=caseStudies.length+' available';
-  if(!caseStudies.length){el.innerHTML='<div class="empty"><div class="empty-icon">📋</div><p>No case studies published yet</p></div>';return;}
-  el.innerHTML=caseStudies.map(cs=>{
-    const d=cs.difficulty||'Medium';
-    const dc=d==='Hard'?'var(--red)':d==='Medium'?'var(--gold)':'var(--green)';
-    const db=d==='Hard'?'var(--red-s)':d==='Medium'?'var(--gold-s)':'var(--green-s)';
-    return`<div class="cs-item" onclick='selectCs(${JSON.stringify(cs).replace(/'/g,"\\'")})'><div style="display:flex;gap:6px;flex-wrap:wrap"><span class="cs-tag" style="background:var(--blue-s);color:var(--blue)">CASE STUDY</span><span class="cs-tag" style="background:${db};color:${dc}">${d}</span>${cs.industry?`<span class="cs-tag" style="background:var(--bg);color:var(--muted)">${cs.industry}</span>`:''}</div><div class="cs-title">${cs.title}</div><div class="cs-desc">${cs.description||''}</div><div class="cs-meta">${cs.company_name?`<span>🏢 ${cs.company_name}</span>`:''}<span>📝 ${cs.word_limit||200} words</span><span>⭐ ${cs.total_marks||100} marks</span>${cs.due_date?`<span>📅 Due: ${new Date(cs.due_date).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'})}</span>`:''}</div></div>`;
+function renderCsList() {
+  const el = document.getElementById('csList');
+  document.getElementById('csCount').textContent = caseStudies.length + ' available';
+  if (!caseStudies.length) {
+    el.innerHTML = `<div class="empty">
+      <div class="empty-icon">${ICON.inbox}</div>
+      <p>No case studies published yet</p>
+    </div>`;
+    return;
+  }
+  el.innerHTML = caseStudies.map(cs => {
+    const d = cs.difficulty || 'Medium';
+    const dc = d === 'Hard' ? 'var(--red)' : d === 'Medium' ? 'var(--amber)' : 'var(--green)';
+    const db = d === 'Hard' ? 'var(--red-soft)' : d === 'Medium' ? 'var(--amber-soft)' : 'var(--green-soft)';
+    return `<div class="cs-item" onclick='selectCs(${JSON.stringify(cs).replace(/'/g, "\\'")})'>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <span class="cs-tag" style="background:var(--blue-soft);color:var(--blue)">Case Study</span>
+        <span class="cs-tag" style="background:${db};color:${dc}">${d}</span>
+        ${cs.industry ? `<span class="cs-tag" style="background:var(--bg);color:var(--muted)">${cs.industry}</span>` : ''}
+      </div>
+      <div class="cs-title">${cs.title}</div>
+      <div class="cs-desc">${cs.description || ''}</div>
+      <div class="cs-meta">
+        ${cs.company_name ? `<span>${ICON.building} ${cs.company_name}</span>` : ''}
+        <span>${ICON.text} ${cs.word_limit || 200} words</span>
+        <span>${ICON.award} ${cs.total_marks || 100} marks</span>
+        ${cs.due_date ? `<span>${ICON.calendar} ${new Date(cs.due_date).toLocaleDateString('en-IN', {day:'numeric', month:'short', year:'numeric'})}</span>` : ''}
+      </div>
+    </div>`;
   }).join('');
 }
 
-function selectCs(cs){
-  selectedCs=cs;
-  document.getElementById('selectedCsTitle').textContent=cs.title;
-  let qH='';
-  try{const qs=typeof cs.questions==='string'?JSON.parse(cs.questions):cs.questions;
-    if(Array.isArray(qs)&&qs.length)qH='<div style="background:var(--gold-s);border:1px solid var(--gold-b);border-radius:10px;padding:14px;margin-bottom:14px"><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--gold);margin-bottom:8px">Questions to Address</div>'+qs.map((q,i)=>`<div style="font-size:13px;color:#5a4500;margin-bottom:4px;padding-left:10px;border-left:2px solid var(--gold)"><strong>Q${i+1}.</strong> ${q}</div>`).join('')+'</div>';
-  }catch{}
-  document.getElementById('selectedCsQuestions').innerHTML=qH;
-  document.getElementById('step-pick').style.display='none';
-  document.getElementById('step-answer').style.display='block';
+function selectCs(cs) {
+  selectedCs = cs;
+  document.getElementById('selectedCsTitle').textContent = cs.title;
+  let qH = '';
+  try {
+    const qs = typeof cs.questions === 'string' ? JSON.parse(cs.questions) : cs.questions;
+    if (Array.isArray(qs) && qs.length) {
+      qH = '<div class="q-card"><div class="q-label">Questions to Address</div>' +
+        qs.map((q, i) => `<div class="q-item"><strong>Q${i+1}.</strong> ${q}</div>`).join('') +
+        '</div>';
+    }
+  } catch {}
+  document.getElementById('selectedCsQuestions').innerHTML = qH;
+  document.getElementById('step-pick').style.display = 'none';
+  document.getElementById('step-answer').style.display = 'block';
   document.getElementById('answerText').focus();
 }
 
-function goBack(){
-  document.getElementById('step-pick').style.display='block';
-  document.getElementById('step-answer').style.display='none';
-  document.getElementById('step-results').style.display='none';
-  selectedCs=null;
+function goBack() {
+  document.getElementById('step-pick').style.display = 'block';
+  document.getElementById('step-answer').style.display = 'none';
+  document.getElementById('step-results').style.display = 'none';
+  selectedCs = null;
 }
 
-function updateWordCount(){
-  const t=document.getElementById('answerText').value.trim();
-  document.getElementById('wordCount').textContent=(t?t.split(/\s+/).filter(Boolean).length:0)+' words';
+function updateWordCount() {
+  const t = document.getElementById('answerText').value.trim();
+  const c = t ? t.split(/\s+/).filter(Boolean).length : 0;
+  document.getElementById('wordCount').textContent = c;
 }
 
-async function submitReview(){
-  const t=document.getElementById('answerText').value.trim();
-  if(!t||t.split(/\s+/).length<10){alert('Please write at least 10 words.');return;}
-  document.getElementById('step-answer').style.display='none';
-  document.getElementById('step-loading').style.display='block';
-  const msgs=['Analyzing your answer...','Checking rubric criteria...','Evaluating key concepts...','Generating feedback...'];
-  let mi=0;const iv=setInterval(()=>{mi++;if(mi<msgs.length)document.getElementById('loadingMsg').textContent=msgs[mi];},5000);
-  try{
-    const r=await fetch(API+'/api/review/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({caseStudyId:selectedCs.id,studentId,answerText:t})});
-    const d=await r.json();clearInterval(iv);
-    document.getElementById('step-loading').style.display='none';
-    if(d.success&&d.feedback)renderResults(d);
-    else{alert('Review failed: '+(d.detail||d.message||'Unknown error'));document.getElementById('step-answer').style.display='block';}
-  }catch{clearInterval(iv);document.getElementById('step-loading').style.display='none';alert('Connection error.');document.getElementById('step-answer').style.display='block';}
+async function submitReview() {
+  const t = document.getElementById('answerText').value.trim();
+  if (!t || t.split(/\s+/).length < 10) {
+    alert('Please write at least 10 words.');
+    return;
+  }
+  document.getElementById('step-answer').style.display = 'none';
+  document.getElementById('step-loading').style.display = 'block';
+  const msgs = [
+    'Reading your answer carefully…',
+    'Checking against rubric criteria…',
+    'Evaluating concept coverage…',
+    'Detecting writing style (Human vs AI)…',
+    'Drafting personalised feedback…',
+  ];
+  let mi = 0;
+  const iv = setInterval(() => {
+    mi++;
+    if (mi < msgs.length) document.getElementById('loadingMsg').textContent = msgs[mi];
+  }, 4500);
+  try {
+    const r = await fetch(API + '/api/review/submit', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({caseStudyId: selectedCs.id, studentId, answerText: t}),
+    });
+    const d = await r.json();
+    clearInterval(iv);
+    document.getElementById('step-loading').style.display = 'none';
+    if (d.success && d.feedback) renderResults(d);
+    else {
+      document.getElementById('step-answer').style.display = 'block';
+      alert('Review failed: ' + (d.detail || d.message || 'Unknown error'));
+    }
+  } catch (e) {
+    clearInterval(iv);
+    document.getElementById('step-loading').style.display = 'none';
+    document.getElementById('step-answer').style.display = 'block';
+    alert('Could not reach AiRev: ' + e.message);
+  }
 }
 
-function renderResults(data){
-  const fb=data.feedback,score=fb.score||0,grade=fb.grade||'-',emoji=fb.scoreEmoji||'📝';
-  const circ=2*Math.PI*46,off=circ-(score/100)*circ;
-  const sc=score>=70?'#2d6a2d':score>=40?'#d97706':'#c0392b';
-  const gl={A:'Excellent',B:'Good','B+':'Good','B-':'Above Average',C:'Average',D:'Below Average',F:'Needs Improvement'};
-  let h=`<div class="score-hero"><div class="score-ring"><svg width="110" height="110" viewBox="0 0 110 110"><circle cx="55" cy="55" r="46" stroke="rgba(255,255,255,.12)" stroke-width="8" fill="none"/><circle cx="55" cy="55" r="46" stroke="${sc}" stroke-width="8" fill="none" stroke-dasharray="${circ}" stroke-dashoffset="${off}" stroke-linecap="round" style="transition:stroke-dashoffset 1s"/></svg><div class="score-ring-text"><div class="score-ring-num">${score}</div><div class="score-ring-label">/100</div></div></div><div><div style="display:flex;align-items:center;gap:10px;margin-bottom:8px"><span class="score-emoji">${emoji}</span><span class="score-grade">${grade}</span><span class="grade-label">${gl[grade]||gl[grade?.charAt(0)]||'Reviewed'}</span></div><div class="score-summary">${fb.summary||''}</div><div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><span style="font-size:11px;padding:3px 10px;border-radius:20px;background:rgba(255,255,255,.1);color:rgba(255,255,255,.6)">📝 ${fb.wordCount||0} words</span>${fb.humanLikelihoodPercent!=null?`<span style="font-size:11px;padding:3px 10px;border-radius:20px;background:rgba(45,106,45,.2);color:#6dbc6d">👤 Human: ${fb.humanLikelihoodPercent}%</span>`:``}${data.processingTimeMs?`<span style="font-size:11px;padding:3px 10px;border-radius:20px;background:rgba(255,255,255,.1);color:rgba(255,255,255,.5)">⏱ ${(data.processingTimeMs/1000).toFixed(1)}s</span>`:``}</div></div></div>`;
-  if(fb.rubricScores?.length){h+=`<div class="card"><div class="card-head"><span class="card-title">⚙️ Rubric Breakdown</span></div><div class="card-body">`;fb.rubricScores.forEach(r=>{const p=r.maxScore>0?Math.round(r.score/r.maxScore*100):0;const c=p>=70?'var(--green)':p>=40?'var(--gold)':'var(--red)';h+=`<div class="rubric-item"><div class="rubric-name">${r.criteria}</div><div class="rubric-bar"><div class="rubric-bar-fill" style="width:${p}%;background:${c}"></div></div><div class="rubric-score" style="color:${c}">${r.score}/${r.maxScore}</div><div class="rubric-pct">${p}%</div></div>`;});h+=`</div></div>`;}
-  if(fb.improvements?.length){h+=`<div class="fb-section" style="background:var(--red-s);border:1px solid #f7c1c1"><h3 style="color:var(--red)">❌ What Went Wrong</h3>`;fb.improvements.forEach(i=>{h+=`<div class="fb-item fb-red">${i}</div>`;});if(fb.missingConcepts?.length){h+=`<div style="margin-top:10px;font-size:11px;font-weight:700;color:var(--red);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">MISSING:</div>`;fb.missingConcepts.forEach(c=>{h+=`<span class="concept-tag concept-missing">${c}</span>`;});}h+=`</div>`;}
-  if(fb.strengths?.length){h+=`<div class="fb-section" style="background:var(--green-s);border:1px solid #b8d9b8"><h3 style="color:var(--green)">💡 What Could Be Better</h3>`;fb.strengths.forEach(s=>{h+=`<div class="fb-item fb-green">${s}</div>`;});if(fb.coveredConcepts?.length){h+=`<div style="margin-top:10px;font-size:11px;font-weight:700;color:var(--green);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">YOU COVERED WELL:</div>`;fb.coveredConcepts.forEach(c=>{h+=`<span class="concept-tag concept-covered">${c}</span>`;});}h+=`</div>`;}
-  if(fb.suggestions?.length){h+=`<div class="fb-section" style="background:var(--blue-s);border:1px solid #c8d8f0"><h3 style="color:var(--blue)">🚀 Improvement Areas</h3>`;fb.suggestions.forEach(s=>{h+=`<div class="fb-item fb-blue">📖 ${s}</div>`;});h+=`</div>`;}
-  if(fb.encouragement){h+=`<div class="mentor-note"><h4>👋 From Your AI Mentor</h4><p>${fb.encouragement}</p></div>`;}
-  if(fb.isGarbage&&fb.garbageWarning){h+=`<div style="background:var(--red-s);border:2px solid var(--red);border-radius:12px;padding:16px;margin-bottom:16px"><h4 style="color:var(--red);font-size:13px;font-weight:800;margin-bottom:6px">⚠️ Submission Flagged</h4><p style="font-size:13px;color:#8b1a1a;line-height:1.6">${fb.garbageWarning}</p></div>`;}
-  h+=`<div style="display:flex;gap:10px;margin-top:20px;flex-wrap:wrap"><button class="btn btn-ghost" onclick="goBack()">← Back</button><button class="btn btn-primary" onclick="reAnalyze()">🔄 Re-analyse</button><button class="btn btn-ghost" onclick="switchTab('history')">📊 View History</button></div>`;
-  document.getElementById('step-results').innerHTML=h;
-  document.getElementById('step-results').style.display='block';
-  window.scrollTo({top:0,behavior:'smooth'});
+function renderResults(data) {
+  const fb = data.feedback;
+  const score = fb.score || 0;
+  const grade = fb.grade || '—';
+  const circ = 2 * Math.PI * 52;
+  const off = circ - (score / 100) * circ;
+  const sc = score >= 70 ? 'var(--teal)' : score >= 40 ? 'var(--gold-bright)' : 'var(--red)';
+  const gl = {
+    'A+': 'Excellent', A: 'Excellent', 'B+': 'Good', B: 'Good',
+    'C+': 'Average', C: 'Average', D: 'Below Average', F: 'Needs Improvement',
+  };
+
+  // ── HERO ─────────────────────────────────────────────────────────
+  let h = `
+    <div class="score-hero">
+      <div class="score-ring">
+        <svg width="130" height="130" viewBox="0 0 130 130">
+          <circle cx="65" cy="65" r="52" stroke="rgba(255,255,255,.12)" stroke-width="9" fill="none"/>
+          <circle cx="65" cy="65" r="52" stroke="${sc}" stroke-width="9" fill="none"
+            stroke-dasharray="${circ}" stroke-dashoffset="${off}" stroke-linecap="round"
+            style="transition:stroke-dashoffset 1.2s ease-out"/>
+        </svg>
+        <div class="score-ring-text">
+          <div class="score-ring-num">${score}</div>
+          <div class="score-ring-label">/ 100</div>
+        </div>
+      </div>
+      <div class="score-content">
+        <div class="score-eyebrow">Final Assessment</div>
+        <div class="score-row">
+          <span class="score-grade">${grade}</span>
+          <span class="grade-label">${gl[grade] || gl[grade?.charAt(0)] || 'Reviewed'}</span>
+        </div>
+        <div class="score-summary">${fb.summary || ''}</div>
+        <div class="meta-pills">
+          <span class="meta-pill">${ICON.text} ${fb.wordCount || 0} words</span>
+          ${data.processingTimeMs ? `<span class="meta-pill">${ICON.clock} ${(data.processingTimeMs/1000).toFixed(1)}s</span>` : ''}
+          ${data.submission?.attemptNumber ? `<span class="meta-pill">${ICON.refresh} Attempt #${data.submission.attemptNumber}</span>` : ''}
+        </div>
+      </div>
+    </div>`;
+
+  // ── HUMAN vs AI BAR ─────────────────────────────────────────────
+  if (fb.humanLikelihoodPercent != null && fb.aiLikelihoodPercent != null) {
+    const human = fb.humanLikelihoodPercent;
+    const ai = fb.aiLikelihoodPercent;
+    const verdictMap = {
+      'very-likely-human': {label:'Very Likely Human', bg:'var(--green-soft)', col:'var(--green)'},
+      'likely-human':      {label:'Likely Human',      bg:'var(--green-soft)', col:'var(--green)'},
+      'uncertain':         {label:'Mixed Signals',     bg:'var(--amber-soft)', col:'var(--amber)'},
+      'likely-ai':         {label:'Likely AI-Generated', bg:'var(--red-soft)', col:'var(--red)'},
+      'very-likely-ai':    {label:'Very Likely AI',    bg:'var(--red-soft)',   col:'var(--red)'},
+    };
+    const v = verdictMap[fb.aiVerdict] || verdictMap['uncertain'];
+    h += `
+      <div class="aih-card">
+        <div class="aih-head">
+          <div class="aih-title"><span class="accent-bar"></span>Authorship Detection</div>
+          <span class="aih-verdict-pill" style="background:${v.bg};color:${v.col}">${v.label}</span>
+        </div>
+        <div class="aih-sub">How much of your answer reads as written by you vs generated by an AI tool.</div>
+        <div class="aih-bar">
+          <div class="aih-seg aih-seg-human" style="flex:${Math.max(human,8)}">
+            ${human >= 12 ? `<span>Human</span><span class="seg-pct">${human}%</span>` : ''}
+          </div>
+          <div class="aih-seg aih-seg-ai" style="flex:${Math.max(ai,8)}">
+            ${ai >= 12 ? `<span>AI</span><span class="seg-pct">${ai}%</span>` : ''}
+          </div>
+        </div>
+        <div class="aih-legend">
+          <span><strong>${human}% Human-written</strong> — your own thinking</span>
+          <span><strong>${ai}% AI-generated</strong> — auto-written feel</span>
+        </div>
+        ${fb.aiDetectionReason ? `<div class="aih-reason"><strong>How we know:</strong> ${fb.aiDetectionReason}</div>` : ''}
+      </div>`;
+  }
+
+  // ── Garbage warning ─────────────────────────────────────────────
+  if (fb.isGarbage && fb.garbageWarning) {
+    h += `<div class="garbage-warn">
+      <h4>${ICON.alert.replace('class="icon"', 'class="icon icon-sm"')} Submission Flagged</h4>
+      <p>${fb.garbageWarning}</p>
+    </div>`;
+  }
+
+  // ── Rubric Breakdown ────────────────────────────────────────────
+  if (fb.rubricScores?.length) {
+    h += `<div class="card">
+      <div class="card-head"><span class="card-title"><span class="accent-bar teal"></span>Rubric Breakdown</span></div>
+      <div class="card-body">`;
+    fb.rubricScores.forEach(r => {
+      const p = r.maxScore > 0 ? Math.round(r.score / r.maxScore * 100) : 0;
+      const c = p >= 70 ? 'var(--green)' : p >= 40 ? 'var(--gold)' : 'var(--red)';
+      h += `<div class="rubric-item">
+        <div class="rubric-name">${r.criteria}</div>
+        <div class="rubric-bar"><div class="rubric-bar-fill" style="width:${p}%;background:${c}"></div></div>
+        <div class="rubric-score" style="color:${c}">${r.score}/${r.maxScore}</div>
+        <div class="rubric-pct">${p}%</div>
+      </div>`;
+    });
+    h += `</div></div>`;
+  }
+
+  // ── STRENGTHS ──────────────────────────────────────────────────
+  if (fb.strengths?.length) {
+    h += `<div class="fb-section fb-green">
+      <h3 style="color:var(--green)">${ICON.check} What You Did Well</h3>`;
+    fb.strengths.forEach(s => h += `<div class="fb-item"><span class="fb-item-bullet"></span><span>${s}</span></div>`);
+    if (fb.coveredConcepts?.length) {
+      h += `<div class="concept-label" style="color:var(--green)">Concepts You Covered</div>`;
+      fb.coveredConcepts.forEach(c => h += `<span class="concept-tag concept-covered">${c}</span>`);
+    }
+    h += `</div>`;
+  }
+
+  // ── IMPROVEMENTS ────────────────────────────────────────────────
+  if (fb.improvements?.length) {
+    h += `<div class="fb-section fb-amber">
+      <h3 style="color:var(--amber)">${ICON.upArrow} What to Improve</h3>`;
+    fb.improvements.forEach(i => h += `<div class="fb-item"><span class="fb-item-bullet"></span><span>${i}</span></div>`);
+    if (fb.missingConcepts?.length) {
+      h += `<div class="concept-label" style="color:var(--amber)">Concepts You Missed</div>`;
+      fb.missingConcepts.forEach(c => h += `<span class="concept-tag concept-missing">${c}</span>`);
+    }
+    h += `</div>`;
+  }
+
+  // ── SUGGESTED MODULES ──────────────────────────────────────────
+  if (fb.suggestions?.length) {
+    h += `<div class="fb-section fb-blue">
+      <h3 style="color:var(--blue)">${ICON.book} Suggested Study Topics</h3>`;
+    fb.suggestions.forEach(s => h += `<div class="fb-item"><span class="fb-item-bullet"></span><span>${s}</span></div>`);
+    h += `</div>`;
+  }
+
+  // ── Mentor encouragement ──────────────────────────────────────
+  if (fb.encouragement) {
+    h += `<div class="mentor-note">
+      <div class="mentor-eyebrow">A Note from your Mentor</div>
+      <h4>${escapeHtml(getMentorHeading(score))}</h4>
+      <p>${fb.encouragement}</p>
+    </div>`;
+  }
+
+  // ── Action buttons ────────────────────────────────────────────
+  h += `<div style="display:flex;gap:10px;margin-top:24px;flex-wrap:wrap">
+    <button class="btn btn-ghost" onclick="goBack()">← Back to Cases</button>
+    <button class="btn btn-primary" onclick="reAnalyze()" style="flex:1;min-width:180px">
+      ${ICON.refresh.replace('class="icon"', 'class="icon icon-sm"')} Re-analyse
+    </button>
+    <button class="btn btn-ghost" onclick="switchTab('history')">View History</button>
+  </div>`;
+
+  document.getElementById('step-results').innerHTML = h;
+  document.getElementById('step-results').style.display = 'block';
+  window.scrollTo({top: 0, behavior: 'smooth'});
 }
 
-function reAnalyze(){document.getElementById('step-results').style.display='none';document.getElementById('step-answer').style.display='block';}
+function getMentorHeading(score) {
+  if (score >= 85) return 'Outstanding work.';
+  if (score >= 70) return 'Strong foundation, keep building.';
+  if (score >= 55) return 'You\u2019re on the right track.';
+  if (score >= 40) return 'There\u2019s good thinking here \u2014 let\u2019s sharpen it.';
+  return 'Every expert started here. Let\u2019s rebuild together.';
+}
 
-async function loadHistory(){
-  const p=document.getElementById('panel-history');
-  p.innerHTML='<div class="card"><div class="card-body"><div class="loading-center"><div class="spinner"></div><div class="loading-msg">Loading history...</div></div></div></div>';
-  try{
-    const r=await fetch(API+'/api/review/student-progress/'+studentId);
-    const d=await r.json();
-    const items=d.student?.caseStudies||[];
-    if(!items.length){p.innerHTML='<div class="card"><div class="card-body"><div class="empty"><div class="empty-icon">📊</div><p>No reviews yet</p><p style="font-size:12px;margin-top:6px">Submit a case study for your first AI review</p></div></div></div>';return;}
-    const scores=items.map(i=>i.ai_score||i.score||0);
-    const avg=Math.round(scores.reduce((a,b)=>a+b,0)/scores.length);
-    const best=Math.max(...scores);
-    let h=`<div class="stats-grid">${[{l:'Total Reviews',v:items.length,c:'var(--navy)'},{l:'Average Score',v:avg+'%',c:avg>=70?'var(--green)':'var(--gold)'},{l:'Best Score',v:best+'%',c:'var(--green)'},{l:'Latest Score',v:scores[0]+'%',c:scores[0]>=70?'var(--green)':'var(--red)'}].map(m=>`<div class="stat-card" style="border-top:3px solid ${m.c}"><div class="stat-label">${m.l}</div><div class="stat-value">${m.v}</div></div>`).join('')}</div><div class="card"><div class="card-head"><span class="card-title">📋 Review History</span><span style="font-size:12px;color:var(--subtle)">${items.length} reviews</span></div>`;
-    items.forEach((item,i)=>{const s=item.ai_score||item.score||0;const g=item.ai_grade||item.grade||'-';const c=s>=70?'var(--green)':s>=40?'var(--gold)':'var(--red)';const bg=s>=70?'var(--green-s)':s>=40?'var(--gold-s)':'var(--red-s)';h+=`<div class="hist-item"><div class="hist-score" style="border-color:${c};color:${c};background:${bg}">${s}</div><div style="flex:1"><div style="font-size:14px;font-weight:700;color:var(--navy)">Case Study #${item.case_study_id||(i+1)}</div><div style="font-size:12px;color:var(--muted)">Grade: ${g} · Attempt #${item.attempt_number||1}</div></div><div style="font-size:11px;color:var(--subtle)">${item.reviewed_at?new Date(item.reviewed_at).toLocaleDateString('en-IN',{day:'2-digit',month:'short'}):''}</div></div>`;});
-    h+='</div>';p.innerHTML=h;
-  }catch{p.innerHTML='<div class="card"><div class="card-body"><div class="empty"><div class="empty-icon">⚠️</div><p>Could not load history</p></div></div></div>';}
+function escapeHtml(s){return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+
+function reAnalyze() {
+  document.getElementById('step-results').style.display = 'none';
+  document.getElementById('step-answer').style.display = 'block';
+}
+
+async function loadHistory() {
+  const p = document.getElementById('panel-history');
+  p.innerHTML = `<div class="card"><div class="card-body">
+    <div class="empty"><div class="empty-icon">${ICON.clock}</div><p>Loading history…</p></div>
+  </div></div>`;
+  try {
+    const r = await fetch(API + '/api/review/student-progress/' + studentId, {headers: authHeaders()});
+    const d = await r.json();
+    const items = d.student?.caseStudies || [];
+    if (!items.length) {
+      p.innerHTML = `<div class="card"><div class="card-body">
+        <div class="empty">
+          <div class="empty-icon">${ICON.doc}</div>
+          <p>No reviews yet</p>
+          <p class="empty-sub">Submit a case study for your first AI review</p>
+        </div>
+      </div></div>`;
+      return;
+    }
+    const scores = items.map(i => i.bestScore || i.currentScore || 0);
+    const avg = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
+    const best = Math.max(...scores);
+    const stats = [
+      {l: 'Total Reviews', v: items.length,        c: 'var(--navy)'},
+      {l: 'Average Score', v: avg + '%',           c: avg >= 70 ? 'var(--teal)' : avg >= 40 ? 'var(--gold)' : 'var(--red)'},
+      {l: 'Best Score',    v: best + '%',          c: 'var(--teal)'},
+      {l: 'Latest',        v: scores[0] + '%',     c: scores[0] >= 70 ? 'var(--teal)' : scores[0] >= 40 ? 'var(--gold)' : 'var(--red)'},
+    ];
+    let h = `<div class="stats-grid">${stats.map(m => `
+      <div class="stat-card" style="border-top:3px solid ${m.c}">
+        <div class="stat-label">${m.l}</div>
+        <div class="stat-value" style="color:${m.c}">${m.v}</div>
+      </div>`).join('')}</div>
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title"><span class="accent-bar"></span>Review History</span>
+          <span style="font-size:11px;color:var(--subtle);font-weight:700;letter-spacing:.1em;text-transform:uppercase">${items.length} review${items.length !== 1 ? 's' : ''}</span>
+        </div>`;
+    items.forEach((item, i) => {
+      const s = Math.round(item.bestScore || item.currentScore || 0);
+      const c = s >= 70 ? 'var(--green)' : s >= 40 ? 'var(--amber)' : 'var(--red)';
+      const bg = s >= 70 ? 'var(--green-soft)' : s >= 40 ? 'var(--amber-soft)' : 'var(--red-soft)';
+      const trendChar = item.improvement > 0 ? '↑' : item.improvement < 0 ? '↓' : '·';
+      const trendCol  = item.improvement > 0 ? 'var(--green)' : item.improvement < 0 ? 'var(--red)' : 'var(--subtle)';
+      const trendTxt  = item.improvement > 0 ? `+${Math.round(item.improvement)}%`
+                     : item.improvement < 0 ? `${Math.round(item.improvement)}%` : 'no change';
+      h += `<div class="hist-item">
+        <div class="hist-score" style="border-color:${c};color:${c};background:${bg}">${s}</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:14.5px;font-weight:700;color:var(--navy);margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${item.title || ('Case Study #' + item.caseStudyId)}</div>
+          <div style="font-size:12px;color:var(--muted)">
+            Attempt ${item.totalAttempts || 1} · Best ${Math.round(item.bestScore)}% ·
+            <span style="color:${trendCol};font-weight:700">${trendChar} ${trendTxt}</span>
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--subtle);font-weight:600;letter-spacing:.06em;text-transform:uppercase">
+          ${item.lastAttempt ? new Date(item.lastAttempt).toLocaleDateString('en-IN', {day: '2-digit', month: 'short'}) : ''}
+        </div>
+      </div>`;
+    });
+    h += '</div>';
+    p.innerHTML = h;
+  } catch {
+    p.innerHTML = `<div class="card"><div class="card-body">
+      <div class="empty"><div class="empty-icon">${ICON.alert}</div><p>Could not load history</p></div>
+    </div></div>`;
+  }
 }
 </script>
 </body>

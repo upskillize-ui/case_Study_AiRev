@@ -1,11 +1,11 @@
 # app/services/db_service.py
-# All database operations — connects to your MySQL on Avian Cloud.
-#
-# IMPORTANT: this file has been adapted to the LMS-created schema.
-# The original code assumed columns like `attempt_number`, `answer_text`,
-# `ai_score`, `ai_feedback`, etc. — none of which exist in the live tables.
-# We map to the actual columns (`notes`, `grade`, `feedback`, `rubric_scores`,
-# etc.) and pack the rich AI analysis into the `feedback` TEXT field as JSON.
+# FIXED:
+#   - Bug #2: get_latest_submission_file now filters by student_id only.
+#     No more cross-student data leak.
+#   - Bug #5: save_submission UPDATEs notes when row exists (re-submit
+#     no longer silently lost).
+#   - Bug #7: get_case_study_by_id no longer feeds learning_objectives
+#     paragraph into key_concepts.
 
 import json
 from app.database import query, execute
@@ -36,18 +36,18 @@ def get_case_study_by_id(case_study_id: int) -> dict | None:
     questions = jload(cs.get("questions"), [])
     model_answers = []  # column doesn't exist in LMS schema
 
-    # rubric: LMS stores [{"name":"X","points":25}, ...]
-    # scoring_service expects {"criteria":[{"name":"X","maxScore":25}, ...]}
+    # rubric: LMS stores [{"name":"X","points":25}, ...] OR
+    # [{"name":"X","maxScore":25}, ...]. Handle both.
     raw_rubric = jload(cs.get("rubric_criteria"), [])
     if isinstance(raw_rubric, list):
-        criteria = [
-            {
+        criteria = []
+        for c in raw_rubric:
+            max_score = c.get("maxScore", c.get("points", 25))
+            criteria.append({
                 "name": c.get("name", "Criterion"),
-                "maxScore": c.get("points", c.get("maxScore", 25)),
-                "weight": (c.get("points", 25) / 100),
-            }
-            for c in raw_rubric
-        ]
+                "maxScore": max_score,
+                "weight": (max_score / 100),
+            })
     elif isinstance(raw_rubric, dict):
         criteria = raw_rubric.get("criteria", [])
     else:
@@ -62,14 +62,18 @@ def get_case_study_by_id(case_study_id: int) -> dict | None:
         ]
     grading_rubric = {"criteria": criteria}
 
-    key_concepts = [
-        s for s in [
-            cs.get("company_name"),
-            cs.get("industry"),
-            cs.get("learning_objectives"),
-        ]
-        if s and isinstance(s, str)
-    ]
+    # FIXED: Don't include learning_objectives (a paragraph) as a "concept".
+    # Only short identifiers count as searchable concepts.
+    key_concepts = []
+    for s in [cs.get("company_name"), cs.get("industry")]:
+        if s and isinstance(s, str) and len(s.split()) <= 4:
+            key_concepts.append(s)
+    # Optional dedicated column if you add one later:
+    extra = jload(cs.get("key_concepts"), [])
+    if isinstance(extra, list):
+        for s in extra:
+            if isinstance(s, str) and s and s not in key_concepts:
+                key_concepts.append(s)
 
     word_limit = cs.get("word_limit") or 500
     word_limit_max = int(word_limit)
@@ -102,51 +106,43 @@ def get_all_case_studies(course_id: int) -> list:
 def get_latest_submission_file(case_study_id: int, student_id: int,
                                exclude_submission_id: int | None = None) -> dict | None:
     """
-    Find the BEST submission for this case study — one that actually has content
-    (a file, or substantial notes). Checks the specific student first, then
-    falls back to any student's submission for this case study.
+    FIXED: Only this student's own submissions. No cross-student fallback.
 
-    Returns the submission with the most useful content:
-      Priority: has file_url > has long notes > has any notes > anything
+    Returns the most recent submission with content (file or notes).
     """
-    # Get ALL submissions for this case study (not just one student)
+    if not student_id or student_id <= 0:
+        return None
+
     sql = (
         "SELECT id, file_url, file_name, notes, student_id "
         "FROM case_study_submissions "
-        "WHERE case_study_id = %s "
+        "WHERE case_study_id = %s AND student_id = %s "
     )
-    params: tuple = (case_study_id,)
+    params: tuple = (case_study_id, student_id)
     if exclude_submission_id is not None:
         sql += "AND id <> %s "
-        params = (case_study_id, exclude_submission_id)
-    sql += "ORDER BY submitted_at DESC LIMIT 10"
+        params = (case_study_id, student_id, exclude_submission_id)
+    sql += "ORDER BY submitted_at DESC LIMIT 5"
 
     rows = query(sql, params)
     if not rows:
-        print(f"📄 No submissions found for case_study={case_study_id}")
+        print(f"📄 No submissions for case_study={case_study_id} student={student_id}")
         return None
 
-    # Score each submission by usefulness
+    # Prefer the row with the most useful content (file > long notes > anything)
     def score_row(row):
         s = 0
         if row.get("file_url"):
-            s += 100   # has a file = best
+            s += 100
         notes_len = len(row.get("notes") or "")
-        s += min(notes_len, 50)  # longer notes = better (cap at 50)
-        if row.get("student_id") == student_id:
-            s += 10    # prefer matching student
+        s += min(notes_len, 200)
         return s
 
     rows.sort(key=score_row, reverse=True)
     best = rows[0]
-
-    is_exact = best.get("student_id") == student_id
-    print(f"📄 {'Found' if is_exact else 'Fallback:'} submission id={best['id']} "
-          f"{'for' if is_exact else 'from'} student={best.get('student_id', '?')}"
-          f"{'' if is_exact else f' (requested student={student_id})'}, "
+    print(f"📄 Found submission id={best['id']} for student={student_id}: "
           f"notes={len(best.get('notes') or '')} chars, "
           f"file={'yes' if best.get('file_url') else 'no'}")
-
     return best
 
 
@@ -154,12 +150,11 @@ def get_latest_submission_file(case_study_id: int, student_id: int,
 
 def save_submission(case_study_id: int, student_id: int, answer_text: str, word_count: int) -> dict:
     """
-    Insert or update a row in case_study_submissions.
+    FIXED: Re-submissions now UPDATE the notes column (Bug #5).
+    Previously the new answer text was silently discarded.
 
-    The LMS schema has a unique constraint on (case_study_id, student_id),
-    so we can't insert multiple rows for the same student+case_study.
-    If a row already exists, DON'T overwrite the notes — the student's
-    original answer must be preserved. Just return the existing submission ID.
+    Returns the submission row's id and a real attempt counter (from the
+    performance tracker, which is the canonical source).
     """
     existing = query(
         "SELECT id FROM case_study_submissions "
@@ -168,31 +163,35 @@ def save_submission(case_study_id: int, student_id: int, answer_text: str, word_
     )
 
     if existing:
-        # Row exists — preserve the student's original notes, don't overwrite
         submission_id = existing[0]["id"]
-        attempt_number = len(existing) + 1
+        if answer_text:
+            execute(
+                """UPDATE case_study_submissions SET
+                    notes = %s, status = 'submitted', reviewed_at = NULL
+                  WHERE id = %s""",
+                (answer_text, submission_id),
+            )
     else:
-        # First submission
         submission_id = execute(
             """INSERT INTO case_study_submissions
                (case_study_id, student_id, notes, status)
                VALUES (%s, %s, %s, 'submitted')""",
             (case_study_id, student_id, answer_text),
         )
-        attempt_number = 1
+
+    # Real attempt number from performance tracker (existing column)
+    tracker = query(
+        "SELECT total_attempts FROM student_performance_tracker "
+        "WHERE student_id = %s AND case_study_id = %s",
+        (student_id, case_study_id),
+    )
+    attempt_number = (tracker[0]["total_attempts"] + 1) if tracker else 1
 
     return {"submissionId": submission_id, "attemptNumber": attempt_number}
 
 
 def update_submission_with_ai_results(submission_id: int, result: dict):
-    """
-    Persist AI analysis to the simpler LMS schema:
-      grade           <- totalScore
-      feedback        <- full structured AI result, JSON-encoded
-      rubric_scores   <- {criterion_name: score, ...}
-      status          <- 'reviewed'
-      reviewed_at     <- NOW()
-    """
+    """Persist AI analysis to the LMS schema."""
     rubric_scores_dict = {
         r.get("criteria", f"Criterion {i+1}"): r.get("score", 0)
         for i, r in enumerate(result.get("rubricScores", []))
@@ -212,7 +211,6 @@ def update_submission_with_ai_results(submission_id: int, result: dict):
         "needsMentorHelp":  bool(result.get("needsMentorHelp")),
         "wordCount":        result.get("wordCount"),
         "wordCountMessage": result.get("wordCountMessage", ""),
-        # NEW — Human/AI detection + garbage flag
         "aiLikelihoodPercent":    result.get("aiLikelihoodPercent"),
         "humanLikelihoodPercent": result.get("humanLikelihoodPercent"),
         "aiDetectionReason":      result.get("aiDetectionReason", ""),
@@ -238,7 +236,7 @@ def update_submission_with_ai_results(submission_id: int, result: dict):
     )
 
 
-# ===== PERFORMANCE TRACKER (schema matches — unchanged) =====
+# ===== PERFORMANCE TRACKER =====
 
 def update_performance_tracker(student_id: int, case_study_id: int, score: float):
     status = "completed" if score >= 70 else ("needs_help" if score < 40 else "in_progress")
@@ -313,7 +311,7 @@ def get_student_progress(student_id: int) -> dict:
     }
 
 
-# ===== MENTOR DASHBOARD (rewritten for LMS schema) =====
+# ===== MENTOR DASHBOARD =====
 
 def get_mentor_dashboard(case_study_id: int) -> dict:
     submissions = query(
@@ -378,15 +376,10 @@ def get_mentor_dashboard(case_study_id: int) -> dict:
     }
 
 
-# ===== MENTOR ACTIONS (rewritten for LMS schema) =====
+# ===== MENTOR ACTIONS =====
 
 def mentor_approve_submission(submission_id: int, mentor_id: int,
                               mentor_score: float | None, mentor_feedback: str | None):
-    """
-    LMS schema doesn't have mentor_id / mentor_approved / mentor_reviewed_at.
-    We store the mentor's score in `grade`, mentor's feedback (with the
-    mentor_id tagged in JSON) in `feedback`, and mark status as 'reviewed'.
-    """
     payload = {
         "mentorId": mentor_id,
         "mentorFeedback": mentor_feedback,
@@ -420,7 +413,7 @@ def mentor_approve_submission(submission_id: int, mentor_id: int,
             update_performance_tracker(rows[0]["student_id"], rows[0]["case_study_id"], mentor_score)
 
 
-# ===== AI REVIEW LOGS (schema matches — unchanged) =====
+# ===== AI REVIEW LOGS =====
 
 def log_ai_review(submission_id: int, meta: dict | None,
                   raw_response=None, error: str | None = None):

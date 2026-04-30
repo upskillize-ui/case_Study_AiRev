@@ -1,5 +1,10 @@
 # app/services/ai_service.py
 # THE BRAIN — calls Hugging Face (free) or Claude (paid)
+#
+# FIXED:
+#   - Bug #11: handles unclosed <think> tags from DeepSeek-R1 truncation
+#   - Bug #10: Anthropic model bumped to claude-sonnet-4-5 (current default)
+#   - Better error logging without leaking secrets
 
 import os
 import re
@@ -61,25 +66,24 @@ def analyze_answer(
         raise
 
 
+def _strip_think_tags(text: str) -> str:
+    """
+    Strip DeepSeek-R1-style reasoning blocks.
+    Handles BOTH closed <think>...</think> AND truncated unclosed <think>...
+    (Bug #11 fix.)
+    """
+    if not text:
+        return ""
+    # First, closed pairs
+    text = re.sub(r"<think>[\s\S]*?</think>", "", text)
+    # Then, any unclosed leftover (truncation case)
+    text = re.sub(r"<think>[\s\S]*$", "", text)
+    return text.strip()
+
+
 def _analyze_with_huggingface(
     case_study, model_answer, student_answer, grading_rubric, key_concepts
 ):
-    """
-    Calls the Hugging Face router.
-
-    FIXES vs original:
-      1. Provider is encoded in the model id as "<model>:<provider>".
-         The router does NOT accept a "provider" body field — that's
-         SDK-only. Sending it causes silent 400s, which is why every
-         model in your old list was failing.
-      2. DeepSeek-R1 is a reasoning model that consumes tokens inside
-         <think> tags before producing JSON. 2000 tokens is too small;
-         it needs ~6000. We also try a fast instruct model first so
-         most requests don't hit R1 at all.
-      3. We surface the actual HTTP body when a model fails so you can
-         see WHY it failed in the logs (auth, quota, bad model id, etc.)
-         instead of a vague "unavailable".
-    """
     token = os.getenv("HF_ACCESS_TOKEN")
     if not token:
         raise Exception("HF_ACCESS_TOKEN env var is not set")
@@ -89,18 +93,16 @@ def _analyze_with_huggingface(
     )
 
     system_msg = (
-        "You are a warm, encouraging academic coach for a Post Graduate Diploma in "
-        "FinTech, Banking and AI. You evaluate student answers thoughtfully and give "
-        "constructive, supportive feedback. Always speak directly to the student using "
-        "'you'. Never use harsh language. Be honest but kind. "
-        "You MUST respond with ONLY a valid JSON object — no markdown, no backticks, "
-        "no explanation. Just pure JSON."
+        "You are a warm, encouraging academic coach for the Upskillize "
+        "Post Graduate Diploma in FinTech, Banking and AI. You evaluate "
+        "student answers thoughtfully and give constructive, supportive "
+        "feedback. Always speak directly to the student using 'you'. Never "
+        "use harsh language. Be honest but kind. "
+        "You MUST respond with ONLY a valid JSON object — no markdown, no "
+        "backticks, no explanation. Just pure JSON."
     )
 
     # (model_id_with_provider_suffix, max_tokens)
-    # Order: fast non-reasoning models first; R1 last with extra room.
-    # Note: cerebras dropped — meta-llama/Llama-3.3-70B-Instruct was
-    # deprecated by Cerebras provider (HTTP 410).
     models = [
         ("meta-llama/Llama-3.3-70B-Instruct:novita",   2000),
         ("deepseek-ai/DeepSeek-V3-0324:novita",        2000),
@@ -120,28 +122,26 @@ def _analyze_with_huggingface(
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": model,        # provider lives in the suffix
+                    "model": model,
                     "messages": [
                         {"role": "system", "content": system_msg},
                         {"role": "user",   "content": prompt},
                     ],
                     "max_tokens": max_tokens,
                     "temperature": 0.3,
-                    # NOTE: deliberately no "provider" key here.
                 },
                 timeout=120.0,
             )
 
             if resp.status_code >= 400:
+                # Truncate body to avoid log spam; never logs request headers (which carry the token)
                 raise Exception(
-                    f"HTTP {resp.status_code} from router: {resp.text[:400]}"
+                    f"HTTP {resp.status_code} from router: {resp.text[:300]}"
                 )
 
             data = resp.json()
             text = data["choices"][0]["message"]["content"] or ""
-
-            # DeepSeek-R1 wraps reasoning in <think> tags — strip them
-            text = re.sub(r"<think>[\s\S]*?</think>", "", text).strip()
+            text = _strip_think_tags(text)
 
             if not text:
                 raise Exception(
@@ -169,15 +169,18 @@ def _analyze_with_claude(
         case_study, model_answer, student_answer, grading_rubric, key_concepts
     )
 
-    model = "claude-sonnet-4-20250514"
+    # FIXED: Sonnet 4.5 is the current default. For cheaper bulk reviews
+    # use "claude-haiku-4-5". Override via ANTHROPIC_MODEL env var.
+    model = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")
 
     response = client.messages.create(
         model=model,
         max_tokens=2000,
         system=(
-            "You are a warm, encouraging academic coach for a Post Graduate Diploma in "
-            "FinTech, Banking and AI. Evaluate student answers with kindness and precision. "
-            "Always speak directly to the student using 'you'. Never use harsh language. "
+            "You are a warm, encouraging academic coach for the Upskillize "
+            "Post Graduate Diploma in FinTech, Banking and AI. Evaluate "
+            "student answers with kindness and precision. Always speak "
+            "directly to the student using 'you'. Never use harsh language. "
             "Respond with ONLY valid JSON."
         ),
         messages=[{"role": "user", "content": prompt}],

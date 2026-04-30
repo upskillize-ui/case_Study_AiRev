@@ -1,9 +1,8 @@
 # app/services/scoring_service.py
-# Converts AI analysis into final scores and grades.
-#
-# This version uses the AI's per-criterion scores (from `criterionScores` in the
-# AI response) instead of brittle keyword matching. The keyword logic is kept
-# only as a safety fallback when the AI doesn't return a score for a criterion.
+# FIXED:
+#   - Bug #6: Fuzzy criterion name match. AI returning "Understanding" when
+#     rubric says "Understanding of Concepts" no longer falls through to
+#     legacy keyword scoring. Now case-insensitive + substring match.
 
 
 def calculate_scores(ai_analysis: dict, grading_rubric: dict, word_count: int,
@@ -18,12 +17,13 @@ def calculate_scores(ai_analysis: dict, grading_rubric: dict, word_count: int,
 
         if is_garbage:
             ai_score = 0
-        elif name in criterion_scores:
-            # Preferred path: AI scored this exact criterion by name
-            ai_score = criterion_scores[name]
         else:
-            # Fallback: legacy keyword matching against generic dimensions
-            ai_score = _legacy_keyword_score(name, ai_analysis)
+            matched = _find_score_for_criterion(name, criterion_scores)
+            if matched is not None:
+                ai_score = matched
+            else:
+                # Fallback: legacy keyword matching
+                ai_score = _legacy_keyword_score(name, ai_analysis)
 
         ai_score = max(0, min(100, int(round(float(ai_score)))))
         weighted_score = round((ai_score / 100) * max_score, 2)
@@ -67,6 +67,53 @@ def calculate_scores(ai_analysis: dict, grading_rubric: dict, word_count: int,
         "wordCountNote":    word_count_note,
         "rawTotal":         round(raw_total),
     }
+
+
+def _find_score_for_criterion(name: str, criterion_scores: dict):
+    """
+    Tolerant lookup. Tries:
+      1. exact match
+      2. case-insensitive exact match
+      3. substring match either direction
+      4. token-overlap match (Jaccard >= 0.5)
+    Returns None if no match found.
+    """
+    if not name or not isinstance(criterion_scores, dict) or not criterion_scores:
+        return None
+
+    # 1. exact
+    if name in criterion_scores:
+        return criterion_scores[name]
+
+    n_low = name.lower().strip()
+
+    # 2. case-insensitive
+    for k, v in criterion_scores.items():
+        if isinstance(k, str) and k.lower().strip() == n_low:
+            return v
+
+    # 3. substring
+    for k, v in criterion_scores.items():
+        if not isinstance(k, str):
+            continue
+        kl = k.lower().strip()
+        if n_low in kl or kl in n_low:
+            return v
+
+    # 4. token-overlap (Jaccard)
+    n_tokens = set(n_low.split())
+    if n_tokens:
+        for k, v in criterion_scores.items():
+            if not isinstance(k, str):
+                continue
+            k_tokens = set(k.lower().split())
+            if not k_tokens:
+                continue
+            jacc = len(n_tokens & k_tokens) / len(n_tokens | k_tokens)
+            if jacc >= 0.5:
+                return v
+
+    return None
 
 
 def _legacy_keyword_score(name: str, ai_analysis: dict) -> int:
