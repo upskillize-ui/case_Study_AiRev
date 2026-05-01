@@ -1,30 +1,32 @@
 # main.py
-# Upskillize AI Case Study Review Agent — FastAPI entrypoint
+# Upskillize AI Review Agent — multi-tenant entrypoint
 #
-# FIXED:
-#   - Bug #3: CORS origins are now explicit (not "*"), credentials disabled.
-#   - Bug #4: x-api-key header is now validated on /api/review/* routes.
-#   - Methods restricted to what's actually used.
+# v3.0 (Option C — per-tenant API keys):
+#   - Auth dep validates x-api-key by looking up which tenant owns it
+#   - No X-Tenant-Id header needed (tenant inferred from key)
+#   - All db_service.py calls automatically go to the right tenant DB
 
 import os
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, Header, HTTPException, Depends
+from fastapi import FastAPI, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+
 from app.routes.review import router as review_router
-from app.database import test_connection
+from app.routes.assignment_review import router as assignment_router
+from app.tenants import resolve_tenant_by_key, all_tenant_ids, configured_tenant_ids, TENANTS, Tenant
+from app.database import test_all_tenants, set_current_tenant
 
 app = FastAPI(
-    title="Upskillize AI Case Study Review Agent",
-    description="AI-powered case study evaluation for the Upskillize LMS",
-    version="2.1.0",
+    title="Upskillize AI Review Agent",
+    description="Multi-tenant AI evaluation for case studies and assignments",
+    version="3.0.0",
 )
 
 # ===== CORS =====
-# FIXED: explicit origins; "*" is incompatible with credentials and risky.
 ALLOWED_ORIGINS = [
     o.strip() for o in os.getenv(
         "ALLOWED_ORIGINS",
@@ -37,45 +39,57 @@ ALLOWED_ORIGINS = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=False,                    # using header auth, not cookies
-    allow_methods=["GET", "POST", "OPTIONS"],   # explicit, no PUT/DELETE/PATCH
-    allow_headers=["Content-Type", "x-api-key"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "x-api-key"],   # X-Tenant-Id no longer needed
 )
 
 
-# ===== Auth dependency =====
-# FIXED: every /api/review/* call must present x-api-key matching the
-# AGENT_API_KEY env var. Set this on the HF Space (secret) and mirror it
-# as VITE_AGENT_API_KEY on Netlify.
-def require_api_key(x_api_key: str = Header(default="")):
-    expected = os.getenv("AGENT_API_KEY", "")
-    # If you haven't set AGENT_API_KEY yet (first deploy), allow through
-    # but log loudly — this is a safety net, not a permanent state.
-    if not expected:
-        print("⚠️  AGENT_API_KEY is not set — agent is publicly callable!")
-        return
-    if x_api_key != expected:
-        raise HTTPException(status_code=401, detail="invalid or missing x-api-key")
+# ===== Auth + tenant resolution dependency =====
+def require_auth_and_tenant(x_api_key: str = Header(default="")) -> Tenant:
+    """
+    Single dependency that:
+      1. Validates x-api-key by looking up which tenant owns it
+      2. Sets the request-scoped tenant context for db queries
+      3. Returns the Tenant for routes that want it explicitly
+
+    Tenant identity comes from the key — no other header needed.
+    """
+    tenant = resolve_tenant_by_key(x_api_key)
+    set_current_tenant(tenant)
+    return tenant
 
 
 # ===== Routes =====
-app.include_router(review_router, dependencies=[Depends(require_api_key)])
+app.include_router(review_router, dependencies=[Depends(require_auth_and_tenant)])
+app.include_router(assignment_router, dependencies=[Depends(require_auth_and_tenant)])
 
 
-# ===== Health Check (no auth — used for uptime checks) =====
+# ===== Public endpoints (no auth) =====
+
 @app.get("/health")
 async def health():
     return {
         "status": "ok",
-        "agent": "upskillize-case-study-reviewer",
-        "version": "2.1.0",
+        "agent": "upskillize-multi-tenant-reviewer",
+        "version": "3.0.0",
         "aiProvider": os.getenv("AI_PROVIDER", "huggingface"),
-        "authConfigured": bool(os.getenv("AGENT_API_KEY")),
-        "ui": "Visit / for the standalone web UI",
+        "tenants": all_tenant_ids(),
+        "tenantsConfigured": configured_tenant_ids(),
     }
 
 
-# ===== Serve frontend UI (no auth — public landing) =====
+@app.get("/api/tenants")
+async def list_tenants():
+    """Public list of tenants this agent serves (no auth, no DB credentials exposed)."""
+    return {
+        "tenants": [
+            {"id": t.id, "name": t.name, "label": t.label, "configured": t.has_api_key()}
+            for t in TENANTS.values()
+        ]
+    }
+
+
 @app.get("/")
 async def serve_ui():
     return FileResponse("static/index.html")
@@ -87,15 +101,23 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 @app.on_event("startup")
 async def startup():
     print("")
-    print("🚀 Upskillize AiRev Agent v2.1 (Standalone)")
+    print("🚀 Upskillize AiRev Agent v3.0 (Multi-Tenant — per-tenant keys)")
     print(f"   AI Provider     : {os.getenv('AI_PROVIDER', 'huggingface')}")
-    print(f"   API Key Auth    : {'ENABLED' if os.getenv('AGENT_API_KEY') else 'DISABLED — set AGENT_API_KEY!'}")
     print(f"   Allowed Origins : {ALLOWED_ORIGINS}")
+    print(f"   Registered      : {all_tenant_ids()}")
+    configured = configured_tenant_ids()
+    print(f"   Configured      : {configured}")
     print(f"   Web UI          : Visit / for the standalone frontend")
     print("")
-    print("   Testing database connection...")
-    db_ok = test_connection()
-    print(f"   Database: {'✅ Connected' if db_ok else '❌ Not connected'}")
+    if not configured:
+        print("   ⚠️  NO TENANTS CONFIGURED. Set <TENANT>_API_KEY and <TENANT>_DATABASE_URL")
+        print("       env vars on the HF Space, then restart.")
+        print("")
+        return
+    print("   Testing tenant database connections...")
+    results = test_all_tenants()
+    ok = sum(1 for v in results.values() if v)
+    print(f"   {ok}/{len(results)} tenant DBs connected")
     print("")
 
 
