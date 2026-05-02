@@ -41,7 +41,7 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "x-api-key"],   # X-Tenant-Id no longer needed
+    allow_headers=["Content-Type", "x-api-key"],
 )
 
 
@@ -52,8 +52,6 @@ def require_auth_and_tenant(x_api_key: str = Header(default="")) -> Tenant:
       1. Validates x-api-key by looking up which tenant owns it
       2. Sets the request-scoped tenant context for db queries
       3. Returns the Tenant for routes that want it explicitly
-
-    Tenant identity comes from the key — no other header needed.
     """
     tenant = resolve_tenant_by_key(x_api_key)
     set_current_tenant(tenant)
@@ -81,7 +79,7 @@ async def health():
 
 @app.get("/api/tenants")
 async def list_tenants():
-    """Public list of tenants this agent serves (no auth, no DB credentials exposed)."""
+    """Public list of tenants this agent serves."""
     return {
         "tenants": [
             {"id": t.id, "name": t.name, "label": t.label, "configured": t.has_api_key()}
@@ -110,7 +108,7 @@ async def startup():
     print(f"   Web UI          : Visit / for the standalone frontend")
     print("")
     if not configured:
-        print("   ⚠️  NO TENANTS CONFIGURED. Set <TENANT>_API_KEY and <TENANT>_DATABASE_URL")
+        print("   NO TENANTS CONFIGURED. Set <TENANT>_API_KEY and <TENANT>_DATABASE_URL")
         print("       env vars on the HF Space, then restart.")
         print("")
         return
@@ -119,6 +117,47 @@ async def startup():
     ok = sum(1 for v in results.values() if v)
     print(f"   {ok}/{len(results)} tenant DBs connected")
     print("")
+
+
+# ===== TEMPORARY DEBUG (REMOVE AFTER DIAGNOSIS) =====
+# Tells us exactly what x-api-key the agent received vs what's stored.
+# No auth required so we can call it freely with any/no key.
+@app.get("/api/debug/keycheck")
+async def debug_keycheck(x_api_key: str = Header(default="")):
+    received = x_api_key
+    received_len = len(received)
+    received_preview = received[:6] + "..." + received[-4:] if received_len > 10 else received
+
+    tenants_info = []
+    for tid, tenant in TENANTS.items():
+        try:
+            stored = tenant.api_key
+            stored_len = len(stored)
+            stored_preview = stored[:6] + "..." + stored[-4:] if stored_len > 10 else stored
+            matches = stored == received
+            tenants_info.append({
+                "tenant_id": tid,
+                "env_var_name": tenant.api_key_env,
+                "stored_length": stored_len,
+                "stored_preview": stored_preview,
+                "matches_received": matches,
+            })
+        except RuntimeError as e:
+            tenants_info.append({
+                "tenant_id": tid,
+                "env_var_name": tenant.api_key_env,
+                "error": str(e),
+            })
+
+    return {
+        "received_x_api_key": {
+            "length": received_len,
+            "preview": received_preview,
+            "is_empty": received_len == 0,
+        },
+        "tenants": tenants_info,
+    }
+# ===== END DEBUG =====
 
 
 if __name__ == "__main__":
