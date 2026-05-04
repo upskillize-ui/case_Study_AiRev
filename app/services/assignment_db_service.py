@@ -2,30 +2,29 @@
 # ---------------------------------------------------------------------------
 # DB queries for assignments (separate table from case studies).
 #
-# Assignment schema (from SHOW COLUMNS):
+# IMPORTANT: every function takes an explicit `tenant` argument and uses
+# tquery/texecute, NOT query/execute. This bypasses the contextvar approach
+# entirely — the tenant is passed through the call chain explicitly so we
+# can never accidentally hit the wrong DB.
+#
+# Schema:
 #   assignments(id, title, description, course_id, faculty_id, due_date,
 #               rubric (json), status, total_marks, created_at, updated_at)
-#
 #   assignment_submissions(id, assignment_id, student_id, file_path, file_name,
 #                          notes, grade, feedback, status, submitted_at)
-#
-# Differences vs case studies:
-#   - No `questions` column        -> use empty list
-#   - No `learning_objectives`     -> use description
-#   - No `word_limit`              -> default 1500 (assignments tend to be longer)
-#   - Single `rubric` JSON column  -> normalised to gradingRubric.criteria[]
-#   - Submissions are file-first   -> file_path is the primary input
 # ---------------------------------------------------------------------------
 
 import json
-from app.database import query, execute
+from app.database import tquery, texecute
+from app.tenants import Tenant
 
 
 # ---------- READ ----------------------------------------------------------
 
-def get_assignment_by_id(assignment_id: int) -> dict | None:
-    """Read an assignment, normalised to the same shape the scorer expects."""
-    rows = query(
+def get_assignment_by_id(tenant: Tenant, assignment_id: int) -> dict | None:
+    """Read an assignment from the given tenant's DB."""
+    rows = tquery(
+        tenant,
         "SELECT * FROM assignments WHERE id = %s AND status = 'active'",
         (assignment_id,),
     )
@@ -45,8 +44,6 @@ def get_assignment_by_id(assignment_id: int) -> dict | None:
 
     raw_rubric = jload(a.get("rubric"), [])
 
-    # Normalise: rubric column might be a list of {name, points|maxScore|weight}
-    # or a dict {criteria: [...]} or an old free-text string. Handle all.
     if isinstance(raw_rubric, list):
         criteria = []
         for c in raw_rubric:
@@ -62,7 +59,6 @@ def get_assignment_by_id(assignment_id: int) -> dict | None:
     elif isinstance(raw_rubric, dict):
         criteria = raw_rubric.get("criteria", [])
         if not criteria:
-            # alternate shape: {"Understanding": 25, "Application": 25, ...}
             criteria = [
                 {"name": k, "maxScore": int(v), "weight": float(v) / 100}
                 for k, v in raw_rubric.items()
@@ -72,7 +68,6 @@ def get_assignment_by_id(assignment_id: int) -> dict | None:
         criteria = []
 
     if not criteria:
-        # Sensible default for assignments (different emphasis than case studies)
         criteria = [
             {"name": "Accuracy",      "maxScore": 30, "weight": 0.30},
             {"name": "Completeness",  "maxScore": 25, "weight": 0.25},
@@ -80,27 +75,26 @@ def get_assignment_by_id(assignment_id: int) -> dict | None:
             {"name": "Presentation",  "maxScore": 20, "weight": 0.20},
         ]
 
-    grading_rubric = {"criteria": criteria}
-
     return {
         "id": a["id"],
         "courseId": a.get("course_id"),
         "title": a.get("title", ""),
         "description": a.get("description", "") or "",
-        "questions": [],                           # assignments have none
+        "questions": [],
         "modelAnswers": [],
-        "gradingRubric": grading_rubric,
-        "keyConcepts": [],                         # not stored at assignment level
+        "gradingRubric": {"criteria": criteria},
+        "keyConcepts": [],
         "maxScore": a.get("total_marks", 100),
-        "wordLimitMin": 100,                       # very lenient for assignments
-        "wordLimitMax": 1500,                      # most assignments target this
+        "wordLimitMin": 100,
+        "wordLimitMax": 1500,
         "deadline": a.get("due_date"),
         "facultyId": a.get("faculty_id"),
     }
 
 
-def get_all_assignments(course_id: int) -> list:
-    return query(
+def get_all_assignments(tenant: Tenant, course_id: int) -> list:
+    return tquery(
+        tenant,
         "SELECT id, course_id, title, status, total_marks, due_date, created_at "
         "FROM assignments WHERE course_id = %s AND status = 'active' "
         "ORDER BY due_date IS NULL, due_date ASC, created_at DESC",
@@ -108,12 +102,12 @@ def get_all_assignments(course_id: int) -> list:
     )
 
 
-def get_latest_assignment_submission(assignment_id: int, student_id: int) -> dict | None:
-    """Returns the student's most recent submission file/notes for this assignment."""
+def get_latest_assignment_submission(tenant: Tenant, assignment_id: int, student_id: int) -> dict | None:
     if not student_id or student_id <= 0:
         return None
 
-    rows = query(
+    rows = tquery(
+        tenant,
         "SELECT id, file_path, file_name, notes, status "
         "FROM assignment_submissions "
         "WHERE assignment_id = %s AND student_id = %s "
@@ -121,10 +115,8 @@ def get_latest_assignment_submission(assignment_id: int, student_id: int) -> dic
         (assignment_id, student_id),
     )
     if not rows:
-        print(f"📄 No submission for assignment={assignment_id} student={student_id}")
         return None
     row = rows[0]
-    # Normalise field name to match what the file_extractor expects
     return {
         "id": row["id"],
         "file_url": row.get("file_path"),
@@ -136,17 +128,15 @@ def get_latest_assignment_submission(assignment_id: int, student_id: int) -> dic
 # ---------- WRITE ---------------------------------------------------------
 
 def save_assignment_submission(
+    tenant: Tenant,
     assignment_id: int,
     student_id: int,
     answer_text: str | None,
     file_url: str | None,
     file_name: str | None,
 ) -> dict:
-    """
-    Insert or update an assignment submission. Same UPSERT pattern as case
-    studies but writes to assignment_submissions table.
-    """
-    existing = query(
+    existing = tquery(
+        tenant,
         "SELECT id FROM assignment_submissions "
         "WHERE assignment_id = %s AND student_id = %s "
         "ORDER BY submitted_at DESC LIMIT 1",
@@ -155,7 +145,8 @@ def save_assignment_submission(
 
     if existing:
         submission_id = existing[0]["id"]
-        execute(
+        texecute(
+            tenant,
             """UPDATE assignment_submissions SET
                 notes = %s,
                 file_path = COALESCE(%s, file_path),
@@ -166,15 +157,16 @@ def save_assignment_submission(
             (answer_text or "", file_url, file_name, submission_id),
         )
     else:
-        submission_id = execute(
+        submission_id = texecute(
+            tenant,
             """INSERT INTO assignment_submissions
                (assignment_id, student_id, notes, file_path, file_name, status)
                VALUES (%s, %s, %s, %s, %s, 'submitted')""",
             (assignment_id, student_id, answer_text or "", file_url, file_name),
         )
 
-    # Count attempts for display ("Attempt #2")
-    attempts = query(
+    attempts = tquery(
+        tenant,
         "SELECT COUNT(*) as n FROM assignment_submissions "
         "WHERE assignment_id = %s AND student_id = %s",
         (assignment_id, student_id),
@@ -184,8 +176,7 @@ def save_assignment_submission(
     return {"submissionId": submission_id, "attemptNumber": attempt_number}
 
 
-def update_assignment_submission_with_ai_results(submission_id: int, result: dict):
-    """Persist AI analysis to assignment_submissions."""
+def update_assignment_submission_with_ai_results(tenant: Tenant, submission_id: int, result: dict):
     feedback_payload = {
         "grade":            result.get("grade"),
         "totalScore":       result.get("totalScore"),
@@ -209,7 +200,8 @@ def update_assignment_submission_with_ai_results(submission_id: int, result: dic
         "reviewedBy":             "ai",
     }
 
-    execute(
+    texecute(
+        tenant,
         """UPDATE assignment_submissions SET
             grade    = %s,
             feedback = %s,
@@ -225,12 +217,9 @@ def update_assignment_submission_with_ai_results(submission_id: int, result: dic
 
 # ---------- STUDENT-FACING LISTS ------------------------------------------
 
-def get_student_assignments(student_id: int) -> list:
-    """
-    Returns all assignments visible to the student, joined with their latest
-    submission (if any). Used by the assignment list page.
-    """
-    return query(
+def get_student_assignments(tenant: Tenant, student_id: int) -> list:
+    return tquery(
+        tenant,
         """SELECT
             a.id, a.title, a.description, a.due_date, a.total_marks, a.status,
             s.id            AS submission_id,
@@ -254,9 +243,9 @@ def get_student_assignments(student_id: int) -> list:
     )
 
 
-def get_assignment_submission_by_id(submission_id: int, student_id: int) -> dict | None:
-    """Fetch a single submission for the review screen."""
-    rows = query(
+def get_assignment_submission_by_id(tenant: Tenant, submission_id: int, student_id: int) -> dict | None:
+    rows = tquery(
+        tenant,
         """SELECT s.*, a.title AS assignment_title, a.total_marks
           FROM assignment_submissions s
           JOIN assignments a ON a.id = s.assignment_id

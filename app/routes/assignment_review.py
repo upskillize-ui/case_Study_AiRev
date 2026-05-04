@@ -1,21 +1,14 @@
 # app/routes/assignment_review.py
 # ---------------------------------------------------------------------------
 # Multi-tenant assignment review endpoints.
-#
-# Mirrors app/routes/review.py but for the `assignments` + `assignment_submissions`
-# tables. Same AI pipeline (file extraction → AI analysis → scoring → feedback),
-# different DB tables and submission shape.
-#
-# Routes:
-#   GET  /api/review/assignments/{student_id}          List with statuses
-#   POST /api/review/submit-assignment                 Submit + review
-#   GET  /api/review/assignment-submission/{id}        Re-fetch a past review
+# Every call to assignment_db_service passes the tenant EXPLICITLY — no
+# reliance on contextvar (which can drop across async boundaries).
 # ---------------------------------------------------------------------------
 
 import time
 import json
 from typing import Optional
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends, Header
 from pydantic import BaseModel
 
 from app.services import (
@@ -28,26 +21,34 @@ from app.utils.text_processor import (
     count_words, clean_text, find_mentioned_concepts
 )
 from app.utils.file_extractor import extract_text_from_url
+from app.tenants import resolve_tenant_by_key, Tenant
+from app.database import set_current_tenant
+
 
 router = APIRouter(prefix="/api/review", tags=["assignment-review"])
 
 
-# ---------- Request schema (assignment-specific) ---------------------------
+def get_tenant(x_api_key: str = Header(default="")) -> Tenant:
+    """Local auth dep — resolves tenant from key for this router's handlers."""
+    tenant = resolve_tenant_by_key(x_api_key)
+    set_current_tenant(tenant)  # also set contextvar for any legacy code
+    print(f"[ASSIGNMENT] tenant resolved: {tenant.id} (DB={tenant.database_url_env})")
+    return tenant
+
 
 class SubmitAssignmentRequest(BaseModel):
     assignmentId: int
     studentId: int
-    answerText: Optional[str] = ""        # optional — file is primary
-    fileUrl: Optional[str] = None          # Cloudinary URL
+    answerText: Optional[str] = ""
+    fileUrl: Optional[str] = None
     fileName: Optional[str] = None
 
 
 # ---------- GET /api/review/assignments/{student_id} -----------------------
 
 @router.get("/assignments/{student_id}")
-async def list_student_assignments(student_id: int):
-    """Return all assignments visible to this student in the current tenant."""
-    rows = assignment_db_service.get_student_assignments(student_id)
+async def list_student_assignments(student_id: int, tenant: Tenant = Depends(get_tenant)):
+    rows = assignment_db_service.get_student_assignments(tenant, student_id)
 
     out = []
     for r in rows:
@@ -75,44 +76,57 @@ async def list_student_assignments(student_id: int):
             "reviewedBy":     (feedback_blob or {}).get("reviewedBy"),
         })
 
-    return {"success": True, "assignments": out}
+    return {"success": True, "assignments": out, "tenant": tenant.id}
 
 
 # ---------- POST /api/review/submit-assignment -----------------------------
 
 @router.post("/submit-assignment")
-async def submit_and_review_assignment(req: SubmitAssignmentRequest):
+async def submit_and_review_assignment(
+    req: SubmitAssignmentRequest,
+    tenant: Tenant = Depends(get_tenant),
+):
     start_time = time.time()
-    print(f"ℹ️  Assignment submission: student={req.studentId}, assignment={req.assignmentId}")
+    print(f"[ASSIGNMENT][{tenant.id}] submission: student={req.studentId}, assignment={req.assignmentId}")
 
-    assignment = assignment_db_service.get_assignment_by_id(req.assignmentId)
+    assignment = assignment_db_service.get_assignment_by_id(tenant, req.assignmentId)
     if not assignment:
-        raise HTTPException(status_code=404, detail="Assignment not found or inactive")
+        # Diagnostic: list what assignments DO exist for this tenant so the
+        # logs explain WHY the lookup failed.
+        try:
+            from app.database import tquery
+            available = tquery(
+                tenant,
+                "SELECT id, title, status FROM assignments LIMIT 10",
+            )
+            print(f"[ASSIGNMENT][{tenant.id}] assignment {req.assignmentId} not found. "
+                  f"Available in this tenant DB: {available}")
+        except Exception as diag_err:
+            print(f"[ASSIGNMENT][{tenant.id}] diagnostic query failed: {diag_err}")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Assignment {req.assignmentId} not found or inactive in tenant '{tenant.id}'",
+        )
 
-    # ── Build the answer text. For assignments, file is PRIMARY (most students
-    #    upload PDFs of their work) and typed notes are secondary.
     cleaned_typed = clean_text(req.answerText or "")
     parts: list[str] = []
     file_used = None
 
-    # 1. If a file URL was sent in this request, extract it now
     if req.fileUrl:
         extracted, why = extract_text_from_url(req.fileUrl, req.fileName or "")
         if extracted:
             file_used = req.fileName or req.fileUrl
             parts.append(extracted)
-            print(f"📄 Extracted uploaded file: {file_used} ({count_words(extracted)} words)")
+            print(f"[ASSIGNMENT] Extracted file: {file_used} ({count_words(extracted)} words)")
         elif why:
-            print(f"📄 Upload extraction failed: {why}")
+            print(f"[ASSIGNMENT] Upload extraction failed: {why}")
 
-    # 2. Frontend typed answer (notes)
     if cleaned_typed:
         parts.append(cleaned_typed)
 
-    # 3. If neither, look for the student's prior submission (re-review case)
     if not parts:
         prior = assignment_db_service.get_latest_assignment_submission(
-            req.assignmentId, req.studentId
+            tenant, req.assignmentId, req.studentId
         )
         if prior:
             if prior.get("file_url"):
@@ -122,12 +136,10 @@ async def submit_and_review_assignment(req: SubmitAssignmentRequest):
                 if extracted:
                     file_used = prior.get("file_name") or prior["file_url"]
                     parts.append(extracted)
-                    print(f"📄 Used prior file: {file_used} ({count_words(extracted)} words)")
             db_notes = clean_text(prior.get("notes") or "")
             if db_notes:
                 parts.append(db_notes)
 
-    # ── Empty submission guard ──
     if not parts:
         total_time = int((time.time() - start_time) * 1000)
         msg = ("We couldn't find any answer for this assignment. Upload your work "
@@ -140,24 +152,22 @@ async def submit_and_review_assignment(req: SubmitAssignmentRequest):
             "processingTimeMs": total_time,
         }
 
-    # Combine all sources
     combined = "\n\n".join(parts).strip()
     word_count = count_words(combined)
-    print(f"📝 Final assignment answer: {word_count} words "
+    print(f"[ASSIGNMENT] {word_count} words combined "
           f"(file={'yes' if file_used else 'no'}, typed={'yes' if cleaned_typed else 'no'})")
 
-    # Persist the submission first (so the AI review has a row to attach to)
     submission = assignment_db_service.save_assignment_submission(
+        tenant,
         req.assignmentId,
         req.studentId,
         cleaned_typed or None,
         req.fileUrl,
         req.fileName,
     )
-    print(f"✅ Assignment submission saved: id={submission['submissionId']}, "
+    print(f"[ASSIGNMENT] saved submission id={submission['submissionId']}, "
           f"attempt={submission['attemptNumber']}")
 
-    # ── Pre-AI garbage check (very lenient for assignments — they can be short) ──
     if word_count < 30:
         msg = (f"Your submission is very short ({word_count} words). "
                "Please add more detail and resubmit so we can give you useful feedback.")
@@ -176,33 +186,31 @@ async def submit_and_review_assignment(req: SubmitAssignmentRequest):
             "isGarbage": True, "garbageWarning": msg,
             "aiLikelihoodPercent": None, "humanLikelihoodPercent": None,
             "aiDetectionReason": "Not analysed (too short).", "aiVerdict": "uncertain",
-            "scoreEmoji": "📝",
+            "scoreEmoji": "—",
             "plagiarismFlag": "low", "needsMentorHelp": True,
         }
         try:
             assignment_db_service.update_assignment_submission_with_ai_results(
-                submission["submissionId"], partial
+                tenant, submission["submissionId"], partial
             )
         except Exception as e:
-            print(f"⚠️  DB update (short-submission path) failed: {e}")
+            print(f"[ASSIGNMENT] DB update (short-submission path) failed: {e}")
         return _build_response(submission, partial, msg, start_time)
 
-    # ── Real AI review ──
     try:
         ai_analysis = ai_service.analyze_answer(
             case_study={
                 "title":       assignment["title"],
                 "description": assignment["description"],
-                # Assignments have no `questions` column — pass empty list
                 "questions":   assignment["questions"],
             },
-            model_answer=assignment["modelAnswers"],   # always [] for assignments
+            model_answer=assignment["modelAnswers"],
             student_answer=combined,
             grading_rubric=assignment["gradingRubric"],
-            key_concepts=assignment["keyConcepts"],    # always [] for assignments
+            key_concepts=assignment["keyConcepts"],
         )
     except Exception as e:
-        print(f"⚠️  AI review unavailable: {e}")
+        print(f"[ASSIGNMENT] AI review unavailable: {e}")
         return {
             "success":       True,
             "partialReview": True,
@@ -214,8 +222,6 @@ async def submit_and_review_assignment(req: SubmitAssignmentRequest):
             "submission": submission,
         }
 
-    # Concept overlay (assignments don't ship with key_concepts but the AI can
-    # still surface "covered/missing" topics from the rubric criteria themselves)
     rubric_topics = [c.get("name", "") for c in assignment["gradingRubric"]["criteria"]]
     if rubric_topics:
         concept_check = find_mentioned_concepts(combined, rubric_topics)
@@ -261,10 +267,10 @@ async def submit_and_review_assignment(req: SubmitAssignmentRequest):
 
     try:
         assignment_db_service.update_assignment_submission_with_ai_results(
-            submission["submissionId"], result
+            tenant, submission["submissionId"], result
         )
     except Exception as db_err:
-        print(f"⚠️  DB update failed after AI review: {db_err} — returning result anyway")
+        print(f"[ASSIGNMENT] DB update failed after AI review: {db_err}")
 
     return _build_response(
         submission, result, feedback["studentFeedback"]["summary"], start_time
@@ -274,9 +280,12 @@ async def submit_and_review_assignment(req: SubmitAssignmentRequest):
 # ---------- GET /api/review/assignment-submission/{id} ---------------------
 
 @router.get("/assignment-submission/{submission_id}")
-async def get_assignment_submission(submission_id: int, student_id: int):
-    """Re-fetch a past assignment review (for the View Details / re-show flow)."""
-    row = assignment_db_service.get_assignment_submission_by_id(submission_id, student_id)
+async def get_assignment_submission(
+    submission_id: int,
+    student_id: int,
+    tenant: Tenant = Depends(get_tenant),
+):
+    row = assignment_db_service.get_assignment_submission_by_id(tenant, submission_id, student_id)
     if not row:
         raise HTTPException(status_code=404, detail="Submission not found")
 
@@ -315,7 +324,7 @@ def _build_response(submission: dict, result: dict, summary: str, start_time: fl
         "feedback": {
             "score":                  result["totalScore"],
             "grade":                  result["grade"],
-            "scoreEmoji":             result.get("scoreEmoji", "📝"),
+            "scoreEmoji":             result.get("scoreEmoji", "—"),
             "summary":                summary,
             "rubricScores":           result.get("rubricScores", []),
             "strengths":              result.get("strengths", []),
@@ -340,7 +349,7 @@ def _build_response(submission: dict, result: dict, summary: str, start_time: fl
 
 def _empty_feedback(msg: str, helpful: bool = True) -> dict:
     return {
-        "score": 0, "grade": "—", "scoreEmoji": "📝",
+        "score": 0, "grade": "—", "scoreEmoji": "—",
         "summary": msg,
         "rubricScores": [], "strengths": [],
         "improvements": [
