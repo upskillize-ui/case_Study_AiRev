@@ -1,11 +1,15 @@
 # app/services/db_service.py
-# FIXED:
-#   - Bug #2: get_latest_submission_file now filters by student_id only.
-#     No more cross-student data leak.
-#   - Bug #5: save_submission UPDATEs notes when row exists (re-submit
-#     no longer silently lost).
-#   - Bug #7: get_case_study_by_id no longer feeds learning_objectives
-#     paragraph into key_concepts.
+# CHANGED:
+#   - get_case_study_by_id: status filter now accepts BOTH 'published' and 'active'
+#     (matches the LMS admin which writes 'active').
+#   - save_submission: now INSERTs a NEW row for every attempt. No more
+#     overwrites. Also accepts file_url + file_name so case-study uploads
+#     persist (bug #26 from earlier review).
+#   - get_submission_history: new — returns all attempts by a student on a
+#     case study, newest first. Powers the "previous review on reopen +
+#     Re-analyze" flow in the frontend.
+#   - get_latest_submission_file: still scoped to the calling student only
+#     (no cross-student leak).
 
 import json
 from app.database import query, execute
@@ -16,7 +20,7 @@ from app.database import query, execute
 def get_case_study_by_id(case_study_id: int) -> dict | None:
     """Read a case study, adapting to the LMS schema."""
     rows = query(
-        "SELECT * FROM case_studies WHERE id = %s AND status = 'published'",
+        "SELECT * FROM case_studies WHERE id = %s AND status IN ('published', 'active')",
         (case_study_id,),
     )
     if not rows:
@@ -36,8 +40,6 @@ def get_case_study_by_id(case_study_id: int) -> dict | None:
     questions = jload(cs.get("questions"), [])
     model_answers = []  # column doesn't exist in LMS schema
 
-    # rubric: LMS stores [{"name":"X","points":25}, ...] OR
-    # [{"name":"X","maxScore":25}, ...]. Handle both.
     raw_rubric = jload(cs.get("rubric_criteria"), [])
     if isinstance(raw_rubric, list):
         criteria = []
@@ -62,13 +64,10 @@ def get_case_study_by_id(case_study_id: int) -> dict | None:
         ]
     grading_rubric = {"criteria": criteria}
 
-    # FIXED: Don't include learning_objectives (a paragraph) as a "concept".
-    # Only short identifiers count as searchable concepts.
     key_concepts = []
     for s in [cs.get("company_name"), cs.get("industry")]:
         if s and isinstance(s, str) and len(s.split()) <= 4:
             key_concepts.append(s)
-    # Optional dedicated column if you add one later:
     extra = jload(cs.get("key_concepts"), [])
     if isinstance(extra, list):
         for s in extra:
@@ -105,11 +104,7 @@ def get_all_case_studies(course_id: int) -> list:
 
 def get_latest_submission_file(case_study_id: int, student_id: int,
                                exclude_submission_id: int | None = None) -> dict | None:
-    """
-    FIXED: Only this student's own submissions. No cross-student fallback.
-
-    Returns the most recent submission with content (file or notes).
-    """
+    """Most recent submission for THIS student on THIS case study (with file or notes)."""
     if not student_id or student_id <= 0:
         return None
 
@@ -126,10 +121,8 @@ def get_latest_submission_file(case_study_id: int, student_id: int,
 
     rows = query(sql, params)
     if not rows:
-        print(f"📄 No submissions for case_study={case_study_id} student={student_id}")
         return None
 
-    # Prefer the row with the most useful content (file > long notes > anything)
     def score_row(row):
         s = 0
         if row.get("file_url"):
@@ -148,44 +141,31 @@ def get_latest_submission_file(case_study_id: int, student_id: int,
 
 # ===== SUBMISSIONS =====
 
-def save_submission(case_study_id: int, student_id: int, answer_text: str, word_count: int) -> dict:
+def save_submission(case_study_id: int, student_id: int, answer_text: str,
+                    word_count: int, file_url: str | None = None,
+                    file_name: str | None = None) -> dict:
     """
-    FIXED: Re-submissions now UPDATE the notes column (Bug #5).
-    Previously the new answer text was silently discarded.
+    INSERTs a new row for every attempt. Never overwrites prior submissions —
+    that was the root cause of "history not saving".
 
-    Returns the submission row's id and a real attempt counter (from the
-    performance tracker, which is the canonical source).
+    Now also persists file_url + file_name (bug #26 fix). The agent reads
+    these later in extract_text_from_url to feed AI review.
     """
-    existing = query(
-        "SELECT id FROM case_study_submissions "
+    submission_id = execute(
+        """INSERT INTO case_study_submissions
+           (case_study_id, student_id, notes, file_url, file_name,
+            status, submitted_at)
+           VALUES (%s, %s, %s, %s, %s, 'submitted', NOW())""",
+        (case_study_id, student_id, answer_text or "", file_url, file_name),
+    )
+
+    # Real attempt number = how many submissions this student now has.
+    attempts = query(
+        "SELECT COUNT(*) AS n FROM case_study_submissions "
         "WHERE case_study_id = %s AND student_id = %s",
         (case_study_id, student_id),
     )
-
-    if existing:
-        submission_id = existing[0]["id"]
-        if answer_text:
-            execute(
-                """UPDATE case_study_submissions SET
-                    notes = %s, status = 'submitted', reviewed_at = NULL
-                  WHERE id = %s""",
-                (answer_text, submission_id),
-            )
-    else:
-        submission_id = execute(
-            """INSERT INTO case_study_submissions
-               (case_study_id, student_id, notes, status)
-               VALUES (%s, %s, %s, 'submitted')""",
-            (case_study_id, student_id, answer_text),
-        )
-
-    # Real attempt number from performance tracker (existing column)
-    tracker = query(
-        "SELECT total_attempts FROM student_performance_tracker "
-        "WHERE student_id = %s AND case_study_id = %s",
-        (student_id, case_study_id),
-    )
-    attempt_number = (tracker[0]["total_attempts"] + 1) if tracker else 1
+    attempt_number = attempts[0]["n"] if attempts else 1
 
     return {"submissionId": submission_id, "attemptNumber": attempt_number}
 
@@ -217,6 +197,9 @@ def update_submission_with_ai_results(submission_id: int, result: dict):
         "aiVerdict":              result.get("aiVerdict", ""),
         "isGarbage":              bool(result.get("isGarbage")),
         "garbageWarning":         result.get("garbageWarning", ""),
+        "encouragement":          result.get("encouragement", ""),
+        "rubricScores":           result.get("rubricScores", []),
+        "summary":                result.get("summary", ""),
     }
 
     execute(
@@ -234,6 +217,47 @@ def update_submission_with_ai_results(submission_id: int, result: dict):
             submission_id,
         ),
     )
+
+
+# ===== HISTORY (NEW) =====
+
+def get_submission_history(case_study_id: int, student_id: int) -> list:
+    """All attempts by this student on this case study, newest first.
+
+    Powers the 'previous review on reopen + Re-analyze' frontend flow.
+    """
+    if not student_id or student_id <= 0 or not case_study_id:
+        return []
+
+    rows = query(
+        """SELECT id, grade, feedback, rubric_scores, status,
+                  submitted_at, reviewed_at, file_name, notes
+           FROM case_study_submissions
+           WHERE case_study_id = %s AND student_id = %s
+           ORDER BY submitted_at DESC""",
+        (case_study_id, student_id),
+    )
+
+    out = []
+    total = len(rows)
+    for i, r in enumerate(rows):
+        fb = r.get("feedback")
+        if isinstance(fb, str):
+            try:
+                fb = json.loads(fb)
+            except Exception:
+                fb = None
+        out.append({
+            "submissionId":  r["id"],
+            "attemptNumber": total - i,  # newest = highest number
+            "score":         r.get("grade"),
+            "status":        r.get("status"),
+            "submittedAt":   str(r["submitted_at"]) if r.get("submitted_at") else None,
+            "reviewedAt":    str(r["reviewed_at"]) if r.get("reviewed_at") else None,
+            "fileName":      r.get("file_name"),
+            "feedback":      fb,
+        })
+    return out
 
 
 # ===== PERFORMANCE TRACKER =====
@@ -433,4 +457,4 @@ def log_ai_review(submission_id: int, meta: dict | None,
             ),
         )
     except Exception as e:
-        print(f"WARN  Failed to log AI review: {e}")
+        print(f"⚠️  ai_review_logs insert failed (non-fatal): {e}")

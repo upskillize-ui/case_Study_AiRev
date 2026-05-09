@@ -1,5 +1,9 @@
 # app/models/schemas.py
 # All request and response shapes
+#
+# CHANGED: SubmitAnswerRequest now accepts fileUrl + fileName.
+# Previously, the frontend POSTed these fields but Pydantic silently
+# dropped them — so case-study file uploads never made it into the DB.
 
 from pydantic import BaseModel
 from typing import Optional
@@ -11,7 +15,9 @@ from datetime import datetime
 class SubmitAnswerRequest(BaseModel):
     caseStudyId: int
     studentId: int
-    answerText: str
+    answerText: str = ""
+    fileUrl: Optional[str] = None
+    fileName: Optional[str] = None
 
 
 class TestReviewRequest(BaseModel):

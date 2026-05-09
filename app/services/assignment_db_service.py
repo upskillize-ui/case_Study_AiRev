@@ -2,16 +2,18 @@
 # ---------------------------------------------------------------------------
 # DB queries for assignments (separate table from case studies).
 #
-# IMPORTANT: every function takes an explicit `tenant` argument and uses
-# tquery/texecute, NOT query/execute. This bypasses the contextvar approach
-# entirely — the tenant is passed through the call chain explicitly so we
-# can never accidentally hit the wrong DB.
+# CHANGED:
+#   - save_assignment_submission: INSERTs a new row for every attempt.
+#     The old version UPDATEd an existing row, which overwrote prior
+#     attempts and made history impossible. Logs were showing
+#     "saved submission id=10, attempt=1" repeatedly because of this.
+#   - get_assignment_history: NEW. Returns all attempts by a student
+#     on an assignment, newest first. Used by the frontend to show the
+#     previous review on reopen with a Re-analyze button.
 #
-# Schema:
-#   assignments(id, title, description, course_id, faculty_id, due_date,
-#               rubric (json), status, total_marks, created_at, updated_at)
-#   assignment_submissions(id, assignment_id, student_id, file_path, file_name,
-#                          notes, grade, feedback, status, submitted_at)
+# Multi-tenant: every function takes an explicit `tenant` argument and uses
+# tquery/texecute, NOT query/execute. Tenant is passed through the call chain
+# explicitly so we can never accidentally hit the wrong DB.
 # ---------------------------------------------------------------------------
 
 import json
@@ -135,39 +137,25 @@ def save_assignment_submission(
     file_url: str | None,
     file_name: str | None,
 ) -> dict:
-    existing = tquery(
+    """
+    INSERTs a NEW row for every attempt. Never overwrites prior submissions.
+
+    The old code UPDATEd the existing row, which erased history and made
+    'attempt #1' show forever no matter how many times the student resubmitted.
+    """
+    submission_id = texecute(
         tenant,
-        "SELECT id FROM assignment_submissions "
-        "WHERE assignment_id = %s AND student_id = %s "
-        "ORDER BY submitted_at DESC LIMIT 1",
-        (assignment_id, student_id),
+        """INSERT INTO assignment_submissions
+           (assignment_id, student_id, notes, file_path, file_name,
+            status, submitted_at)
+           VALUES (%s, %s, %s, %s, %s, 'submitted', NOW())""",
+        (assignment_id, student_id, answer_text or "", file_url, file_name),
     )
 
-    if existing:
-        submission_id = existing[0]["id"]
-        texecute(
-            tenant,
-            """UPDATE assignment_submissions SET
-                notes = %s,
-                file_path = COALESCE(%s, file_path),
-                file_name = COALESCE(%s, file_name),
-                status = 'submitted',
-                submitted_at = NOW()
-              WHERE id = %s""",
-            (answer_text or "", file_url, file_name, submission_id),
-        )
-    else:
-        submission_id = texecute(
-            tenant,
-            """INSERT INTO assignment_submissions
-               (assignment_id, student_id, notes, file_path, file_name, status)
-               VALUES (%s, %s, %s, %s, %s, 'submitted')""",
-            (assignment_id, student_id, answer_text or "", file_url, file_name),
-        )
-
+    # Real attempt number = how many submissions this student now has.
     attempts = tquery(
         tenant,
-        "SELECT COUNT(*) as n FROM assignment_submissions "
+        "SELECT COUNT(*) AS n FROM assignment_submissions "
         "WHERE assignment_id = %s AND student_id = %s",
         (assignment_id, student_id),
     )
@@ -191,6 +179,7 @@ def update_assignment_submission_with_ai_results(tenant: Tenant, submission_id: 
         "encouragement":    result.get("encouragement", ""),
         "wordCount":        result.get("wordCount"),
         "wordCountMessage": result.get("wordCountMessage", ""),
+        "summary":          result.get("summary", ""),
         "aiLikelihoodPercent":    result.get("aiLikelihoodPercent"),
         "humanLikelihoodPercent": result.get("humanLikelihoodPercent"),
         "aiDetectionReason":      result.get("aiDetectionReason", ""),
@@ -215,31 +204,85 @@ def update_assignment_submission_with_ai_results(tenant: Tenant, submission_id: 
     )
 
 
+# ---------- HISTORY (NEW) -------------------------------------------------
+
+def get_assignment_history(tenant: Tenant, assignment_id: int, student_id: int) -> list:
+    """All attempts by this student on this assignment, newest first.
+
+    Powers the 'previous review on reopen + Re-analyze' frontend flow.
+    """
+    if not student_id or student_id <= 0 or not assignment_id:
+        return []
+
+    rows = tquery(
+        tenant,
+        """SELECT id, grade, feedback, status, submitted_at, file_name, notes
+           FROM assignment_submissions
+           WHERE assignment_id = %s AND student_id = %s
+           ORDER BY submitted_at DESC""",
+        (assignment_id, student_id),
+    )
+
+    out = []
+    total = len(rows)
+    for i, r in enumerate(rows):
+        fb = r.get("feedback")
+        if isinstance(fb, str):
+            try:
+                fb = json.loads(fb)
+            except Exception:
+                fb = None
+        out.append({
+            "submissionId":  r["id"],
+            "attemptNumber": total - i,  # newest = highest number
+            "score":         r.get("grade"),
+            "status":        r.get("status"),
+            "submittedAt":   str(r["submitted_at"]) if r.get("submitted_at") else None,
+            "fileName":      r.get("file_name"),
+            "feedback":      fb,
+        })
+    return out
+
+
 # ---------- STUDENT-FACING LISTS ------------------------------------------
 
 def get_student_assignments(tenant: Tenant, student_id: int) -> list:
+    """List of assignments. Submission columns reflect the LATEST attempt
+    (most recent row) since we now INSERT per attempt rather than overwrite."""
     return tquery(
         tenant,
         """SELECT
             a.id, a.title, a.description, a.due_date, a.total_marks, a.status,
-            s.id            AS submission_id,
-            s.grade         AS submission_grade,
-            s.feedback      AS submission_feedback,
-            s.status        AS submission_status,
-            s.submitted_at  AS submitted_at,
-            s.file_name     AS submitted_file_name
+            latest.id            AS submission_id,
+            latest.grade         AS submission_grade,
+            latest.feedback      AS submission_feedback,
+            latest.status        AS submission_status,
+            latest.submitted_at  AS submitted_at,
+            latest.file_name     AS submitted_file_name
           FROM assignments a
-          LEFT JOIN assignment_submissions s
-            ON s.assignment_id = a.id AND s.student_id = %s
+          LEFT JOIN (
+              SELECT s1.*
+              FROM assignment_submissions s1
+              INNER JOIN (
+                  SELECT assignment_id, student_id, MAX(submitted_at) AS max_at
+                  FROM assignment_submissions
+                  WHERE student_id = %s
+                  GROUP BY assignment_id, student_id
+              ) s2
+                ON s1.assignment_id = s2.assignment_id
+               AND s1.student_id    = s2.student_id
+               AND s1.submitted_at  = s2.max_at
+          ) latest
+            ON latest.assignment_id = a.id AND latest.student_id = %s
           WHERE a.status = 'active'
           ORDER BY
-            CASE WHEN s.status = 'graded'    THEN 3
-                 WHEN s.status = 'submitted' THEN 2
+            CASE WHEN latest.status = 'graded'    THEN 3
+                 WHEN latest.status = 'submitted' THEN 2
                  ELSE 1 END ASC,
             a.due_date IS NULL,
             a.due_date ASC,
             a.created_at DESC""",
-        (student_id,),
+        (student_id, student_id),
     )
 
 

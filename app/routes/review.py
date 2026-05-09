@@ -1,11 +1,11 @@
 # app/routes/review.py
-# FIXED:
-#   - Bug #1 (THE always-0 bug): no longer drops the student's answer just
-#     because it shares vocabulary with the case study description. The new
-#     calculate_text_overlap uses 4-word shingles, so it only fires on real
-#     copy-paste, not on focused thoughtful answers.
-#   - Always trusts the frontend answer text first; DB notes / file are a
-#     secondary enrichment, not a precondition.
+# CHANGED:
+#   - submit_and_review now passes req.fileUrl + req.fileName into
+#     save_submission so case-study file uploads are persisted (bug #26 fix).
+#   - New endpoint: GET /api/review/case-study-history/{student_id}/{case_study_id}
+#     Returns all of a student's attempts on a case study, newest first.
+#     Frontend uses this to show prior review on reopen with a Re-analyze button.
+#   - Demo endpoint /case-studies status filter: 'published' OR 'active'.
 
 import time
 import os
@@ -30,15 +30,14 @@ async def submit_and_review(req: SubmitAnswerRequest):
     if not case_study:
         raise HTTPException(status_code=404, detail="Case study not found or not published")
 
-    cleaned    = clean_text(req.answerText)
+    cleaned    = clean_text(req.answerText or "")
     word_count = count_words(cleaned)
 
     # ── Build best answer text. Priority order, accumulated:
     #    1. Student's frontend answerText (always taken if non-empty)
-    #    2. Extracted text from any uploaded file (PDF/DOCX) on their last submission
-    #    3. DB notes from their last submission (if different from frontend)
-    # We never DROP the frontend answer just because it shares words with
-    # the description — that was the root cause of the "every score = 0" bug.
+    #    2. Extracted text from THIS submission's uploaded file (req.fileUrl)
+    #    3. Extracted text from any prior submission's file (DB)
+    #    4. Notes from prior submission (DB)
 
     file_used = None
     parts: list[str] = []
@@ -46,38 +45,42 @@ async def submit_and_review(req: SubmitAnswerRequest):
     if cleaned:
         parts.append(cleaned)
 
-    # Only look up THIS student's prior submissions (privacy fix in db_service)
-    prior = db_service.get_latest_submission_file(req.caseStudyId, req.studentId)
-    if prior:
-        # Try the file
-        if prior.get("file_url"):
-            extracted, why = extract_text_from_url(prior["file_url"], prior.get("file_name", ""))
-            if extracted:
-                file_used = prior.get("file_name") or prior["file_url"]
-                print(f"📄 Extracted file: {file_used} ({count_words(extracted)} words)")
-                # Add file content if it's substantively different from the frontend text
-                if not cleaned or count_words(extracted) > word_count * 1.2:
+    # NEW: extract text from the file URL the frontend just uploaded
+    if req.fileUrl:
+        extracted, why = extract_text_from_url(req.fileUrl, req.fileName or "")
+        if extracted:
+            file_used = req.fileName or req.fileUrl
+            print(f"📄 Extracted file (this submission): {file_used} "
+                  f"({count_words(extracted)} words)")
+            if not cleaned or count_words(extracted) > word_count * 1.2:
+                parts.append(extracted)
+        elif why:
+            print(f"📄 File extraction failed for {req.fileName or '?'}: {why}")
+
+    # Fall back to a prior submission only if we still have nothing useful
+    if not parts:
+        prior = db_service.get_latest_submission_file(req.caseStudyId, req.studentId)
+        if prior:
+            if prior.get("file_url"):
+                extracted, why = extract_text_from_url(prior["file_url"], prior.get("file_name", ""))
+                if extracted:
+                    file_used = prior.get("file_name") or prior["file_url"]
+                    print(f"📄 Extracted file (prior submission): {file_used}")
                     parts.append(extracted)
-            elif why:
-                print(f"📄 File extraction failed for {prior.get('file_name', '?')}: {why}")
-
-        # Also include DB notes if they're different from frontend
-        db_notes = clean_text(prior.get("notes") or "")
-        if db_notes and db_notes != cleaned:
-            # Avoid double-adding if frontend matches DB
-            if cleaned and len(db_notes) > len(cleaned) * 1.2:
-                parts.append(db_notes)
-            elif not cleaned:
+                elif why:
+                    print(f"📄 Prior file extraction failed: {why}")
+            db_notes = clean_text(prior.get("notes") or "")
+            if db_notes:
                 parts.append(db_notes)
 
-    # ── If we still have nothing, return a friendly "no submission yet" ──
+    # ── Still nothing → friendly "no submission yet" ──
     if not parts:
         total_time = int((time.time() - start_time) * 1000)
         msg = ("We couldn't find any answer text. Please write your analysis in the "
                "answer box (or upload a PDF), then click Submit again.")
         return {
             "success": True,
-            "submission": {"submissionId": (prior or {}).get("id", 0), "attemptNumber": 0},
+            "submission": {"submissionId": 0, "attemptNumber": 0},
             "feedback": {
                 "score": 0, "grade": "-", "scoreEmoji": "📝",
                 "summary": msg,
@@ -105,16 +108,19 @@ async def submit_and_review(req: SubmitAnswerRequest):
           f"(frontend={'yes' if req.answerText else 'no'}, "
           f"file={'yes' if file_used else 'no'})")
 
-    # Plagiarism warning (informational — does NOT block scoring)
+    # Plagiarism warning (informational)
     text_overlap  = calculate_text_overlap(cleaned, case_study["description"])
     concept_check = find_mentioned_concepts(cleaned, case_study["keyConcepts"])
 
+    # NEW: persist file_url + file_name. INSERTs a new row every attempt.
     submission = db_service.save_submission(
-        req.caseStudyId, req.studentId, cleaned, word_count
+        req.caseStudyId, req.studentId, cleaned, word_count,
+        file_url=req.fileUrl, file_name=req.fileName,
     )
-    print(f"✅ Submission saved: id={submission['submissionId']}, attempt={submission['attemptNumber']}")
+    print(f"✅ Submission saved: id={submission['submissionId']}, "
+          f"attempt={submission['attemptNumber']}")
 
-    # ── Pre-AI cheap garbage check (saves an AI call for obvious junk) ──
+    # ── Pre-AI cheap garbage check ──
     pre_garbage_reason = _pre_garbage_check(cleaned, word_count)
     if pre_garbage_reason:
         print(f"⚠️  Pre-AI garbage check tripped: {pre_garbage_reason}")
@@ -155,7 +161,6 @@ async def submit_and_review(req: SubmitAnswerRequest):
             "submission": submission,
         }
 
-    # Plagiarism overlay (informational)
     if text_overlap >= 35:
         ai_analysis["plagiarismRisk"] = "high" if text_overlap >= 60 else "medium"
         ai_analysis["plagiarismNote"] = (
@@ -204,6 +209,8 @@ async def submit_and_review(req: SubmitAnswerRequest):
         "aiVerdict":              feedback["aiVerdict"],
         "isGarbage":              feedback["isGarbage"],
         "garbageWarning":         feedback["garbageWarning"],
+        "summary":                feedback["studentFeedback"]["summary"],
+        "encouragement":          feedback["studentFeedback"]["encouragement"],
     }
 
     try:
@@ -253,7 +260,6 @@ async def test_review(req: TestReviewRequest):
     cleaned    = clean_text(req.studentAnswer)
     word_count = count_words(cleaned)
 
-    # Pre-AI garbage check for /test path too
     pre_garbage_reason = _pre_garbage_check(cleaned, word_count)
     if pre_garbage_reason:
         return {
@@ -306,6 +312,14 @@ async def student_progress(student_id: int):
     return {"success": True, "student": progress}
 
 
+# ── GET /api/review/case-study-history/{student_id}/{case_study_id} ───────
+# NEW: powers "show previous review on reopen" + Re-analyze flow.
+@router.get("/case-study-history/{student_id}/{case_study_id}")
+async def case_study_history(student_id: int, case_study_id: int):
+    history = db_service.get_submission_history(case_study_id, student_id)
+    return {"success": True, "history": history}
+
+
 # ── GET /api/review/mentor-dashboard/{case_study_id} ──────────────────────
 @router.get("/mentor-dashboard/{case_study_id}")
 async def mentor_dashboard(case_study_id: int):
@@ -334,7 +348,6 @@ async def list_case_studies(course_id: int):
 # ──────────────────────────────────────────────────────────────────────────
 
 def _pre_garbage_check(text: str, word_count: int) -> str:
-    """Cheap heuristics that catch obvious junk before paying for an AI call."""
     if not text or not text.strip():
         return "Submission is empty."
     if word_count < 10:
@@ -348,7 +361,6 @@ def _pre_garbage_check(text: str, word_count: int) -> str:
     letters = [c for c in stripped.lower() if c.isalpha()]
     if letters:
         vowel_ratio = sum(1 for c in letters if c in "aeiou") / len(letters)
-        # Loosened from 0.10 → 0.08 to be friendlier to acronym-heavy answers
         if vowel_ratio < 0.08 and len(letters) > 30:
             return "Submission appears to be keyboard mashing rather than real writing."
 
@@ -356,7 +368,6 @@ def _pre_garbage_check(text: str, word_count: int) -> str:
 
 
 def _build_garbage_response(submission, case_study, text, word_count, reason, start_time):
-    """Same response shape as a normal review but score=0 and a clear garbageWarning."""
     rubric_breakdown = [
         {"criteria": c["name"], "maxScore": c["maxScore"], "score": 0,
          "percentage": 0, "status": "needs_improvement"}
@@ -434,6 +445,8 @@ def _build_garbage_response(submission, case_study, text, word_count, reason, st
         "aiVerdict":              "uncertain",
         "isGarbage":              True,
         "garbageWarning":         warning,
+        "summary":                student_feedback["summary"],
+        "encouragement":          student_feedback["encouragement"],
     }
 
     return {
@@ -458,6 +471,7 @@ async def list_all_published_case_studies():
     rows = query(
         "SELECT id, course_id, title, description, company_name, industry, "
         "difficulty, total_marks, due_date, word_limit "
-        "FROM case_studies WHERE status = 'published' ORDER BY created_at DESC"
+        "FROM case_studies WHERE status IN ('published', 'active') "
+        "ORDER BY created_at DESC"
     )
     return {"success": True, "caseStudies": rows}

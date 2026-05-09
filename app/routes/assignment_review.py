@@ -1,6 +1,12 @@
 # app/routes/assignment_review.py
 # ---------------------------------------------------------------------------
 # Multi-tenant assignment review endpoints.
+#
+# CHANGED:
+#   - New endpoint: GET /api/review/assignment-history/{assignment_id}/{student_id}
+#     Returns all of a student's attempts on an assignment, newest first.
+#     Frontend uses this to show prior review on reopen + Re-analyze button.
+#
 # Every call to assignment_db_service passes the tenant EXPLICITLY — no
 # reliance on contextvar (which can drop across async boundaries).
 # ---------------------------------------------------------------------------
@@ -31,7 +37,7 @@ router = APIRouter(prefix="/api/review", tags=["assignment-review"])
 def get_tenant(x_api_key: str = Header(default="")) -> Tenant:
     """Local auth dep — resolves tenant from key for this router's handlers."""
     tenant = resolve_tenant_by_key(x_api_key)
-    set_current_tenant(tenant)  # also set contextvar for any legacy code
+    set_current_tenant(tenant)
     print(f"[ASSIGNMENT] tenant resolved: {tenant.id} (DB={tenant.database_url_env})")
     return tenant
 
@@ -61,19 +67,19 @@ async def list_student_assignments(student_id: int, tenant: Tenant = Depends(get
                 feedback_blob = None
 
         out.append({
-            "id":             r["id"],
-            "title":          r["title"],
-            "description":    r.get("description"),
-            "dueDate":        str(r["due_date"]) if r.get("due_date") else None,
-            "totalMarks":     r.get("total_marks", 100),
-            "status":         r.get("status"),
-            "submissionId":   r.get("submission_id"),
+            "id":               r["id"],
+            "title":            r["title"],
+            "description":      r.get("description"),
+            "dueDate":          str(r["due_date"]) if r.get("due_date") else None,
+            "totalMarks":       r.get("total_marks", 100),
+            "status":           r.get("status"),
+            "submissionId":     r.get("submission_id"),
             "submissionStatus": r.get("submission_status"),
-            "submittedAt":    str(r["submitted_at"]) if r.get("submitted_at") else None,
-            "grade":          r.get("submission_grade"),
-            "submittedFile":  r.get("submitted_file_name"),
-            "hasFeedback":    bool(feedback_blob),
-            "reviewedBy":     (feedback_blob or {}).get("reviewedBy"),
+            "submittedAt":      str(r["submitted_at"]) if r.get("submitted_at") else None,
+            "grade":            r.get("submission_grade"),
+            "submittedFile":    r.get("submitted_file_name"),
+            "hasFeedback":      bool(feedback_blob),
+            "reviewedBy":       (feedback_blob or {}).get("reviewedBy"),
         })
 
     return {"success": True, "assignments": out, "tenant": tenant.id}
@@ -91,8 +97,6 @@ async def submit_and_review_assignment(
 
     assignment = assignment_db_service.get_assignment_by_id(tenant, req.assignmentId)
     if not assignment:
-        # Diagnostic: list what assignments DO exist for this tenant so the
-        # logs explain WHY the lookup failed.
         try:
             from app.database import tquery
             available = tquery(
@@ -188,6 +192,7 @@ async def submit_and_review_assignment(
             "aiDetectionReason": "Not analysed (too short).", "aiVerdict": "uncertain",
             "scoreEmoji": "—",
             "plagiarismFlag": "low", "needsMentorHelp": True,
+            "summary": msg,
         }
         try:
             assignment_db_service.update_assignment_submission_with_ai_results(
@@ -262,6 +267,7 @@ async def submit_and_review_assignment(
         "isGarbage":              feedback["isGarbage"],
         "garbageWarning":         feedback["garbageWarning"],
         "needsMentorHelp":        scores["totalScore"] < 40,
+        "summary":                feedback["studentFeedback"]["summary"],
         "encouragement":          feedback["studentFeedback"]["encouragement"],
     }
 
@@ -312,6 +318,19 @@ async def get_assignment_submission(
         },
         "feedback": feedback,
     }
+
+
+# ---------- GET /api/review/assignment-history/{assignment_id}/{student_id} ----
+# NEW: powers "show previous review on reopen" + Re-analyze flow.
+
+@router.get("/assignment-history/{assignment_id}/{student_id}")
+async def assignment_history(
+    assignment_id: int,
+    student_id: int,
+    tenant: Tenant = Depends(get_tenant),
+):
+    history = assignment_db_service.get_assignment_history(tenant, assignment_id, student_id)
+    return {"success": True, "history": history}
 
 
 # ---------- helpers --------------------------------------------------------
