@@ -1,13 +1,18 @@
 # app/routes/review.py
-# CHANGED:
-#   - submit_and_review now passes req.fileUrl + req.fileName into
-#     save_submission so case-study file uploads are persisted (bug #26 fix).
-#   - New endpoint: GET /api/review/case-study-history/{student_id}/{case_study_id}
-#     Returns all of a student's attempts on a case study, newest first.
-#     Frontend uses this to show prior review on reopen with a Re-analyze button.
-#   - Demo endpoint /case-studies status filter: 'published' OR 'active'.
+# CHANGED in this push:
+#   - NEW endpoint: GET /api/review/case-studies-for-student/{student_id}
+#     Returns ALL published/active case studies, each with the student's
+#     latest submission attached (or null if not submitted). Mirrors the
+#     existing /assignments/{student_id} endpoint. Powers the AiRev hub's
+#     "New Review" / "Re-analyze" / "History" tabs.
+#
+# CHANGED in previous push (still here):
+#   - submit_and_review passes req.fileUrl + req.fileName into save_submission
+#   - GET /api/review/case-study-history/{student_id}/{case_study_id}
+#   - Demo /case-studies endpoint status filter is 'published' OR 'active'
 
 import time
+import json
 import os
 from fastapi import APIRouter, HTTPException
 from app.models.schemas import SubmitAnswerRequest, TestReviewRequest, MentorApproveRequest
@@ -33,19 +38,12 @@ async def submit_and_review(req: SubmitAnswerRequest):
     cleaned    = clean_text(req.answerText or "")
     word_count = count_words(cleaned)
 
-    # ── Build best answer text. Priority order, accumulated:
-    #    1. Student's frontend answerText (always taken if non-empty)
-    #    2. Extracted text from THIS submission's uploaded file (req.fileUrl)
-    #    3. Extracted text from any prior submission's file (DB)
-    #    4. Notes from prior submission (DB)
-
     file_used = None
     parts: list[str] = []
 
     if cleaned:
         parts.append(cleaned)
 
-    # NEW: extract text from the file URL the frontend just uploaded
     if req.fileUrl:
         extracted, why = extract_text_from_url(req.fileUrl, req.fileName or "")
         if extracted:
@@ -57,7 +55,6 @@ async def submit_and_review(req: SubmitAnswerRequest):
         elif why:
             print(f"📄 File extraction failed for {req.fileName or '?'}: {why}")
 
-    # Fall back to a prior submission only if we still have nothing useful
     if not parts:
         prior = db_service.get_latest_submission_file(req.caseStudyId, req.studentId)
         if prior:
@@ -73,7 +70,6 @@ async def submit_and_review(req: SubmitAnswerRequest):
             if db_notes:
                 parts.append(db_notes)
 
-    # ── Still nothing → friendly "no submission yet" ──
     if not parts:
         total_time = int((time.time() - start_time) * 1000)
         msg = ("We couldn't find any answer text. Please write your analysis in the "
@@ -101,18 +97,15 @@ async def submit_and_review(req: SubmitAnswerRequest):
             "processingTimeMs": total_time,
         }
 
-    # Combine and recount
     cleaned = "\n\n".join(parts).strip()
     word_count = count_words(cleaned)
     print(f"📝 Final answer: {word_count} words "
           f"(frontend={'yes' if req.answerText else 'no'}, "
           f"file={'yes' if file_used else 'no'})")
 
-    # Plagiarism warning (informational)
     text_overlap  = calculate_text_overlap(cleaned, case_study["description"])
     concept_check = find_mentioned_concepts(cleaned, case_study["keyConcepts"])
 
-    # NEW: persist file_url + file_name. INSERTs a new row every attempt.
     submission = db_service.save_submission(
         req.caseStudyId, req.studentId, cleaned, word_count,
         file_url=req.fileUrl, file_name=req.fileName,
@@ -120,7 +113,6 @@ async def submit_and_review(req: SubmitAnswerRequest):
     print(f"✅ Submission saved: id={submission['submissionId']}, "
           f"attempt={submission['attemptNumber']}")
 
-    # ── Pre-AI cheap garbage check ──
     pre_garbage_reason = _pre_garbage_check(cleaned, word_count)
     if pre_garbage_reason:
         print(f"⚠️  Pre-AI garbage check tripped: {pre_garbage_reason}")
@@ -134,7 +126,6 @@ async def submit_and_review(req: SubmitAnswerRequest):
             print(f"⚠️  DB update (garbage path) failed: {db_err}")
         return garbage_payload["response"]
 
-    # ── Real AI review ──
     try:
         ai_analysis = ai_service.analyze_answer(
             case_study={
@@ -313,11 +304,75 @@ async def student_progress(student_id: int):
 
 
 # ── GET /api/review/case-study-history/{student_id}/{case_study_id} ───────
-# NEW: powers "show previous review on reopen" + Re-analyze flow.
 @router.get("/case-study-history/{student_id}/{case_study_id}")
 async def case_study_history(student_id: int, case_study_id: int):
     history = db_service.get_submission_history(case_study_id, student_id)
     return {"success": True, "history": history}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# NEW for the AiRev hub: list all case studies with this student's latest
+# submission attached. Mirrors the assignments-list endpoint.
+# ══════════════════════════════════════════════════════════════════════════
+
+@router.get("/case-studies-for-student/{student_id}")
+async def case_studies_for_student(student_id: int):
+    from app.database import query
+    rows = query(
+        """SELECT cs.id, cs.course_id, cs.title, cs.description, cs.due_date,
+                  cs.total_marks, cs.status, cs.word_limit, cs.created_at,
+                  latest.id            AS submission_id,
+                  latest.grade         AS submission_grade,
+                  latest.status        AS submission_status,
+                  latest.submitted_at  AS submitted_at,
+                  latest.feedback      AS submission_feedback,
+                  latest.file_name     AS submitted_file_name
+           FROM case_studies cs
+           LEFT JOIN (
+               SELECT s1.*
+               FROM case_study_submissions s1
+               INNER JOIN (
+                   SELECT case_study_id, student_id, MAX(submitted_at) AS max_at
+                   FROM case_study_submissions
+                   WHERE student_id = %s
+                   GROUP BY case_study_id, student_id
+               ) s2
+                 ON s1.case_study_id = s2.case_study_id
+                AND s1.student_id    = s2.student_id
+                AND s1.submitted_at  = s2.max_at
+           ) latest
+             ON latest.case_study_id = cs.id
+           WHERE cs.status IN ('published', 'active')
+           ORDER BY cs.created_at DESC""",
+        (student_id,),
+    )
+
+    out = []
+    for r in rows:
+        feedback = None
+        if r.get("submission_feedback"):
+            try:
+                fb = r["submission_feedback"]
+                feedback = json.loads(fb) if isinstance(fb, str) else fb
+            except Exception:
+                feedback = None
+        out.append({
+            "id":              r["id"],
+            "title":           r.get("title"),
+            "description":     r.get("description"),
+            "courseId":        r.get("course_id"),
+            "dueDate":         str(r["due_date"]) if r.get("due_date") else None,
+            "totalMarks":      r.get("total_marks", 100),
+            "status":          r.get("status"),
+            "submissionId":    r.get("submission_id"),
+            "submissionStatus": r.get("submission_status"),
+            "submittedAt":     str(r["submitted_at"]) if r.get("submitted_at") else None,
+            "grade":           r.get("submission_grade"),
+            "submittedFile":   r.get("submitted_file_name"),
+            "hasFeedback":     bool(feedback),
+            "feedbackSummary": (feedback or {}).get("summary"),
+        })
+    return {"success": True, "caseStudies": out}
 
 
 # ── GET /api/review/mentor-dashboard/{case_study_id} ──────────────────────
@@ -380,82 +435,63 @@ def _build_garbage_response(submission, case_study, text, word_count, reason, st
     )
 
     student_feedback = {
-        "score": 0,
-        "grade": "F",
-        "scoreEmoji": "🤝",
+        "score": 0, "grade": "F", "scoreEmoji": "🤝",
         "summary": "Your submission was flagged as not a genuine attempt — score 0/100.",
-        "rubricScores":           rubric_breakdown,
-        "strengths":              [],
-        "improvements":           ["Read the case study carefully and write your own thoughts.",
-                                   "Aim for at least the suggested word count.",
-                                   "Reach out to your mentor if you'd like guidance on how to start."],
-        "missingConcepts":        case_study.get("keyConcepts", []),
-        "coveredConcepts":        [],
-        "suggestions":            [],
-        "detailedFeedback":       warning,
-        "wordCount":              word_count,
-        "wordCountMessage":       f"Your answer is {word_count} words — too short to evaluate.",
-        "encouragement":          "Take another look at the case study and try again — you can do this. 🤝",
-        "aiLikelihoodPercent":    0,
-        "humanLikelihoodPercent": 100,
-        "aiDetectionReason":      "Not analysed (submission flagged as non-genuine).",
-        "aiVerdict":              "uncertain",
-        "isGarbage":              True,
-        "garbageWarning":         warning,
+        "rubricScores":   rubric_breakdown,
+        "strengths":      [],
+        "improvements":   ["Read the case study carefully and write your own thoughts.",
+                           "Aim for at least the suggested word count.",
+                           "Reach out to your mentor if you'd like guidance on how to start."],
+        "missingConcepts": case_study.get("keyConcepts", []),
+        "coveredConcepts": [], "suggestions": [],
+        "detailedFeedback": warning,
+        "wordCount": word_count,
+        "wordCountMessage": f"Your answer is {word_count} words — too short to evaluate.",
+        "encouragement": "Take another look at the case study and try again — you can do this. 🤝",
+        "aiLikelihoodPercent": 0, "humanLikelihoodPercent": 100,
+        "aiDetectionReason": "Not analysed (submission flagged as non-genuine).",
+        "aiVerdict": "uncertain",
+        "isGarbage": True, "garbageWarning": warning,
     }
 
     mentor_report = {
-        "score":             0,
-        "grade":             "F",
-        "gradeLabel":        "Needs Significant Improvement",
-        "scoreEmoji":        "🤝",
-        "needsAttention":    True,
-        "performanceLevel":  "developing",
-        "plagiarismRisk":    "low",
-        "plagiarismNote":    "",
-        "quickAction":       "Review required: submission appears to be non-genuine — please verify.",
-        "keyMissing":        case_study.get("keyConcepts", []),
-        "rubricBreakdown":   rubric_breakdown,
-        "mentorAlert":       True,
-        "mentorAlertReason": f"Non-genuine submission flagged: {reason}",
-        "wordCount":         word_count,
-        "isGarbage":         True,
-        "aiLikelihoodPercent":    0,
-        "humanLikelihoodPercent": 100,
+        "score": 0, "grade": "F",
+        "gradeLabel": "Needs Significant Improvement",
+        "scoreEmoji": "🤝",
+        "needsAttention": True, "performanceLevel": "developing",
+        "plagiarismRisk": "low", "plagiarismNote": "",
+        "quickAction": "Review required: submission appears to be non-genuine — please verify.",
+        "keyMissing": case_study.get("keyConcepts", []),
+        "rubricBreakdown": rubric_breakdown,
+        "mentorAlert": True, "mentorAlertReason": f"Non-genuine submission flagged: {reason}",
+        "wordCount": word_count, "isGarbage": True,
+        "aiLikelihoodPercent": 0, "humanLikelihoodPercent": 100,
     }
 
     internal = {
-        "totalScore":             0,
-        "grade":                  "F",
-        "rubricScores":           rubric_breakdown,
-        "strengths":              [],
-        "improvements":           student_feedback["improvements"],
-        "missingConcepts":        case_study.get("keyConcepts", []),
-        "coveredConcepts":        [],
-        "suggestedModules":       [],
-        "detailedFeedback":       warning,
-        "wordCount":              word_count,
-        "wordCountMessage":       student_feedback["wordCountMessage"],
-        "plagiarismFlag":         "low",
-        "needsMentorHelp":        True,
-        "scoreEmoji":             "🤝",
-        "aiLikelihoodPercent":    0,
-        "humanLikelihoodPercent": 100,
-        "aiDetectionReason":      student_feedback["aiDetectionReason"],
-        "aiVerdict":              "uncertain",
-        "isGarbage":              True,
-        "garbageWarning":         warning,
-        "summary":                student_feedback["summary"],
-        "encouragement":          student_feedback["encouragement"],
+        "totalScore": 0, "grade": "F",
+        "rubricScores": rubric_breakdown,
+        "strengths": [], "improvements": student_feedback["improvements"],
+        "missingConcepts": case_study.get("keyConcepts", []),
+        "coveredConcepts": [], "suggestedModules": [],
+        "detailedFeedback": warning,
+        "wordCount": word_count,
+        "wordCountMessage": student_feedback["wordCountMessage"],
+        "plagiarismFlag": "low", "needsMentorHelp": True,
+        "scoreEmoji": "🤝",
+        "aiLikelihoodPercent": 0, "humanLikelihoodPercent": 100,
+        "aiDetectionReason": student_feedback["aiDetectionReason"],
+        "aiVerdict": "uncertain",
+        "isGarbage": True, "garbageWarning": warning,
+        "summary": student_feedback["summary"],
+        "encouragement": student_feedback["encouragement"],
     }
 
     return {
         "_internal": internal,
         "response": {
-            "success":    True,
-            "submission": submission,
-            "feedback":   student_feedback,
-            "mentorReport": mentor_report,
+            "success": True, "submission": submission,
+            "feedback": student_feedback, "mentorReport": mentor_report,
             "processingTimeMs": int((time.time() - start_time) * 1000),
         },
     }
