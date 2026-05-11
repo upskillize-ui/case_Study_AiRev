@@ -496,19 +496,20 @@ def _build_garbage_response(submission, case_study, text, word_count, reason, st
         },
     }
 
-
-
 # ── GET /api/review/capstones-for-student/{student_id} ────────────────────
 @router.get("/capstones-for-student/{student_id}")
 async def capstones_for_student(student_id: int):
     from app.database import query
+    # capstones table may use users.id instead of students.id
+    # Try both: direct match + lookup via students table
     rows = query(
         """SELECT id, title, description, course_id, student_id, due_date,
                   total_marks, status, file_url, grade, feedback, submitted_at
            FROM capstones
            WHERE student_id = %s
+              OR student_id = (SELECT user_id FROM students WHERE id = %s LIMIT 1)
            ORDER BY created_at DESC""",
-        (student_id,),
+        (student_id, student_id),
     )
     out = []
     for r in rows:
