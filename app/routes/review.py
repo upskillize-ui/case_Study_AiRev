@@ -497,6 +497,46 @@ def _build_garbage_response(submission, case_study, text, word_count, reason, st
     }
 
 
+
+# ── GET /api/review/capstones-for-student/{student_id} ────────────────────
+@router.get("/capstones-for-student/{student_id}")
+async def capstones_for_student(student_id: int):
+    from app.database import query
+    rows = query(
+        """SELECT id, title, description, course_id, student_id, due_date,
+                  total_marks, status, file_url, grade, feedback, submitted_at
+           FROM capstones
+           WHERE student_id = %s
+           ORDER BY created_at DESC""",
+        (student_id,),
+    )
+    out = []
+    for r in rows:
+        feedback = None
+        if r.get("feedback"):
+            try:
+                fb = r["feedback"]
+                feedback = json.loads(fb) if isinstance(fb, str) else fb
+            except Exception:
+                feedback = None
+        out.append({
+            "id":              r["id"],
+            "title":           r.get("title"),
+            "description":     r.get("description"),
+            "courseId":        r.get("course_id"),
+            "dueDate":         str(r["due_date"]) if r.get("due_date") else None,
+            "totalMarks":      r.get("total_marks", 100),
+            "status":          r.get("status"),
+            "submissionId":    r["id"] if r.get("status") in ("submitted", "graded") else None,
+            "submittedAt":     str(r["submitted_at"]) if r.get("submitted_at") else None,
+            "grade":           r.get("grade"),
+            "fileUrl":         r.get("file_url"),
+            "hasFeedback":     bool(feedback),
+            "feedbackSummary": (feedback or {}).get("summary"),
+        })
+    return {"success": True, "capstones": out}
+
+
 # ═════════════════════════════════════════════════════════════════════════
 # DEMO / TESTING ENDPOINTS
 # ═════════════════════════════════════════════════════════════════════════
