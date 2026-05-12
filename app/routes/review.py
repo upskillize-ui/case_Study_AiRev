@@ -240,6 +240,7 @@ async def submit_and_review(req: SubmitAnswerRequest):
             "isGarbage":              result["isGarbage"],
             "garbageWarning":         result["garbageWarning"],
         },
+        "_meta":            ai_analysis.get("_meta"),
         "mentorReport":     feedback["mentorSummary"],
         "processingTimeMs": total_time,
     }
@@ -552,3 +553,190 @@ async def list_all_published_case_studies():
         "ORDER BY created_at DESC"
     )
     return {"success": True, "caseStudies": rows}
+
+# ── POST /api/review/submit-capstone ──────────────────────────────────────
+# Capstones use `users.id` as student_id (not `students.id`), so we accept
+# either and resolve via the students table. Mirrors submit-assignment.
+@router.post("/submit-capstone")
+async def submit_capstone_review(req: dict):
+    """
+    Body: { capstoneId, studentId, answerText, fileUrl, fileName }
+    studentId may be users.id OR students.id — we resolve both.
+    """
+    import time as _time
+    from app.database import query, execute
+
+    start_time = _time.time()
+    capstone_id = req.get("capstoneId")
+    student_id  = req.get("studentId")
+    answer_text = (req.get("answerText") or "").strip()
+    file_url    = req.get("fileUrl")
+    file_name   = req.get("fileName")
+
+    if not capstone_id or not student_id:
+        raise HTTPException(status_code=400, detail="capstoneId and studentId are required")
+
+    print(f"ℹ️  Capstone review: student={student_id}, capstone={capstone_id}")
+
+    # Resolve capstone — dual lookup like the list endpoint
+    rows = query(
+        """SELECT id, title, description, total_marks, status, file_url, file_name,
+                  student_id, course_id, due_date
+           FROM capstones
+           WHERE id = %s
+             AND (student_id = %s
+               OR student_id = (SELECT user_id FROM students WHERE id = %s LIMIT 1))
+           LIMIT 1""",
+        (capstone_id, student_id, student_id),
+    )
+    if not rows:
+        # Helpful debug — list a few capstone IDs in the tenant
+        sample = query("SELECT id, title, status FROM capstones LIMIT 10")
+        print(f"[CAPSTONE] capstone {capstone_id} not found for student {student_id}. "
+              f"Sample capstones in tenant DB: {sample}")
+        raise HTTPException(status_code=404, detail="Capstone not found or not yours")
+
+    capstone = rows[0]
+    print(f"[CAPSTONE] resolved: id={capstone['id']}, title={capstone.get('title')}, "
+          f"status={capstone.get('status')}")
+
+    # Build the answer text from request OR existing capstone submission
+    parts = []
+    if answer_text:
+        parts.append(answer_text)
+    if file_url:
+        from app.utils.file_extractor import extract_text_from_url
+        extracted, why = extract_text_from_url(file_url, file_name or "")
+        if extracted:
+            print(f"📄 Extracted capstone file: {file_name} ({len(extracted.split())} words)")
+            parts.append(extracted)
+        elif why:
+            print(f"📄 Capstone file extraction failed: {why}")
+
+    # Fallback: read previously-saved capstone file
+    if not parts and capstone.get("file_url"):
+        from app.utils.file_extractor import extract_text_from_url
+        extracted, why = extract_text_from_url(capstone["file_url"], capstone.get("file_name") or "")
+        if extracted:
+            print(f"📄 Extracted prior capstone file: {capstone.get('file_name')}")
+            parts.append(extracted)
+
+    if not parts:
+        total_time = int((_time.time() - start_time) * 1000)
+        msg = ("We couldn't find any content for this capstone. Upload your project "
+               "deliverable (PDF / DOCX / ZIP) or paste your write-up, then click Submit again.")
+        return {
+            "success": True,
+            "submission": {"submissionId": capstone["id"], "attemptNumber": 1},
+            "feedback": {
+                "score": 0, "grade": "-",
+                "summary": msg,
+                "rubricScores": [], "strengths": [],
+                "improvements": [
+                    "Upload your capstone deliverable as a PDF, DOCX, or ZIP.",
+                    "Or paste your write-up directly into the AiRev answer box.",
+                ],
+                "missingConcepts": [], "coveredConcepts": [], "suggestions": [],
+                "detailedFeedback": msg,
+                "wordCount": 0, "wordCountMessage": "",
+                "encouragement": "Drop your deliverable in and re-run — you've got this.",
+                "aiLikelihoodPercent": None, "humanLikelihoodPercent": None,
+                "aiDetectionReason": "Not analysed.", "aiVerdict": "uncertain",
+                "isGarbage": False, "garbageWarning": "",
+            },
+            "mentorReport": {},
+            "processingTimeMs": total_time,
+        }
+
+    from app.utils.text_processor import clean_text, count_words
+    cleaned = clean_text("\n\n".join(parts))
+    word_count = count_words(cleaned)
+    print(f"📝 Capstone answer: {word_count} words")
+
+    # Capstones have lighter rubrics by default — synthesize one if the table
+    # doesn't carry one, so the AI still has dimensions to score against.
+    default_rubric = {
+        "criteria": [
+            {"name": "Problem Framing",        "maxScore": 20},
+            {"name": "Methodology",            "maxScore": 25},
+            {"name": "Execution Quality",      "maxScore": 25},
+            {"name": "Insight & Recommendation","maxScore": 20},
+            {"name": "Communication",          "maxScore": 10},
+        ]
+    }
+
+    try:
+        ai_analysis = ai_service.analyze_answer(
+            case_study={
+                "title":       capstone.get("title") or "Capstone Project",
+                "description": capstone.get("description") or "",
+                "questions":   [],
+            },
+            model_answer="",  # no canonical answer for capstones
+            student_answer=cleaned,
+            grading_rubric=default_rubric,
+            key_concepts=[],
+        )
+    except Exception as e:
+        print(f"⚠️  Capstone AI review unavailable: {e}")
+        return {
+            "success":       True,
+            "partialReview": True,
+            "message": "Your capstone is saved. The AI reviewer is briefly unavailable — a mentor has been notified.",
+            "submission": {"submissionId": capstone["id"], "attemptNumber": 1},
+        }
+
+    scores = scoring_service.calculate_scores(
+        ai_analysis, default_rubric, word_count, 0, 999999,
+    )
+    feedback = feedback_service.generate_feedback(
+        scores, ai_analysis, word_count, 0, 999999,
+    )
+
+    total_time = int((_time.time() - start_time) * 1000)
+    print(f"✅ Capstone review complete: score={scores['totalScore']}, "
+          f"grade={scores['grade']}, time={total_time}ms")
+
+    # Persist back to capstones table (grade + feedback JSON)
+    try:
+        execute(
+            "UPDATE capstones SET grade = %s, feedback = %s, status = 'graded' WHERE id = %s",
+            (scores["totalScore"], json.dumps({
+                "summary":          feedback["studentFeedback"]["summary"],
+                "rubricScores":     scores["rubricBreakdown"],
+                "strengths":        feedback["strengths"],
+                "improvements":     feedback["improvements"],
+                "detailedFeedback": feedback["detailed"],
+            }), capstone["id"]),
+        )
+    except Exception as db_err:
+        print(f"⚠️  Capstone DB update failed: {db_err}")
+
+    return {
+        "success":    True,
+        "submission": {"submissionId": capstone["id"], "attemptNumber": 1},
+        "feedback": {
+            "score":                  scores["totalScore"],
+            "grade":                  scores["grade"],
+            "summary":                feedback["studentFeedback"]["summary"],
+            "rubricScores":           scores["rubricBreakdown"],
+            "strengths":              feedback["strengths"],
+            "improvements":           feedback["improvements"],
+            "missingConcepts":        ai_analysis.get("conceptsMissing", []),
+            "coveredConcepts":        ai_analysis.get("conceptsCovered", []),
+            "suggestions":            feedback["suggestedModules"],
+            "detailedFeedback":       feedback["detailed"],
+            "wordCount":              word_count,
+            "wordCountMessage":       feedback["wordCountMessage"],
+            "encouragement":          feedback["studentFeedback"]["encouragement"],
+            "aiLikelihoodPercent":    feedback["aiLikelihoodPercent"],
+            "humanLikelihoodPercent": feedback["humanLikelihoodPercent"],
+            "aiDetectionReason":      feedback["aiDetectionReason"],
+            "aiVerdict":              feedback["aiVerdict"],
+            "isGarbage":              feedback["isGarbage"],
+            "garbageWarning":         feedback["garbageWarning"],
+        },
+        "_meta":            ai_analysis.get("_meta"),
+        "mentorReport":     feedback["mentorSummary"],
+        "processingTimeMs": total_time,
+    }
