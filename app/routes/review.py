@@ -605,8 +605,15 @@ async def submit_capstone_review(req: dict):
     if answer_text:
         parts.append(answer_text)
     if file_url:
+        # Resolve relative LMS paths (e.g. /uploads/capstone/foo.pdf) to full URL.
+        # The LMS backend serves /uploads as static files. Cloudinary URLs already
+        # start with https:// so this is a no-op for those.
+        resolved_url = file_url
+        if file_url.startswith("/"):
+            resolved_url = "https://upskillize-lms-backend.onrender.com" + file_url
+            print(f"[CAPSTONE] resolved relative path to: {resolved_url}")
         from app.utils.file_extractor import extract_text_from_url
-        extracted, why = extract_text_from_url(file_url, file_name or "")
+        extracted, why = extract_text_from_url(resolved_url, file_name or "")
         if extracted:
             print(f"📄 Extracted capstone file: {file_name} ({len(extracted.split())} words)")
             parts.append(extracted)
@@ -615,11 +622,17 @@ async def submit_capstone_review(req: dict):
 
     # Fallback: read previously-saved capstone file
     if not parts and capstone.get("file_url"):
+        prior_url = capstone["file_url"]
+        if prior_url.startswith("/"):
+            prior_url = "https://upskillize-lms-backend.onrender.com" + prior_url
+            print(f"[CAPSTONE] fallback resolved relative path to: {prior_url}")
         from app.utils.file_extractor import extract_text_from_url
-        extracted, why = extract_text_from_url(capstone["file_url"], "")
+        extracted, why = extract_text_from_url(prior_url, "")
         if extracted:
-            print(f"📄 Extracted prior capstone file: {capstone['file_url']}")
+            print(f"📄 Extracted prior capstone file: {prior_url}")
             parts.append(extracted)
+        elif why:
+            print(f"📄 Prior capstone file extraction failed: {why}")
 
     if not parts:
         total_time = int((_time.time() - start_time) * 1000)
