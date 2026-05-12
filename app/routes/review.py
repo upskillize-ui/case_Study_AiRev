@@ -580,7 +580,7 @@ async def submit_capstone_review(req: dict):
 
     # Resolve capstone — dual lookup like the list endpoint
     rows = query(
-        """SELECT id, title, description, total_marks, status, file_url, file_name,
+        """SELECT id, title, description, total_marks, status, file_url,
                   student_id, course_id, due_date
            FROM capstones
            WHERE id = %s
@@ -616,9 +616,9 @@ async def submit_capstone_review(req: dict):
     # Fallback: read previously-saved capstone file
     if not parts and capstone.get("file_url"):
         from app.utils.file_extractor import extract_text_from_url
-        extracted, why = extract_text_from_url(capstone["file_url"], capstone.get("file_name") or "")
+        extracted, why = extract_text_from_url(capstone["file_url"], "")
         if extracted:
-            print(f"📄 Extracted prior capstone file: {capstone.get('file_name')}")
+            print(f"📄 Extracted prior capstone file: {capstone['file_url']}")
             parts.append(extracted)
 
     if not parts:
