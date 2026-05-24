@@ -57,15 +57,40 @@ def _insight_table():
     )
 
 def _lms_insight_table() -> Optional[str]:
-    """Probe for the LMS's own student insight/feedback table (separate from AiRev)."""
-    return _probe_table(
-        "industry_session_insights",
-        "session_insights",
-        "student_session_insights",
-        "session_responses",
-        "industry_session_responses",
-        "session_feedback",
-    )
+    """Auto-discover any table in DB that has session_id + student_id columns
+    (other than our own industry_session_submissions). This is the LMS's own
+    student insight/response table — column names unknown, only structure matters."""
+    cache_key = "__lms_insight_auto__"
+    if cache_key in _table_cache:
+        return _table_cache[cache_key]
+
+    # Find tables having BOTH session_id and student_id columns
+    rows = query("""
+        SELECT t1.table_name AS tname
+        FROM information_schema.columns t1
+        JOIN information_schema.columns t2
+          ON t1.table_schema = t2.table_schema
+         AND t1.table_name   = t2.table_name
+        WHERE t1.table_schema = DATABASE()
+          AND t1.column_name IN ('session_id','SESSION_ID')
+          AND t2.column_name IN ('student_id','STUDENT_ID')
+          AND t1.table_name  NOT IN ('industry_session_submissions','session_submissions')
+        LIMIT 5
+    """)
+    found = None
+    for r in rows:
+        # information_schema returns uppercase on some MySQL versions
+        name = r.get("tname") or r.get("TNAME") or list(r.values())[0]
+        # Prefer tables with 'insight', 'session', or 'response' in the name
+        if any(kw in name.lower() for kw in ("insight", "response", "feedback")):
+            found = name
+            break
+        if not found:
+            found = name  # fallback to first match
+
+    _table_cache[cache_key] = found
+    print(f"ℹ️  LMS insight table auto-discovered: {found}")
+    return found
 
 def _get_columns(table: str) -> Dict[str, str]:
     """Return {column_name: data_type} for a table. Cached."""
@@ -139,7 +164,14 @@ async def get_sessions_for_student(student_id: int):
     c_topics   = _col(sess_tbl, "key_topics", "topics")
     c_outline  = _col(sess_tbl, "session_outline", "outline", "agenda")
     c_status   = _col(sess_tbl, "status", "is_active", "published")
-    c_id       = "id"  # always exists
+    c_id       = "id"
+
+    # Debug: log discovered config once per process
+    if "__logged__" not in _table_cache:
+        print(f"ℹ️  Session table: {sess_tbl}")
+        print(f"ℹ️  Columns: title={c_title} mentor={c_mentor} date={c_date} "
+              f"desc={c_desc} topics={c_topics} status={c_status}")
+        _table_cache["__logged__"] = True
 
     # Build SELECT list from available columns
     selects = [f"s.{c_id}"]
