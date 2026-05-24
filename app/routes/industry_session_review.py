@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 from app.services import ai_service, db_service
-from app.database import get_db_connection
+from app.database import get_connection
 
 router = APIRouter(prefix="/api/review", tags=["industry-session"])
 
@@ -47,7 +47,7 @@ def get_industry_sessions_for_student(student_id: int):
     Adapts to whatever table schema is in use — tries industry_sessions
     then falls back to sessions.
     """
-    conn = get_db_connection()
+    conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
         # Discover table name
@@ -128,7 +128,7 @@ def get_industry_sessions_for_student(student_id: int):
 def save_session_insight(session_id: int, student_id: int, insight_text: str,
                           file_url: str = None, file_name: str = None) -> dict:
     """Save/upsert insight submission and return {submissionId, attemptNumber}."""
-    conn = get_db_connection()
+    conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute(
@@ -178,7 +178,7 @@ def save_session_insight(session_id: int, student_id: int, insight_text: str,
 
 def save_session_feedback(submission_id: int, score: float, grade: str, feedback: dict,
                            tbl: str = "industry_session_submissions"):
-    conn = get_db_connection()
+    conn = get_connection()
     cursor = conn.cursor()
     try:
         cursor.execute(f"""
@@ -192,7 +192,7 @@ def save_session_feedback(submission_id: int, score: float, grade: str, feedback
         conn.close()
 
 def get_session_insight_history(student_id: int, session_id: int) -> list:
-    conn = get_db_connection()
+    conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute(
@@ -294,7 +294,7 @@ async def submit_industry_session(req: IndustrySessionInsightRequest):
     print(f"ℹ️  Industry session insight: student={req.studentId}, session={req.sessionId}")
 
     # 1. Load session metadata
-    conn = get_db_connection()
+    conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     session_meta = None
     try:
