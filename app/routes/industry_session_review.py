@@ -50,10 +50,21 @@ def _probe_table(*candidates: str) -> Optional[str]:
 def _session_table() -> Optional[str]:
     return _probe_table("industry_sessions", "sessions", "lms_sessions")
 
-def _insight_table() -> Optional[str]:
+def _insight_table():
     return _probe_table(
         "industry_session_submissions", "session_submissions",
         "industry_session_insights", "session_insights",
+    )
+
+def _lms_insight_table() -> Optional[str]:
+    """Probe for the LMS's own student insight/feedback table (separate from AiRev)."""
+    return _probe_table(
+        "industry_session_insights",
+        "session_insights",
+        "student_session_insights",
+        "session_responses",
+        "industry_session_responses",
+        "session_feedback",
     )
 
 def _get_columns(table: str) -> Dict[str, str]:
@@ -139,15 +150,43 @@ async def get_sessions_for_student(student_id: int):
     if c_topics:  selects.append(f"s.{c_topics} AS key_topics")
     if c_outline: selects.append(f"s.{c_outline} AS session_outline")
 
-    ins_tbl = _insight_table()
-
-    # Status filter — adapt to whatever the column is called
+    # Status filter
     if c_status:
         status_filter = f"WHERE s.{c_status} IN ('completed','live','upcoming','published','active')"
     else:
-        status_filter = ""  # no status column — return all
+        status_filter = ""
 
-    if ins_tbl:
+    ins_tbl = _insight_table()
+    lms_ins_tbl = _lms_insight_table()
+
+    # Build the student submission check:
+    # Check AiRev's own submissions table AND LMS's insight table (if it exists)
+    # Only return sessions where the student has actually submitted something
+    if ins_tbl and lms_ins_tbl and ins_tbl != lms_ins_tbl:
+        # Both exist — join with both, student counts as submitted if in either
+        sql = f"""
+            SELECT {', '.join(selects)},
+                   COALESCE(airev.id, lms_ins.id) AS submission_id,
+                   COALESCE(airev.submitted_at, lms_ins.submitted_at) AS submitted_at,
+                   airev.score        AS score,
+                   airev.has_feedback AS has_feedback
+            FROM {sess_tbl} s
+            LEFT JOIN {ins_tbl} airev
+                ON airev.session_id = s.{c_id}
+               AND airev.student_id = %s
+               AND airev.id = (SELECT MAX(a2.id) FROM {ins_tbl} a2
+                               WHERE a2.session_id = s.{c_id} AND a2.student_id = %s)
+            LEFT JOIN {lms_ins_tbl} lms_ins
+                ON lms_ins.session_id = s.{c_id}
+               AND lms_ins.student_id = %s
+            {status_filter}
+            HAVING submission_id IS NOT NULL
+            ORDER BY s.{c_id} DESC
+        """
+        rows = query(sql, (student_id, student_id, student_id))
+
+    elif ins_tbl:
+        # Only AiRev submissions table exists
         sql = f"""
             SELECT {', '.join(selects)},
                    sub.id           AS submission_id,
@@ -155,27 +194,19 @@ async def get_sessions_for_student(student_id: int):
                    sub.score        AS score,
                    sub.has_feedback AS has_feedback
             FROM {sess_tbl} s
-            LEFT JOIN {ins_tbl} sub
+            INNER JOIN {ins_tbl} sub
                 ON sub.session_id = s.{c_id}
                AND sub.student_id = %s
-               AND sub.id = (
-                    SELECT MAX(i2.id) FROM {ins_tbl} i2
-                    WHERE i2.session_id = s.{c_id} AND i2.student_id = %s
-               )
+               AND sub.id = (SELECT MAX(s2.id) FROM {ins_tbl} s2
+                             WHERE s2.session_id = s.{c_id} AND s2.student_id = %s)
             {status_filter}
             ORDER BY s.{c_id} DESC
         """
         rows = query(sql, (student_id, student_id))
+
     else:
-        sql = f"""
-            SELECT {', '.join(selects)},
-                   NULL AS submission_id, NULL AS submitted_at,
-                   NULL AS score, 0 AS has_feedback
-            FROM {sess_tbl} s
-            {status_filter}
-            ORDER BY s.{c_id} DESC
-        """
-        rows = query(sql)
+        # No submissions table yet — return empty (student hasn't submitted anywhere)
+        rows = []
 
     sessions = []
     for r in rows:
@@ -189,8 +220,8 @@ async def get_sessions_for_student(student_id: int):
             "submittedAt":  str(r["submitted_at"]) if r.get("submitted_at") else None,
             "grade":        r.get("score"),
             "hasFeedback":  bool(r.get("has_feedback")),
-            # ALL sessions always reviewable — student writes insight anytime
-            "completed":    True,
+            # Only sessions with actual student submissions are reviewable
+            "completed":    r.get("submission_id") is not None,
         })
 
     return {"success": True, "sessions": sessions, "total": len(sessions)}
