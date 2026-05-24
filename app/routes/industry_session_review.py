@@ -188,22 +188,12 @@ async def get_sessions_for_student(student_id: int):
     else:
         status_filter = ""
 
-    ins_tbl     = _insight_table()
-    lms_ins_tbl = _lms_insight_table()
+    ins_tbl = _insight_table()
 
-    # Strategy: LEFT JOIN only with our AiRev submissions table (known columns).
-    # For the LMS insight table we use EXISTS only — never SELECT from it
-    # because we don't know its column names beyond session_id/student_id.
-    # Show sessions where student has submitted in EITHER table.
-
-    lms_exists_clause = ""
-    if lms_ins_tbl and (not ins_tbl or lms_ins_tbl != ins_tbl):
-        lms_exists_clause = f"""
-            OR EXISTS (
-                SELECT 1 FROM {lms_ins_tbl} lms_chk
-                WHERE lms_chk.session_id = s.{c_id}
-                  AND lms_chk.student_id = %s
-            )"""
+    # Show ALL completed/published sessions to the student.
+    # The student writes their insight in AiRev's compose form (saves to our table).
+    # If they already submitted in our table, show that submission's data.
+    # LMS insight table is no longer required — AiRev is self-sufficient.
 
     if ins_tbl:
         sql = f"""
@@ -220,38 +210,20 @@ async def get_sessions_for_student(student_id: int):
                     SELECT MAX(s2.id) FROM {ins_tbl} s2
                     WHERE s2.session_id = s.{c_id} AND s2.student_id = %s
                )
-            WHERE (sub.id IS NOT NULL {lms_exists_clause})
-            {status_filter}
+            WHERE 1=1 {status_filter}
             ORDER BY s.{c_id} DESC
         """
-        params = [student_id, student_id]
-        if lms_exists_clause:
-            params.append(student_id)
-        rows = query(sql, tuple(params))
-
-    elif lms_ins_tbl:
-        # Only LMS insight table found — use it purely for EXISTS check
-        # Return sessions list with no AiRev submission data yet
+        rows = query(sql, (student_id, student_id))
+    else:
         sql = f"""
             SELECT {', '.join(selects)},
-                   NULL AS submission_id,
-                   NULL AS submitted_at,
-                   NULL AS score,
-                   0    AS has_feedback
+                   NULL AS submission_id, NULL AS submitted_at,
+                   NULL AS score, 0 AS has_feedback
             FROM {sess_tbl} s
-            WHERE EXISTS (
-                SELECT 1 FROM {lms_ins_tbl} lms_chk
-                WHERE lms_chk.session_id = s.{c_id}
-                  AND lms_chk.student_id = %s
-            )
-            {status_filter}
+            WHERE 1=1 {status_filter}
             ORDER BY s.{c_id} DESC
         """
-        rows = query(sql, (student_id,))
-
-    else:
-        # Neither table exists yet — return empty
-        rows = []
+        rows = query(sql)
 
     sessions = []
     for r in rows:
