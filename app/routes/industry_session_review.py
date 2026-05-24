@@ -57,40 +57,9 @@ def _insight_table():
     )
 
 def _lms_insight_table() -> Optional[str]:
-    """Auto-discover any table in DB that has session_id + student_id columns
-    (other than our own industry_session_submissions). This is the LMS's own
-    student insight/response table — column names unknown, only structure matters."""
-    cache_key = "__lms_insight_auto__"
-    if cache_key in _table_cache:
-        return _table_cache[cache_key]
-
-    # Find tables having BOTH session_id and student_id columns
-    rows = query("""
-        SELECT t1.table_name AS tname
-        FROM information_schema.columns t1
-        JOIN information_schema.columns t2
-          ON t1.table_schema = t2.table_schema
-         AND t1.table_name   = t2.table_name
-        WHERE t1.table_schema = DATABASE()
-          AND t1.column_name IN ('session_id','SESSION_ID')
-          AND t2.column_name IN ('student_id','STUDENT_ID')
-          AND t1.table_name  NOT IN ('industry_session_submissions','session_submissions')
-        LIMIT 5
-    """)
-    found = None
-    for r in rows:
-        # information_schema returns uppercase on some MySQL versions
-        name = r.get("tname") or r.get("TNAME") or list(r.values())[0]
-        # Prefer tables with 'insight', 'session', or 'response' in the name
-        if any(kw in name.lower() for kw in ("insight", "response", "feedback")):
-            found = name
-            break
-        if not found:
-            found = name  # fallback to first match
-
-    _table_cache[cache_key] = found
-    print(f"ℹ️  LMS insight table auto-discovered: {found}")
-    return found
+    """LMS stores student session insights in `session_feedback`.
+    Columns: id, session_id, student_id, rating, key_takeaway, ..."""
+    return _probe_table("session_feedback", "industry_session_insights", "session_insights")
 
 def _get_columns(table: str) -> Dict[str, str]:
     """Return {column_name: data_type} for a table. Cached."""
@@ -189,13 +158,13 @@ async def get_sessions_for_student(student_id: int):
         status_filter = ""
 
     ins_tbl = _insight_table()
+    lms_ins_tbl = _lms_insight_table()  # session_feedback in LMS
 
-    # Show ALL completed/published sessions to the student.
-    # The student writes their insight in AiRev's compose form (saves to our table).
-    # If they already submitted in our table, show that submission's data.
-    # LMS insight table is no longer required — AiRev is self-sufficient.
+    # Show sessions where student has EITHER:
+    #   (a) submitted an insight in the LMS coursework page (session_feedback table), OR
+    #   (b) already done a review in AiRev (industry_session_submissions table)
 
-    if ins_tbl:
+    if ins_tbl and lms_ins_tbl:
         sql = f"""
             SELECT {', '.join(selects)},
                    sub.id           AS submission_id,
@@ -210,20 +179,55 @@ async def get_sessions_for_student(student_id: int):
                     SELECT MAX(s2.id) FROM {ins_tbl} s2
                     WHERE s2.session_id = s.{c_id} AND s2.student_id = %s
                )
-            WHERE 1=1 {status_filter}
+            WHERE (
+                sub.id IS NOT NULL
+                OR EXISTS (
+                    SELECT 1 FROM {lms_ins_tbl} lms_chk
+                    WHERE lms_chk.session_id = s.{c_id}
+                      AND lms_chk.student_id = %s
+                )
+            )
+            {status_filter}
             ORDER BY s.{c_id} DESC
         """
-        rows = query(sql, (student_id, student_id))
-    else:
+        rows = query(sql, (student_id, student_id, student_id))
+
+    elif lms_ins_tbl:
+        # No AiRev submissions yet — show sessions with LMS insights only
         sql = f"""
             SELECT {', '.join(selects)},
                    NULL AS submission_id, NULL AS submitted_at,
                    NULL AS score, 0 AS has_feedback
             FROM {sess_tbl} s
-            WHERE 1=1 {status_filter}
+            WHERE EXISTS (
+                SELECT 1 FROM {lms_ins_tbl} lms_chk
+                WHERE lms_chk.session_id = s.{c_id}
+                  AND lms_chk.student_id = %s
+            )
+            {status_filter}
             ORDER BY s.{c_id} DESC
         """
-        rows = query(sql)
+        rows = query(sql, (student_id,))
+
+    elif ins_tbl:
+        # Only AiRev table — show student's own AiRev submissions
+        sql = f"""
+            SELECT {', '.join(selects)},
+                   sub.id           AS submission_id,
+                   sub.submitted_at AS submitted_at,
+                   sub.score        AS score,
+                   sub.has_feedback AS has_feedback
+            FROM {sess_tbl} s
+            INNER JOIN {ins_tbl} sub
+                ON sub.session_id = s.{c_id}
+               AND sub.student_id = %s
+            {status_filter}
+            ORDER BY s.{c_id} DESC
+        """
+        rows = query(sql, (student_id,))
+
+    else:
+        rows = []
 
     sessions = []
     for r in rows:
@@ -305,8 +309,25 @@ async def submit_industry_session(req: IndustrySessionInsightRequest):
         "No additional content provided — evaluate based on the title and general BFSI knowledge."
     )
 
-    # 3. Get student insight
+    # 3. Get student insight — prefer explicit text, else pull from LMS session_feedback
     insight = (req.insightText or "").strip()
+
+    if not insight:
+        lms_tbl = _lms_insight_table()
+        if lms_tbl:
+            try:
+                lms_rows = query(
+                    f"SELECT key_takeaway, rating FROM {lms_tbl} "
+                    f"WHERE session_id=%s AND student_id=%s ORDER BY id DESC LIMIT 1",
+                    (req.sessionId, req.studentId)
+                )
+                if lms_rows:
+                    takeaway = (lms_rows[0].get("key_takeaway") or "").strip()
+                    if takeaway:
+                        insight = takeaway
+                        print(f"ℹ️  Pulled insight from LMS session_feedback ({len(insight)} chars)")
+            except Exception as ex:
+                print(f"⚠️ LMS insight fetch error: {ex}")
     if req.fileUrl:
         try:
             from app.utils.file_extractor import extract_text_from_url
