@@ -38,7 +38,13 @@ def _probe_table(*candidates: str) -> Optional[str]:
             f"WHERE table_schema = DATABASE() AND table_name IN ({ph}) LIMIT 1",
             tuple(candidates),
         )
-        _table_cache[key] = rows[0]["table_name"] if rows else None
+        if rows:
+            # information_schema returns uppercase keys on some MySQL versions
+            row = rows[0]
+            val = row.get("table_name") or row.get("TABLE_NAME") or list(row.values())[0]
+            _table_cache[key] = val
+        else:
+            _table_cache[key] = None
     return _table_cache[key]
 
 def _session_table() -> Optional[str]:
@@ -58,7 +64,14 @@ def _get_columns(table: str) -> Dict[str, str]:
             "WHERE table_schema = DATABASE() AND table_name = %s",
             (table,)
         )
-        _col_cache[table] = {r["column_name"]: r["data_type"] for r in rows}
+        result = {}
+        for r in rows:
+            # Handle both lowercase and uppercase keys from different MySQL versions
+            col = r.get("column_name") or r.get("COLUMN_NAME") or ""
+            dtype = r.get("data_type") or r.get("DATA_TYPE") or ""
+            if col:
+                result[col] = dtype
+        _col_cache[table] = result
     return _col_cache[table]
 
 def _col(table: str, *candidates: str) -> Optional[str]:
