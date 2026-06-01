@@ -245,6 +245,8 @@ async def get_sessions_for_student(student_id: int):
             "completed":    True,
         })
 
+    print(f"ℹ️  Sessions for student {student_id}: found {len(sessions)} | "
+          f"ins_tbl={ins_tbl} lms_ins_tbl={lms_ins_tbl}")
     return {"success": True, "sessions": sessions, "total": len(sessions)}
 
 
@@ -266,6 +268,12 @@ async def submit_industry_session(req: IndustrySessionInsightRequest):
     c_topics   = _col(sess_tbl, "key_topics", "topics")
     c_outline  = _col(sess_tbl, "session_outline", "outline", "agenda")
     c_transcript = _col(sess_tbl, "video_transcript", "transcript")
+    c_examples = _col(sess_tbl, "examples_discussed", "examples")
+    c_cases    = _col(sess_tbl, "case_studies", "cases")
+    c_quotes   = _col(sess_tbl, "key_quotes", "quotes")
+    c_assigns  = _col(sess_tbl, "assignments_given", "assignments")
+    c_resources = _col(sess_tbl, "resources_shared", "resources")
+    c_outcomes = _col(sess_tbl, "learning_outcomes", "outcomes")
 
     sel = ["id", f"{c_title} AS title"]
     if c_mentor:     sel.append(f"{c_mentor} AS mentor_name")
@@ -273,6 +281,12 @@ async def submit_industry_session(req: IndustrySessionInsightRequest):
     if c_topics:     sel.append(f"{c_topics} AS key_topics")
     if c_outline:    sel.append(f"{c_outline} AS session_outline")
     if c_transcript: sel.append(f"{c_transcript} AS video_transcript")
+    if c_examples:   sel.append(f"{c_examples} AS examples_discussed")
+    if c_cases:      sel.append(f"{c_cases} AS case_studies")
+    if c_quotes:     sel.append(f"{c_quotes} AS key_quotes")
+    if c_assigns:    sel.append(f"{c_assigns} AS assignments_given")
+    if c_resources:  sel.append(f"{c_resources} AS resources_shared")
+    if c_outcomes:   sel.append(f"{c_outcomes} AS learning_outcomes")
 
     rows = query(f"SELECT {', '.join(sel)} FROM {sess_tbl} WHERE id = %s LIMIT 1", (req.sessionId,))
     if not rows:
@@ -285,28 +299,47 @@ async def submit_industry_session(req: IndustrySessionInsightRequest):
         try: return json.loads(v)
         except: return v
 
-    title      = str(s.get("title") or f"Session #{req.sessionId}")
-    mentor     = s.get("mentor_name") or "Industry Mentor"
-    key_topics = safe_json(s.get("key_topics"))
-    outline    = s.get("session_outline") or ""
-    transcript = s.get("video_transcript") or ""
+    title       = str(s.get("title") or f"Session #{req.sessionId}")
+    mentor      = s.get("mentor_name") or "Industry Mentor"
+    key_topics  = safe_json(s.get("key_topics"))
+    outline     = s.get("session_outline") or ""
+    transcript  = s.get("video_transcript") or ""
     description = s.get("description") or ""
+    examples    = s.get("examples_discussed") or ""
+    cases       = s.get("case_studies") or ""
+    quotes      = s.get("key_quotes") or ""
+    assignments = s.get("assignments_given") or ""
+    resources   = s.get("resources_shared") or ""
+    outcomes    = s.get("learning_outcomes") or ""
 
-    # 2. Build session knowledge for AI
+    # 2. Build comprehensive session knowledge for AI
     parts = []
     if description:
-        parts.append(f"SESSION DESCRIPTION:\n{description}")
+        parts.append(f"📋 SESSION DESCRIPTION:\n{description}")
+    if outcomes:
+        parts.append(f"🎯 LEARNING OUTCOMES (what every attendee should walk away with):\n{outcomes}")
     if key_topics:
         t = key_topics if isinstance(key_topics, list) else [str(key_topics)]
-        parts.append("KEY TOPICS COVERED IN THIS SESSION:\n" + "\n".join(f"• {x}" for x in t))
+        parts.append("🔑 KEY TOPICS COVERED:\n" + "\n".join(f"• {x}" for x in t))
     if outline:
-        parts.append(f"SESSION OUTLINE / AGENDA:\n{outline}")
+        parts.append(f"📑 SESSION OUTLINE / AGENDA:\n{outline}")
+    if examples:
+        parts.append(f"💡 REAL-WORLD EXAMPLES MENTOR DISCUSSED:\n{examples}")
+    if cases:
+        parts.append(f"📊 CASE STUDIES / NAMED COMPANIES:\n{cases}")
+    if quotes:
+        parts.append(f"💬 KEY QUOTES FROM MENTOR:\n{quotes}")
+    if assignments:
+        parts.append(f"📝 ASSIGNMENT GIVEN IN SESSION:\n{assignments}")
+    if resources:
+        parts.append(f"📚 RESOURCES SHARED:\n{resources}")
     if transcript:
-        parts.append(f"VIDEO TRANSCRIPT (excerpt):\n{transcript[:4000]}")
+        parts.append(f"🎥 VIDEO TRANSCRIPT (excerpt):\n{transcript[:4000]}")
 
     session_knowledge = "\n\n".join(parts) if parts else (
         f"Session titled '{title}' by {mentor}. "
-        "No additional content provided — evaluate based on the title and general BFSI knowledge."
+        "⚠️ No content metadata stored — review will be based on title only. "
+        "Ask faculty to add key_topics, examples, and outline for richer reviews."
     )
 
     # 3. Get student insight — prefer explicit text, else pull from LMS session_feedback
@@ -363,67 +396,84 @@ async def submit_industry_session(req: IndustrySessionInsightRequest):
         (req.sessionId, req.studentId, insight, req.fileUrl, req.fileName, attempt)
     )
 
-    # 5. Build AI prompt — content-aware, hard truth
+    # 5. Build AI prompt — two-step: (1) understand session, (2) evaluate student
     topic_count = len(key_topics) if isinstance(key_topics, list) else "several"
     prompt = f"""You are AiRev, the AI Industry Session Review agent for Upskillize EcoPro LMS.
-Review this student's understanding of a session they attended.
 
-RULES:
-- Be SPECIFIC and DIRECT. No generic feedback.
-- Every comment must reference either the session content OR the student's exact words.
-- Name exact concepts the student missed — don't say "could be more detailed".
-- Hard truth: if their understanding is shallow, say so clearly.
-- covered_well: only genuine strengths with evidence. No false praise.
-- Every student gets a unique review — base it entirely on THEIR specific text.
+YOUR WORKFLOW IS TWO STEPS:
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-SESSION: "{title}"
-MENTOR: {mentor}
+╔═══════════════════════════════════════════════════════════════════╗
+║ STEP 1 — UNDERSTAND THE SESSION FIRST                             ║
+║ Read the SESSION CONTENT below as if YOU attended it.             ║
+║ Identify the 5-8 most important concepts the mentor taught.       ║
+║ This is your ground truth — what every attendee SHOULD know.      ║
+╚═══════════════════════════════════════════════════════════════════╝
+
+╔═══════════════════════════════════════════════════════════════════╗
+║ STEP 2 — EVALUATE STUDENT'S UNDERSTANDING                         ║
+║ Now read the STUDENT INSIGHT.                                     ║
+║ For EACH concept you identified in Step 1:                        ║
+║   • Did the student mention it? (Yes / Partial / No)              ║
+║   • Did they understand it correctly?                             ║
+║   • Did they connect it to BFSI / their career?                   ║
+║ Calculate comprehension % = (concepts grasped / total concepts).  ║
+║ Be HONEST. If they only restated the title, comprehension is 5%.  ║
+╚═══════════════════════════════════════════════════════════════════╝
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SESSION: "{title}"  ·  MENTOR: {mentor}
 
 {session_knowledge}
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-STUDENT INSIGHT (Attempt #{attempt}):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+STUDENT'S WRITTEN UNDERSTANDING (Attempt #{attempt}):
 \"\"\"{insight}\"\"\"
-━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-YOUR TASK:
-1. Extract the {topic_count} key points from the session content above.
-2. For each: did the student mention it? Partially? Missed it?
-3. Score each of the 5 dimensions 0-4 based on evidence.
-4. List SPECIFIC gaps — name the exact concept from the session that's missing.
-5. Write the hard_truth: 2-3 direct sentences. If they wrote 2 sentences for a 60-min session, say so.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-DIMENSIONS (0=absent, 1=surface mention, 2=partial, 3=solid grasp, 4=expert insight):
-1. Session Comprehension — understood the core message?
+REVIEW RULES — NON-NEGOTIABLE:
+• Hard truth, no sugar coating. If understanding is shallow, name it.
+• Every claim grounded in either the session content OR the student's exact words.
+• covered_well lists ONLY genuine strengths — no false praise.
+• critical_gaps name EXACT concepts from the session they missed.
+• recommendations tied to THIS session's actual content, not generic advice.
+• Comprehension % must match the depth — restating one line ≠ understanding.
+
+DIMENSION SCORES (0=absent, 1=surface, 2=partial, 3=solid, 4=expert):
+1. Session Comprehension — grasped the core argument?
 2. Key Point Coverage — how many of the mentor's main points captured?
 3. Industry Context — understood BFSI/sector implications?
 4. Critical Thinking — went beyond restating, formed own view?
 5. Practical Application — connected to real roles/career?
 
-BAND: 16-20=Outstanding, 12-15=Strong, 8-11=Proficient, 0-7=Emerging
+BAND: 16-20=Outstanding · 12-15=Strong · 8-11=Proficient · 0-7=Emerging
 
-Return ONLY valid JSON (no markdown, no backticks):
+Return ONLY valid JSON (no markdown, no preamble, no backticks):
 {{
+  "comprehension_percentage": 0,
+  "concept_coverage": [
+    {{"concept": "Exact concept from session", "status": "covered|partial|missed", "evidence": "What student wrote or didn't"}}
+  ],
   "band": "Emerging|Proficient|Strong|Outstanding",
   "dimensions": [
-    {{"name": "Session Comprehension", "score": 0, "note": "specific evidence"}},
-    {{"name": "Key Point Coverage",    "score": 0, "note": "mention what they got vs what they missed"}},
-    {{"name": "Industry Context",      "score": 0, "note": "specific"}},
-    {{"name": "Critical Thinking",     "score": 0, "note": "specific"}},
-    {{"name": "Practical Application", "score": 0, "note": "specific"}}
+    {{"name": "Session Comprehension", "score": 0, "note": "evidence"}},
+    {{"name": "Key Point Coverage",    "score": 0, "note": "X of Y points captured"}},
+    {{"name": "Industry Context",      "score": 0, "note": "evidence"}},
+    {{"name": "Critical Thinking",     "score": 0, "note": "evidence"}},
+    {{"name": "Practical Application", "score": 0, "note": "evidence"}}
   ],
-  "critical_gaps": ["Exact concept from session student missed — and why it matters for BFSI"],
+  "critical_gaps": ["Exact concept from session that student missed — and why it matters"],
   "covered_well":  ["Specific thing they got right with evidence from their text"],
   "recommendations": ["Actionable step tied to THIS session's content"],
   "hard_truth": "2-3 direct sentences. Name what's missing. No softening.",
-  "summary": "2-sentence overall verdict",
+  "summary": "2-sentence overall verdict including comprehension %",
   "next_action": "One sharp next step"
 }}"""
 
     raw = None
     provider = "claude"
     try:
-        ai_resp = ai_service.call_claude(prompt, max_tokens=1400)
+        ai_resp = ai_service.call_claude(prompt, max_tokens=2000)
         clean = ai_resp.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
         # Handle case where model adds preamble before JSON
         if not clean.startswith("{"):
@@ -433,6 +483,8 @@ Return ONLY valid JSON (no markdown, no backticks):
         print(f"⚠️ AI failed: {e} — using structured fallback")
         provider = "fallback"
         raw = {
+            "comprehension_percentage": 0,
+            "concept_coverage": [],
             "band": "Emerging",
             "dimensions": [
                 {"name": "Session Comprehension", "score": 1, "note": "AI service temporarily unavailable. Please retry for full review."},
