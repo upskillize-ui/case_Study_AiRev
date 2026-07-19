@@ -205,7 +205,7 @@ def _ensure_insight_table() -> str:
 # Returns ALL published sessions for any student.
 # New sessions added by faculty auto-appear here for all students.
 @router.get("/industry-sessions-for-student/{student_id}")
-async def get_sessions_for_student(student_id: int, background_tasks: BackgroundTasks):
+def get_sessions_for_student(student_id: int, background_tasks: BackgroundTasks):
     from app.database import canonical_student_id
     student_id = canonical_student_id(student_id)
     sess_tbl = _session_table()
@@ -356,7 +356,7 @@ async def get_sessions_for_student(student_id: int, background_tasks: Background
 # ─── POST /api/review/submit-industry-session ─────────────────────────────────
 # Concurrent-safe: each request is fully independent, no shared state.
 @router.post("/submit-industry-session", dependencies=[Depends(capacity_guard)])
-async def submit_industry_session(req: IndustrySessionInsightRequest,
+def submit_industry_session(req: IndustrySessionInsightRequest,
                                   background_tasks: BackgroundTasks):
     from app.database import canonical_student_id
     req.studentId = canonical_student_id(req.studentId)
@@ -754,7 +754,7 @@ Return ONLY valid JSON (no markdown, no preamble, no backticks):
 # Trigger-1 webhook: build the session digest/pack ahead of student reviews.
 # (The video-watch pipeline is triggered separately when a session is listed.)
 @router.post("/prepare/industry_session/{session_id}")
-async def prepare_session(session_id: int, background_tasks: BackgroundTasks):
+def prepare_session(session_id: int, background_tasks: BackgroundTasks):
     sess_tbl = _session_table()
     if not sess_tbl:
         raise HTTPException(status_code=404, detail="No industry_sessions table")
@@ -791,14 +791,14 @@ async def prepare_session(session_id: int, background_tasks: BackgroundTasks):
 # ─── GET /api/review/session-watch-status/{session_id} ────────────────────────
 # Ops visibility: has the agent watched this session's video yet?
 @router.get("/session-watch-status/{session_id}")
-async def session_watch_status(session_id: int):
+def session_watch_status(session_id: int):
     return {"success": True, "sessionId": session_id,
             **media_service.watch_status(session_id)}
 
 
 # ─── GET /api/review/industry-session-history/{student_id}/{session_id} ───────
 @router.get("/industry-session-history/{student_id}/{session_id}")
-async def get_session_history(student_id: int, session_id: int):
+def get_session_history(student_id: int, session_id: int):
     from app.database import canonical_student_id
     student_id = canonical_student_id(student_id)
     ins_tbl = _insight_table()

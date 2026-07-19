@@ -62,7 +62,7 @@ class SubmitAssignmentRequest(BaseModel):
 # ---------- GET /api/review/assignments/{student_id} -----------------------
 
 @router.get("/assignments/{student_id}")
-async def list_student_assignments(student_id: int, tenant: Tenant = Depends(get_tenant)):
+def list_student_assignments(student_id: int, tenant: Tenant = Depends(get_tenant)):
     from app.database import canonical_student_id
     student_id = canonical_student_id(student_id)
     rows = assignment_db_service.get_student_assignments(tenant, student_id)
@@ -101,7 +101,7 @@ async def list_student_assignments(student_id: int, tenant: Tenant = Depends(get
 # assignment so the agent reads the questions and builds its knowledge pack
 # BEFORE any student submits — "pre-ready", not lazy.
 @router.post("/prepare/assignment/{assignment_id}")
-async def prepare_assignment(assignment_id: int, background_tasks: BackgroundTasks,
+def prepare_assignment(assignment_id: int, background_tasks: BackgroundTasks,
                              tenant: Tenant = Depends(get_tenant)):
     from app.services import knowledge_service
     assignment = assignment_db_service.get_assignment_by_id(tenant, assignment_id)
@@ -123,7 +123,7 @@ async def prepare_assignment(assignment_id: int, background_tasks: BackgroundTas
 # ---------- POST /api/review/submit-assignment -----------------------------
 
 @router.post("/submit-assignment", dependencies=[Depends(capacity_guard)])
-async def submit_and_review_assignment(
+def submit_and_review_assignment(
     req: SubmitAssignmentRequest,
     tenant: Tenant = Depends(get_tenant),
 ):
@@ -389,7 +389,7 @@ async def submit_and_review_assignment(
 # ---------- GET /api/review/assignment-submission/{id} ---------------------
 
 @router.get("/assignment-submission/{submission_id}")
-async def get_assignment_submission(
+def get_assignment_submission(
     submission_id: int,
     student_id: int,
     tenant: Tenant = Depends(get_tenant),
@@ -427,7 +427,7 @@ async def get_assignment_submission(
 # NEW: powers "show previous review on reopen" + Re-analyze flow.
 
 @router.get("/assignment-history/{assignment_id}/{student_id}")
-async def assignment_history(
+def assignment_history(
     assignment_id: int,
     student_id: int,
     tenant: Tenant = Depends(get_tenant),

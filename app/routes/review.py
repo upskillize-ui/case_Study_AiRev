@@ -62,7 +62,7 @@ def _attempt_policy_block(case_study_id: int, student_id: int,
 
 # ── POST /api/review/submit ────────────────────────────────────────────────
 @router.post("/submit", dependencies=[Depends(capacity_guard)])
-async def submit_and_review(req: SubmitAnswerRequest, background_tasks: BackgroundTasks):
+def submit_and_review(req: SubmitAnswerRequest, background_tasks: BackgroundTasks):
     from app.database import canonical_student_id
     req.studentId = canonical_student_id(req.studentId)
     start_time = time.time()
@@ -317,7 +317,7 @@ async def submit_and_review(req: SubmitAnswerRequest, background_tasks: Backgrou
 # Optional LMS webhook: call after faculty saves/edits a question to build
 # the knowledge pack immediately instead of on first student touch.
 @router.post("/prepare/case_study/{case_study_id}")
-async def prepare_case_study(case_study_id: int, background_tasks: BackgroundTasks):
+def prepare_case_study(case_study_id: int, background_tasks: BackgroundTasks):
     case_study = db_service.get_case_study_by_id(case_study_id)
     if not case_study:
         raise HTTPException(status_code=404, detail="Case study not found or not published")
@@ -334,7 +334,7 @@ async def prepare_case_study(case_study_id: int, background_tasks: BackgroundTas
 
 
 @router.post("/prepare/capstone/{capstone_id}")
-async def prepare_capstone(capstone_id: int, background_tasks: BackgroundTasks):
+def prepare_capstone(capstone_id: int, background_tasks: BackgroundTasks):
     from app.database import query
     rows = query("SELECT id, title, description FROM capstones WHERE id = %s LIMIT 1",
                  (capstone_id,))
@@ -358,7 +358,7 @@ def _kick_build(scope_type: str, scope_id: int, raw: dict, background_tasks):
 
 
 @router.get("/knowledge-status/{scope_type}/{scope_id}")
-async def knowledge_status(scope_type: str, scope_id: int):
+def knowledge_status(scope_type: str, scope_id: int):
     stored = knowledge_service.get_pack(scope_type, scope_id)
     if not stored:
         return {"status": "absent"}
@@ -614,7 +614,7 @@ def _run_pipeline_review(case_study, req, submission, cleaned, word_count,
 
 # ── POST /api/review/test ──────────────────────────────────────────────────
 @router.post("/test")
-async def test_review(req: TestReviewRequest):
+def test_review(req: TestReviewRequest):
     cleaned    = clean_text(req.studentAnswer)
     word_count = count_words(cleaned)
 
@@ -665,7 +665,7 @@ async def test_review(req: TestReviewRequest):
 
 # ── GET /api/review/student-progress/{student_id} ─────────────────────────
 @router.get("/student-progress/{student_id}")
-async def student_progress(student_id: int):
+def student_progress(student_id: int):
     from app.database import canonical_student_id
     student_id = canonical_student_id(student_id)
     progress = db_service.get_student_progress(student_id)
@@ -674,7 +674,7 @@ async def student_progress(student_id: int):
 
 # ── GET /api/review/case-study-history/{student_id}/{case_study_id} ───────
 @router.get("/case-study-history/{student_id}/{case_study_id}")
-async def case_study_history(student_id: int, case_study_id: int):
+def case_study_history(student_id: int, case_study_id: int):
     from app.database import canonical_student_id
     student_id = canonical_student_id(student_id)
     history = db_service.get_submission_history(case_study_id, student_id)
@@ -687,7 +687,7 @@ async def case_study_history(student_id: int, case_study_id: int):
 # ══════════════════════════════════════════════════════════════════════════
 
 @router.get("/case-studies-for-student/{student_id}")
-async def case_studies_for_student(student_id: int):
+def case_studies_for_student(student_id: int):
     from app.database import canonical_student_id
     student_id = canonical_student_id(student_id)
     # DUAL_ID_MATCH: Coursework-module submissions can be stored under
@@ -761,14 +761,14 @@ async def case_studies_for_student(student_id: int):
 
 # ── GET /api/review/mentor-dashboard/{case_study_id} ──────────────────────
 @router.get("/mentor-dashboard/{case_study_id}")
-async def mentor_dashboard(case_study_id: int):
+def mentor_dashboard(case_study_id: int):
     dashboard = db_service.get_mentor_dashboard(case_study_id)
     return {"success": True, "dashboard": dashboard}
 
 
 # ── POST /api/review/mentor-approve/{submission_id} ───────────────────────
 @router.post("/mentor-approve/{submission_id}")
-async def mentor_approve(submission_id: int, req: MentorApproveRequest):
+def mentor_approve(submission_id: int, req: MentorApproveRequest):
     db_service.mentor_approve_submission(
         submission_id, req.mentorId, req.mentorScore, req.mentorFeedback
     )
@@ -777,7 +777,7 @@ async def mentor_approve(submission_id: int, req: MentorApproveRequest):
 
 # ── GET /api/review/case-studies/{course_id} ──────────────────────────────
 @router.get("/case-studies/{course_id}")
-async def list_case_studies(course_id: int):
+def list_case_studies(course_id: int):
     case_studies = db_service.get_all_case_studies(course_id)
     return {"success": True, "caseStudies": case_studies}
 
@@ -882,7 +882,7 @@ def _build_garbage_response(submission, case_study, text, word_count, reason, st
 
 # ── GET /api/review/capstones-for-student/{student_id} ────────────────────
 @router.get("/capstones-for-student/{student_id}")
-async def capstones_for_student(student_id: int):
+def capstones_for_student(student_id: int):
     from app.database import canonical_student_id
     student_id = canonical_student_id(student_id)
     from app.database import query
@@ -929,7 +929,7 @@ async def capstones_for_student(student_id: int):
 # ═════════════════════════════════════════════════════════════════════════
 
 @router.get("/case-studies", tags=["demo"])
-async def list_all_published_case_studies():
+def list_all_published_case_studies():
     from app.database import query
     rows = query(
         "SELECT id, course_id, title, description, company_name, industry, "
@@ -943,7 +943,7 @@ async def list_all_published_case_studies():
 # Capstones use `users.id` as student_id (not `students.id`), so we accept
 # either and resolve via the students table. Mirrors submit-assignment.
 @router.post("/submit-capstone", dependencies=[Depends(capacity_guard)])
-async def submit_capstone_review(req: dict):
+def submit_capstone_review(req: dict):
     """
     Body: { capstoneId, studentId, answerText, fileUrl, fileName }
     studentId may be users.id OR students.id — we resolve both.

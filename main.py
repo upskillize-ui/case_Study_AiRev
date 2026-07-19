@@ -141,6 +141,18 @@ async def trigger_consolidation(x_admin_key: str = Header(default="")):
 # ===== Startup =====
 @app.on_event("startup")
 async def startup():
+    # Route handlers are sync `def` (blocking DB/AI/file work), so FastAPI runs
+    # them in the anyio threadpool — the event loop stays free for /health and
+    # the list endpoints even while long reviews run. Default pool is 40; raise
+    # it to match LIVE_CAPACITY so concurrent reviews don't queue behind it.
+    try:
+        import anyio
+        pool = int(os.getenv("THREADPOOL_LIMIT", os.getenv("LIVE_CAPACITY", "100")))
+        anyio.to_thread.current_default_thread_limiter().total_tokens = pool
+        print(f"   Threadpool limit : {pool} concurrent blocking handlers")
+    except Exception as e:
+        print(f"   ⚠️ threadpool tune skipped: {e}")
+
     _start_scheduler()
     print("")
     print("🚀 Upskillize AiRev Agent v3.1 (Multi-Tenant — per-tenant keys)")
