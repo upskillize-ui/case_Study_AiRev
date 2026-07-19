@@ -1,14 +1,35 @@
 # app/services/feedback_service.py
 # Generates student-facing feedback and mentor summaries.
-# Tone: warm, encouraging, constructive — no harsh language.
+# Tone: constructive and direct — coaching wording, honest scoring.
 #
-# This version surfaces three new fields:
-#   - aiLikelihoodPercent / humanLikelihoodPercent   (Human vs AI detector)
-#   - aiDetectionReason
+# Surfaces:
+#   - aiLikelihoodPercent / humanLikelihoodPercent   (authorship indicator — advisory only)
+#   - aiDetectionReason / aiVerdict
 #   - garbageWarning                                  (for nonsense/empty submissions)
-# It also returns `scoreEmoji` so the UI doesn't have to guess.
+#
+# Brand rule: NO emojis anywhere in feedback text. `scoreEmoji` is kept as an
+# API key for frontend compatibility but is always empty — the UI renders
+# Lucide SVG icons, never emojis.
 
 from app.services.scoring_service import get_grade_label
+
+
+def ai_verdict(ai_pct: int) -> str:
+    """Map an AI-likelihood percentage to a verdict slug.
+
+    Pure function, shared by every review flow (case studies, assignments,
+    industry sessions) so thresholds live in exactly one place.
+    Advisory only — the verdict never influences any score.
+    """
+    if ai_pct >= 80:
+        return "very-likely-ai"
+    if ai_pct >= 60:
+        return "likely-ai"
+    if ai_pct >= 40:
+        return "uncertain"
+    if ai_pct >= 20:
+        return "likely-human"
+    return "very-likely-human"
 
 
 def generate_feedback(
@@ -24,7 +45,7 @@ def generate_feedback(
         word_count_status  = "too_short"
         word_count_message = (
             f"Your answer is {word_count} words. The suggested minimum is {word_limit_min} words. "
-            f"Try expanding your analysis a little — more depth will help your score! 📝"
+            f"Expand your analysis — more depth will strengthen your score."
         )
     elif word_count > word_limit_max:
         word_count_status  = "too_long"
@@ -35,7 +56,7 @@ def generate_feedback(
     else:
         word_count_status  = "ok"
         word_count_message = (
-            f"Your answer is {word_count} words — nicely within the expected range. ✅"
+            f"Your answer is {word_count} words — within the expected range."
         )
 
     # ── Concept coverage ──
@@ -54,13 +75,7 @@ def generate_feedback(
     ai_pct       = int(ai_analysis.get("aiLikelihoodPercent", 50) or 50)
     human_pct    = max(0, min(100, 100 - ai_pct))
     ai_reason    = ai_analysis.get("aiDetectionReason", "")
-    ai_verdict   = (
-        "very-likely-ai"   if ai_pct >= 80
-        else "likely-ai"   if ai_pct >= 60
-        else "uncertain"   if ai_pct >= 40
-        else "likely-human"if ai_pct >= 20
-        else "very-likely-human"
-    )
+    verdict      = ai_verdict(ai_pct)
 
     garbage_warning = ""
     if is_garbage:
@@ -94,7 +109,7 @@ def generate_feedback(
         "aiLikelihoodPercent":    ai_pct,
         "humanLikelihoodPercent": human_pct,
         "aiDetectionReason":      ai_reason,
-        "aiVerdict":              ai_verdict,
+        "aiVerdict":              verdict,
 
         # NEW — Garbage / nonsense flag
         "isGarbage":              is_garbage,
@@ -142,18 +157,17 @@ def generate_feedback(
         "aiLikelihoodPercent":    ai_pct,
         "humanLikelihoodPercent": human_pct,
         "aiDetectionReason":      ai_reason,
-        "aiVerdict":              ai_verdict,
+        "aiVerdict":              verdict,
         "isGarbage":              is_garbage,
         "garbageWarning":         garbage_warning,
     }
 
 
 def _emoji_for(score: int) -> str:
-    if score >= 85: return "🌟"
-    if score >= 70: return "👏"
-    if score >= 50: return "💪"
-    if score >= 30: return "📚"
-    return "🤝"
+    """Deprecated. Brand rule: never emojis in feedback — the UI renders
+    Lucide SVG icons keyed off the score/band. Key retained for API
+    compatibility; always empty."""
+    return ""
 
 
 def _get_summary_note(score: int) -> str:
@@ -166,22 +180,22 @@ def _get_summary_note(score: int) -> str:
 
 def _get_encouragement(score: int) -> str:
     if score >= 90:
-        return ("Outstanding work! 🌟 You have shown exceptional understanding of the subject. "
-                "Keep this momentum going — you're a star student!")
+        return ("Outstanding work. You have shown exceptional understanding of the subject — "
+                "keep this momentum going.")
     if score >= 70:
-        return ("Great job! 👏 You have a solid grasp of the key concepts. "
+        return ("An answer that holds up. You have a solid grasp of the key concepts. "
                 "A bit more depth in your analysis and you could be scoring even higher next time.")
     if score >= 50:
-        return ("Good effort! 💪 You're on the right track. "
-                "Focus on the improvement areas, review the suggested modules, and try re-attempting — "
-                "you'll be surprised how much better you can do.")
+        return ("You're on the right track. "
+                "Focus on the improvement areas, review the suggested modules, and re-attempt — "
+                "the gap between this attempt and a strong one is closable.")
     if score >= 30:
-        return ("Thank you for submitting! 🙂 Every attempt is a step forward. "
+        return ("Every attempt is a step forward. "
                 "Review the suggested study topics and reach out to your mentor — "
-                "with a little guidance, you'll improve quickly.")
-    return ("Thank you for giving this a go! 🤝 It looks like you might benefit from some extra support. "
-            "Please review the course modules and don't hesitate to schedule a session with your mentor — "
-            "they are here to help you succeed. Remember: every expert was once a beginner.")
+                "with targeted guidance, you'll improve quickly.")
+    return ("This attempt needs rebuilding from the ground up — and that's doable. "
+            "Review the course modules and schedule a session with your mentor; "
+            "they are there to help you close the gap.")
 
 
 def _get_quick_action(score: int, ai_analysis: dict) -> str:

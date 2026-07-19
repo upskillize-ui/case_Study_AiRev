@@ -134,6 +134,11 @@ def _legacy_keyword_score(name: str, ai_analysis: dict) -> int:
     return 50
 
 
+def get_grade(score: int) -> str:
+    """Public score→letter mapping (single source of truth for all flows)."""
+    return _get_grade(score)
+
+
 def _get_grade(score: int) -> str:
     if score >= 90: return "A+"
     if score >= 80: return "A"

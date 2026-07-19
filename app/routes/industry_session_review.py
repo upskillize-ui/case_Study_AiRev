@@ -12,6 +12,8 @@ from typing import Optional, Dict
 
 from app.database import query, execute
 from app.services import ai_service
+from app.services.feedback_service import ai_verdict
+from app.prompts import AI_DETECTION_CALIBRATION
 
 router = APIRouter(prefix="/api/review", tags=["industry-session"])
 
@@ -371,13 +373,19 @@ async def submit_industry_session(req: IndustrySessionInsightRequest):
             print(f"⚠️ File extract error: {ex}")
 
     if not insight:
+        # Nothing to review — this is a data condition, NOT a scored outcome.
+        # status="needs_input" lets frontends render a compose prompt instead
+        # of a 0/100 "Needs Improvement" score card, which reads as a failing
+        # grade the student never earned. Legacy fields kept for older UIs.
         return {
             "success": True,
+            "status": "needs_input",
+            "needsInput": True,
             "submission": {"submissionId": 0, "attemptNumber": 0},
             "feedback": {
-                "score": 0, "grade": "-",
-                "summary": "No insight text found. Write your understanding of the session first, then submit.",
-                "band": "Emerging", "dimensions": [], "critical_gaps": [],
+                "score": None, "grade": "-", "band": None,
+                "summary": "Nothing to review yet — write your understanding of the session first, then submit.",
+                "dimensions": [], "critical_gaps": [],
                 "covered_well": [], "recommendations": [], "hard_truth": "",
             },
         }
@@ -439,6 +447,12 @@ REVIEW RULES — NON-NEGOTIABLE:
 • recommendations tied to THIS session's actual content, not generic advice.
 • Comprehension % must match the depth — restating one line ≠ understanding.
 
+{AI_DETECTION_CALIBRATION}
+
+AUTHORSHIP RULE: aiLikelihoodPercent is ADVISORY ONLY — it must NOT influence
+any dimension score or the band. Score the answer on its quality alone, then
+estimate authorship separately.
+
 DIMENSION SCORES (0=absent, 1=surface, 2=partial, 3=solid, 4=expert):
 1. Session Comprehension — grasped the core argument?
 2. Key Point Coverage — how many of the mentor's main points captured?
@@ -467,7 +481,9 @@ Return ONLY valid JSON (no markdown, no preamble, no backticks):
   "recommendations": ["Actionable step tied to THIS session's content"],
   "hard_truth": "2-3 direct sentences. Name what's missing. No softening.",
   "summary": "2-sentence overall verdict including comprehension %",
-  "next_action": "One sharp next step"
+  "next_action": "One sharp next step",
+  "aiLikelihoodPercent": <0-100 integer, calibrated against the anchors above — advisory only, never affects scores>,
+  "aiDetectionReason": "<one sentence: which 2-3 textual signals drove your estimate>"
 }}"""
 
     raw = None
@@ -499,13 +515,27 @@ Return ONLY valid JSON (no markdown, no preamble, no backticks):
             "hard_truth": "AI service was temporarily unavailable. This is a placeholder score. Click Re-analyze to get real feedback.",
             "summary": "Temporary fallback. Retry for actual review.",
             "next_action": "Hit Re-analyze in AiRev for the full content-aware review.",
+            "aiLikelihoodPercent": 50,
+            "aiDetectionReason": "Unable to assess — AI service unavailable.",
         }
 
     dims  = raw.get("dimensions", [])
     total = sum(d.get("score", 0) for d in dims)
     score = round((total / 20) * 100, 1)
     band  = raw.get("band", "Emerging")
-    grade = {"Outstanding": "A+", "Strong": "A", "Proficient": "B+", "Emerging": "B"}.get(band, "B")
+    # Honest letter mapping — Emerging (0-7/20) is a C, not a B.
+    grade = {"Outstanding": "A+", "Strong": "A", "Proficient": "B+", "Emerging": "C"}.get(band, "C")
+
+    # Authorship indicator — advisory only, never touches score/band/grade.
+    try:
+        ai_pct = int(round(float(raw.get("aiLikelihoodPercent", 50))))
+    except (TypeError, ValueError):
+        ai_pct = 50
+    ai_pct = max(0, min(100, ai_pct))
+    raw["aiLikelihoodPercent"]    = ai_pct
+    raw["humanLikelihoodPercent"] = 100 - ai_pct
+    raw["aiVerdict"]              = ai_verdict(ai_pct)
+    raw["aiDetectionReason"]      = str(raw.get("aiDetectionReason", "") or "")
 
     # 6. Persist feedback
     try:

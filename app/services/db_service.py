@@ -141,6 +141,30 @@ def get_latest_submission_file(case_study_id: int, student_id: int,
 
 # ===== SUBMISSIONS =====
 
+def get_attempt_state(case_study_id: int, student_id: int) -> dict:
+    """Attempt count + latest answer text for the re-review policy.
+
+    Policy (brain spec): max 2 attempts (original + one re-review), and a
+    re-review must be a REVISED answer — identical text is rejected before
+    any AI call. Reviews that fell to the AI-unavailable fallback are not
+    counted (the student was never actually reviewed).
+    """
+    rows = query(
+        """SELECT notes, status FROM case_study_submissions
+           WHERE case_study_id = %s AND student_id = %s
+           ORDER BY id DESC""",
+        (case_study_id, student_id),
+    )
+    # A submission only counts as a used attempt once it was actually
+    # REVIEWED (status='reviewed'). The AI-unavailable fallback path leaves
+    # status='submitted', so it never consumes the student's re-attempt.
+    reviewed = sum(1 for r in rows if r.get("status") == "reviewed")
+    return {
+        "reviewedAttempts": reviewed,
+        "latestAnswerText": (rows[0].get("notes") or "") if rows else "",
+    }
+
+
 def save_submission(case_study_id: int, student_id: int, answer_text: str,
                     word_count: int, file_url: str | None = None,
                     file_name: str | None = None) -> dict:

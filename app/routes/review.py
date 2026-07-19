@@ -14,9 +14,11 @@
 import time
 import json
 import os
-from fastapi import APIRouter, HTTPException
+import hashlib
+from fastapi import APIRouter, HTTPException, BackgroundTasks
 from app.models.schemas import SubmitAnswerRequest, TestReviewRequest, MentorApproveRequest
 from app.services import ai_service, scoring_service, feedback_service, db_service
+from app.services import knowledge_service, review_pipeline
 from app.utils.text_processor import (
     count_words, clean_text, calculate_text_overlap, find_mentioned_concepts, is_likely_copy
 )
@@ -24,16 +26,54 @@ from app.utils.file_extractor import extract_text_from_url
 
 router = APIRouter(prefix="/api/review", tags=["review"])
 
+# Evidence-gated pipeline rollout flag. "on" = pipeline primary with legacy
+# fallback on error; anything else = legacy only (instant rollback via env).
+_PIPELINE_ON = os.getenv("REVIEW_PIPELINE", "on").lower() == "on"
+MAX_REVIEWED_ATTEMPTS = int(os.getenv("MAX_REVIEWED_ATTEMPTS", "2"))
+
+
+def _attempt_policy_block(case_study_id: int, student_id: int,
+                          new_text: str) -> dict | None:
+    """Re-review policy (server-enforced): max 2 reviewed attempts, and a
+    re-attempt must be revised text — identical resubmission is rejected
+    with zero AI cost. Returns a response dict when blocked, else None."""
+    state = db_service.get_attempt_state(case_study_id, student_id)
+
+    if state["reviewedAttempts"] >= MAX_REVIEWED_ATTEMPTS:
+        return {
+            "success": False, "blocked": "attempt_limit",
+            "message": ("You've used your re-attempt for this case study. "
+                        "Your final score stands — take the feedback into your next case study."),
+        }
+
+    if state["reviewedAttempts"] >= 1 and state["latestAnswerText"]:
+        old_h = hashlib.sha256(state["latestAnswerText"].strip().lower().encode()).hexdigest()
+        new_h = hashlib.sha256((new_text or "").strip().lower().encode()).hexdigest()
+        if old_h == new_h:
+            return {
+                "success": False, "blocked": "identical_resubmission",
+                "message": ("This is the same answer you already submitted. "
+                            "Revise it using your feedback, then resubmit — "
+                            "your one re-attempt should count."),
+            }
+    return None
+
 
 # ── POST /api/review/submit ────────────────────────────────────────────────
 @router.post("/submit")
-async def submit_and_review(req: SubmitAnswerRequest):
+async def submit_and_review(req: SubmitAnswerRequest, background_tasks: BackgroundTasks):
     start_time = time.time()
     print(f"ℹ️  New submission: student={req.studentId}, caseStudy={req.caseStudyId}")
 
     case_study = db_service.get_case_study_by_id(req.caseStudyId)
     if not case_study:
         raise HTTPException(status_code=404, detail="Case study not found or not published")
+
+    blocked = _attempt_policy_block(req.caseStudyId, req.studentId, req.answerText or "")
+    if blocked:
+        print(f"ℹ️  Submission blocked: {blocked['blocked']} "
+              f"(student={req.studentId}, caseStudy={req.caseStudyId})")
+        return blocked
 
     cleaned    = clean_text(req.answerText or "")
     word_count = count_words(cleaned)
@@ -126,6 +166,19 @@ async def submit_and_review(req: SubmitAnswerRequest):
             print(f"⚠️  DB update (garbage path) failed: {db_err}")
         return garbage_payload["response"]
 
+    # ── Evidence-gated pipeline (primary path) ─────────────────────────────
+    if _PIPELINE_ON:
+        try:
+            pipeline_response = _run_pipeline_review(
+                case_study, req, submission, cleaned, word_count,
+                text_overlap, start_time, background_tasks,
+            )
+            if pipeline_response is not None:
+                return pipeline_response
+        except Exception as e:
+            print(f"⚠️  Pipeline review failed, falling back to legacy: {e}")
+
+    # ── Legacy single-prompt path (fallback / flag off) ────────────────────
     try:
         ai_analysis = ai_service.analyze_answer(
             case_study={
@@ -242,6 +295,138 @@ async def submit_and_review(req: SubmitAnswerRequest):
         },
         "_meta":            ai_analysis.get("_meta"),
         "mentorReport":     feedback["mentorSummary"],
+        "processingTimeMs": total_time,
+    }
+
+
+# ── POST /api/review/prepare/{scope_type}/{scope_id} ───────────────────────
+# Optional LMS webhook: call after faculty saves/edits a question to build
+# the knowledge pack immediately instead of on first student touch.
+@router.post("/prepare/case_study/{case_study_id}")
+async def prepare_case_study(case_study_id: int, background_tasks: BackgroundTasks):
+    case_study = db_service.get_case_study_by_id(case_study_id)
+    if not case_study:
+        raise HTTPException(status_code=404, detail="Case study not found or not published")
+    sources = knowledge_service.SOURCE_BUILDERS["case_study"](case_study)
+    fresh_hash = knowledge_service.source_hash(sources)
+    stored = knowledge_service.get_pack("case_study", case_study_id)
+    if stored and stored["source_hash"] == fresh_hash:
+        return {"success": True, "status": "ready", "version": stored["version"],
+                "detail": "Knowledge already current."}
+    background_tasks.add_task(
+        knowledge_service.build_pack, "case_study", case_study_id, sources, fresh_hash)
+    return {"success": True, "status": "building",
+            "detail": "Knowledge build started. Check /knowledge-status."}
+
+
+@router.get("/knowledge-status/{scope_type}/{scope_id}")
+async def knowledge_status(scope_type: str, scope_id: int):
+    stored = knowledge_service.get_pack(scope_type, scope_id)
+    if not stored:
+        return {"status": "absent"}
+    return {"status": "ready", "version": stored["version"]}
+
+
+def _run_pipeline_review(case_study, req, submission, cleaned, word_count,
+                         text_overlap, start_time, background_tasks):
+    """Evidence-gated review: recall the knowledge pack, run the staged
+    pipeline, persist, respond. Returns the response dict, or None when no
+    pack could be built (caller falls back to legacy)."""
+    known = knowledge_service.get_or_build(
+        "case_study", req.caseStudyId, case_study, background_tasks,
+    )
+    if known is None:
+        return None
+
+    r = review_pipeline.run_review(
+        scope_type="case_study",
+        pack=known["pack"], pack_version=known["version"],
+        rubric=case_study["gradingRubric"],
+        student_answer=cleaned, word_count=word_count,
+        word_limit_min=case_study["wordLimitMin"],
+        word_limit_max=case_study["wordLimitMax"],
+    )
+    scores = r["scores"]
+    grade = scoring_service.get_grade(scores["totalScore"])
+
+    plagiarism = "low"
+    if text_overlap >= 35:
+        plagiarism = "high" if text_overlap >= 60 else "medium"
+
+    summary = (f"You scored {scores['totalScore']}/100 ({grade}). "
+               f"{len(r['conceptsCovered'])} of "
+               f"{len(r['conceptsCovered']) + len(r['conceptsMissing'])} core concepts engaged.")
+
+    result = {
+        "totalScore":       scores["totalScore"],
+        "grade":            grade,
+        "rubricScores":     scores["rubricBreakdown"],
+        "strengths":        r["strengths"],
+        "improvements":     r["improvements"],
+        "missingConcepts":  r["conceptsMissing"],
+        "coveredConcepts":  r["conceptsCovered"],
+        "suggestedModules": [],
+        "detailedFeedback": r["detailedFeedback"],
+        "wordCount":        word_count,
+        "wordCountMessage": scores["wordCountNote"],
+        "plagiarismFlag":   plagiarism,
+        "needsMentorHelp":  scores["totalScore"] < 40 or r["isGarbage"]
+                            or r["authorship"]["aiLikelihoodPercent"] >= 90,
+        "scoreEmoji":       "",
+        "summary":          summary,
+        "encouragement":    "",
+        "isGarbage":        r["isGarbage"],
+        "garbageWarning":   r["garbageWarning"],
+        **r["authorship"],
+    }
+
+    try:
+        db_service.update_submission_with_ai_results(submission["submissionId"], result)
+        db_service.update_performance_tracker(req.studentId, req.caseStudyId, scores["totalScore"])
+        db_service.log_ai_review(submission["submissionId"],
+                                 {"pipeline": r["decisions"]}, r)
+    except Exception as db_err:
+        print(f"⚠️  DB update failed after pipeline review: {db_err} — returning result anyway")
+
+    total_time = int((time.time() - start_time) * 1000)
+    print(f"✅ Pipeline review: score={scores['totalScore']} grade={grade} "
+          f"path={r['decisions']['scoringPath']} gates={len(scores['gatesHit'])} "
+          f"ai={r['authorship']['aiLikelihoodPercent']}% time={total_time}ms")
+
+    return {
+        "success":    True,
+        "submission": submission,
+        "feedback": {
+            "score":            scores["totalScore"],
+            "grade":            grade,
+            "scoreEmoji":       "",
+            "summary":          summary,
+            "rubricScores":     scores["rubricBreakdown"],
+            "strengths":        r["strengths"],
+            "improvements":     r["improvements"],
+            "missingConcepts":  r["conceptsMissing"],
+            "coveredConcepts":  r["conceptsCovered"],
+            "suggestions":      [],
+            "detailedFeedback": r["detailedFeedback"],
+            "wordCount":        word_count,
+            "wordCountMessage": scores["wordCountNote"],
+            "encouragement":    "",
+            "howYouScored":     r["howYouScored"],
+            "languageReport":   r["languageReport"],
+            "factualErrors":    r["factualErrors"],
+            "isGarbage":        r["isGarbage"],
+            "garbageWarning":   r["garbageWarning"],
+            **r["authorship"],
+        },
+        "_meta":            {"pipeline": r["decisions"]},
+        "mentorReport": {
+            "score": scores["totalScore"], "grade": grade,
+            "needsAttention": result["needsMentorHelp"],
+            "plagiarismRisk": plagiarism,
+            "gatesHit": scores["gatesHit"],
+            "rubricBreakdown": scores["rubricBreakdown"],
+            "aiLikelihoodPercent": r["authorship"]["aiLikelihoodPercent"],
+        },
         "processingTimeMs": total_time,
     }
 

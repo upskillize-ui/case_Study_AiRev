@@ -16,6 +16,24 @@
 import json
 
 
+# Shared authorship-detection calibration. ONE source of truth — imported by
+# every review flow (case studies, assignments, industry sessions) so the
+# estimate is calibrated identically everywhere. Advisory only: authorship
+# NEVER feeds into any score.
+AI_DETECTION_CALIBRATION = """=== AI-vs-HUMAN DETECTION — CALIBRATION ===
+Two anchored examples to guide your aiLikelihoodPercent estimate:
+
+EXAMPLE A — LIKELY HUMAN (target ~15-30%):
+"In my last internship at HDFC, I saw how KYC was handled. The team used both the Aadhaar e-KYC and offline verification, but honestly the offline process took too long. I think the bigger issue is that RBI guidelines change every few months and it's hard to keep up. Maybe video KYC is the way forward but customers in tier-3 cities still struggle with bandwidth."
+Signals: first-person anecdote, specific Indian institution, informal hedging ("honestly", "maybe"), uneven sentence rhythm, opinionated, mild grammar slips.
+
+EXAMPLE B — LIKELY AI (target ~75-95%):
+"The Know Your Customer (KYC) process is a critical regulatory framework. Furthermore, it ensures compliance with anti-money-laundering directives. Moreover, the Reserve Bank of India has established comprehensive guidelines. Additionally, video KYC has emerged as a transformative innovation, offering both efficiency and scalability for modern financial institutions."
+Signals: uniform paragraph rhythm, transition-word ladder (Furthermore/Moreover/Additionally), no first-person voice, no specific example, abstract vocabulary, suspiciously balanced clauses.
+
+Calibrate against these anchors. Indian fresher answers with informal phrasing and specific local examples ≈ 10-30%. Polished, evenly-paced, transition-heavy abstract text ≈ 70-95%. Most real student work falls in 30-65%. Be honest — do not default to 80/20."""
+
+
 def build_review_prompt(
     case_study: dict,
     model_answer,
@@ -59,18 +77,7 @@ Questions: {questions_str}
 === STUDENT'S SUBMITTED ANSWER ===
 {student_answer}
 
-=== AI-vs-HUMAN DETECTION — CALIBRATION ===
-Two anchored examples to guide your aiLikelihoodPercent estimate:
-
-EXAMPLE A — LIKELY HUMAN (target ~15-30%):
-"In my last internship at HDFC, I saw how KYC was handled. The team used both the Aadhaar e-KYC and offline verification, but honestly the offline process took too long. I think the bigger issue is that RBI guidelines change every few months and it's hard to keep up. Maybe video KYC is the way forward but customers in tier-3 cities still struggle with bandwidth."
-Signals: first-person anecdote, specific Indian institution, informal hedging ("honestly", "maybe"), uneven sentence rhythm, opinionated, mild grammar slips.
-
-EXAMPLE B — LIKELY AI (target ~75-95%):
-"The Know Your Customer (KYC) process is a critical regulatory framework. Furthermore, it ensures compliance with anti-money-laundering directives. Moreover, the Reserve Bank of India has established comprehensive guidelines. Additionally, video KYC has emerged as a transformative innovation, offering both efficiency and scalability for modern financial institutions."
-Signals: uniform paragraph rhythm, transition-word ladder (Furthermore/Moreover/Additionally), no first-person voice, no specific example, abstract vocabulary, suspiciously balanced clauses.
-
-Calibrate against these anchors. Indian fresher answers with informal phrasing and specific local examples ≈ 10-30%. Polished, evenly-paced, transition-heavy abstract text ≈ 70-95%. Most real student work falls in 30-65%. Be honest — do not default to 80/20.
+{AI_DETECTION_CALIBRATION}
 
 === OUTPUT — VALID JSON ONLY, NO MARKDOWN, NO BACKTICKS ===
 
