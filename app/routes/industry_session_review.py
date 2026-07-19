@@ -39,6 +39,53 @@ class IndustrySessionInsightRequest(BaseModel):
 _INSIGHT_ALIASES = ("insight_text", "text", "answerText", "answer_text",
                     "understanding", "keyTakeaway", "key_takeaway", "insight")
 
+# Structured-output schema for the session review. Live finding 19 Jul:
+# free-text JSON hit the token ceiling mid-string ("Unterminated string at
+# char 7943") and students got the placeholder score. Forced tool-use makes
+# truncated/malformed JSON impossible — same fix the other flows got in s1.
+SESSION_REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "comprehension_percentage": {"type": "integer", "minimum": 0, "maximum": 100},
+        "concept_coverage": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "concept":  {"type": "string"},
+                    "status":   {"type": "string", "enum": ["covered", "partial", "missed"]},
+                    "evidence": {"type": "string"},
+                },
+                "required": ["concept", "status", "evidence"],
+            },
+        },
+        "band": {"type": "string", "enum": ["Emerging", "Proficient", "Strong", "Outstanding"]},
+        "dimensions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name":  {"type": "string"},
+                    "score": {"type": "integer", "minimum": 0, "maximum": 4},
+                    "note":  {"type": "string"},
+                },
+                "required": ["name", "score", "note"],
+            },
+        },
+        "critical_gaps":   {"type": "array", "items": {"type": "string"}},
+        "covered_well":    {"type": "array", "items": {"type": "string"}},
+        "recommendations": {"type": "array", "items": {"type": "string"}},
+        "hard_truth":      {"type": "string"},
+        "summary":         {"type": "string"},
+        "next_action":     {"type": "string"},
+        "aiLikelihoodPercent": {"type": "integer", "minimum": 0, "maximum": 100},
+        "aiDetectionReason":   {"type": "string"},
+    },
+    "required": ["comprehension_percentage", "concept_coverage", "band", "dimensions",
+                 "critical_gaps", "covered_well", "recommendations", "hard_truth",
+                 "summary", "next_action", "aiLikelihoodPercent", "aiDetectionReason"],
+}
+
 
 def _resolve_insight_text(req: IndustrySessionInsightRequest) -> str:
     """The declared field first, then known frontend aliases. Logs what the
@@ -606,12 +653,9 @@ Return ONLY valid JSON (no markdown, no preamble, no backticks):
     raw = None
     provider = "claude"
     try:
-        ai_resp = ai_service.call_claude(prompt, max_tokens=2000)
-        clean = ai_resp.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
-        # Handle case where model adds preamble before JSON
-        if not clean.startswith("{"):
-            clean = clean[clean.find("{"):]
-        raw = json.loads(clean)
+        raw = ai_service.call_structured(
+            blocks=[{"text": prompt, "cache": False}],
+            schema=SESSION_REVIEW_SCHEMA, tier="default", max_tokens=4000)
     except Exception as e:
         print(f"⚠️ AI failed: {e} — using structured fallback")
         provider = "fallback"
@@ -673,13 +717,16 @@ Return ONLY valid JSON (no markdown, no preamble, no backticks):
     except Exception as sme:
         print(f"⚠️ person-memory update failed (review unaffected): {sme}")
 
-    # 6. Persist feedback
+    # 6. Persist feedback. A fallback placeholder saves for display but with
+    # has_feedback=0 — it never consumes the student's re-attempt and stays
+    # eligible for Re-analyze (re-review policy: only REAL reviews count).
     try:
         execute(
             f"UPDATE {ins_tbl} "
-            f"SET score=%s, grade=%s, band=%s, feedback_json=%s, has_feedback=1, reviewed_at=NOW() "
+            f"SET score=%s, grade=%s, band=%s, feedback_json=%s, has_feedback=%s, reviewed_at=NOW() "
             f"WHERE id=%s",
-            (score, grade, band, json.dumps(raw), submission_id)
+            (score, grade, band, json.dumps(raw),
+             0 if provider == "fallback" else 1, submission_id)
         )
     except Exception as e:
         print(f"⚠️ Feedback save error: {e}")
