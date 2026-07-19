@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from typing import Optional, Dict
 
 from app.database import query, execute
-from app.services import ai_service, knowledge_service
+from app.services import ai_service, knowledge_service, prefilter_service
 from app.services.feedback_service import ai_verdict
 from app.prompts import AI_DETECTION_CALIBRATION
 
@@ -436,6 +436,12 @@ async def submit_industry_session(req: IndustrySessionInsightRequest,
             },
         }
 
+    # ── Reflexes: zero-token checks before any AI spend ────────────────────
+    reflex = prefilter_service.check("industry_session", req.sessionId, req.studentId, insight)
+    if not reflex["ok"]:
+        return {"success": False, "blocked": reflex["reason"],
+                "message": reflex["message"]}
+
     # 4. Save submission (concurrent-safe — each INSERT gets its own row)
     ins_tbl = _ensure_insight_table()
     mx = query(
@@ -449,6 +455,9 @@ async def submit_industry_session(req: IndustrySessionInsightRequest,
         f"VALUES (%s, %s, %s, %s, %s, %s, NOW())",
         (req.sessionId, req.studentId, insight, req.fileUrl, req.fileName, attempt)
     )
+    prefilter_service.record_fingerprint(
+        "industry_session", req.sessionId, req.studentId,
+        submission_id, insight, text_hash=reflex.get("text_hash"))
 
     # 5. Build AI prompt — two-step: (1) understand session, (2) evaluate student
     topic_count = len(key_topics) if isinstance(key_topics, list) else "several"
@@ -582,6 +591,10 @@ Return ONLY valid JSON (no markdown, no preamble, no backticks):
     raw["humanLikelihoodPercent"] = 100 - ai_pct
     raw["aiVerdict"]              = ai_verdict(ai_pct)
     raw["aiDetectionReason"]      = str(raw.get("aiDetectionReason", "") or "")
+    if ai_pct >= 90:
+        prefilter_service.flag_exception(
+            "industry_session", req.sessionId, req.studentId, submission_id,
+            "high_ai_authorship", f"~{ai_pct}% estimated AI-written")
 
     # 6. Persist feedback
     try:

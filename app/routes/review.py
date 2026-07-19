@@ -18,7 +18,7 @@ import hashlib
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from app.models.schemas import SubmitAnswerRequest, TestReviewRequest, MentorApproveRequest
 from app.services import ai_service, scoring_service, feedback_service, db_service
-from app.services import knowledge_service, review_pipeline
+from app.services import knowledge_service, review_pipeline, prefilter_service
 from app.utils.text_processor import (
     count_words, clean_text, calculate_text_overlap, find_mentioned_concepts, is_likely_copy
 )
@@ -143,6 +143,12 @@ async def submit_and_review(req: SubmitAnswerRequest, background_tasks: Backgrou
           f"(frontend={'yes' if req.answerText else 'no'}, "
           f"file={'yes' if file_used else 'no'})")
 
+    # ── Reflexes: zero-token checks before any AI spend ────────────────────
+    reflex = prefilter_service.check("case_study", req.caseStudyId, req.studentId, cleaned)
+    if not reflex["ok"]:
+        return {"success": False, "blocked": reflex["reason"],
+                "message": reflex["message"]}
+
     text_overlap  = calculate_text_overlap(cleaned, case_study["description"])
     concept_check = find_mentioned_concepts(cleaned, case_study["keyConcepts"])
 
@@ -152,6 +158,10 @@ async def submit_and_review(req: SubmitAnswerRequest, background_tasks: Backgrou
     )
     print(f"✅ Submission saved: id={submission['submissionId']}, "
           f"attempt={submission['attemptNumber']}")
+    prefilter_service.record_fingerprint(
+        "case_study", req.caseStudyId, req.studentId,
+        submission["submissionId"], cleaned, word_count,
+        text_hash=reflex.get("text_hash"))
 
     pre_garbage_reason = _pre_garbage_check(cleaned, word_count)
     if pre_garbage_reason:
@@ -172,6 +182,7 @@ async def submit_and_review(req: SubmitAnswerRequest, background_tasks: Backgrou
             pipeline_response = _run_pipeline_review(
                 case_study, req, submission, cleaned, word_count,
                 text_overlap, start_time, background_tasks,
+                reflex_flags=reflex.get("flags", []),
             )
             if pipeline_response is not None:
                 return pipeline_response
@@ -392,7 +403,8 @@ def _capstone_pipeline_response(capstone, r, word_count, start_time):
 
 
 def _run_pipeline_review(case_study, req, submission, cleaned, word_count,
-                         text_overlap, start_time, background_tasks):
+                         text_overlap, start_time, background_tasks,
+                         reflex_flags=None):
     """Evidence-gated review: recall the knowledge pack, run the staged
     pipeline, persist, respond. Returns the response dict, or None when no
     pack could be built (caller falls back to legacy)."""
@@ -412,6 +424,12 @@ def _run_pipeline_review(case_study, req, submission, cleaned, word_count,
     plagiarism = "low"
     if text_overlap >= 35:
         plagiarism = "high" if text_overlap >= 60 else "medium"
+    if any(f.get("flag") == "cohort_duplicate" for f in (reflex_flags or [])):
+        plagiarism = "high"  # identical to another student's submission
+
+    prefilter_service.flag_review_outcomes(
+        "case_study", req.caseStudyId, req.studentId,
+        submission["submissionId"], r)
 
     summary = (f"You scored {scores['totalScore']}/100 ({grade}). "
                f"{len(r['conceptsCovered'])} of "

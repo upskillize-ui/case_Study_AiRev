@@ -25,6 +25,7 @@ from app.services import (
     feedback_service,
     assignment_db_service,
     review_pipeline,
+    prefilter_service,
 )
 
 _PIPELINE_ON = os.getenv("REVIEW_PIPELINE", "on").lower() == "on"
@@ -181,6 +182,12 @@ async def submit_and_review_assignment(
     print(f"[ASSIGNMENT] {word_count} words combined "
           f"(file={'yes' if file_used else 'no'}, typed={'yes' if cleaned_typed else 'no'})")
 
+    # ── Reflexes: zero-token checks before any AI spend ────────────────────
+    reflex = prefilter_service.check("assignment", req.assignmentId, req.studentId, combined)
+    if not reflex["ok"]:
+        return {"success": False, "blocked": reflex["reason"],
+                "message": reflex["message"]}
+
     submission = assignment_db_service.save_assignment_submission(
         tenant,
         req.assignmentId,
@@ -191,6 +198,10 @@ async def submit_and_review_assignment(
     )
     print(f"[ASSIGNMENT] saved submission id={submission['submissionId']}, "
           f"attempt={submission['attemptNumber']}")
+    prefilter_service.record_fingerprint(
+        "assignment", req.assignmentId, req.studentId,
+        submission["submissionId"], combined, word_count,
+        text_hash=reflex.get("text_hash"))
 
     if word_count < 30:
         msg = (f"Your submission is very short ({word_count} words). "
@@ -233,8 +244,13 @@ async def submit_and_review_assignment(
                 word_limit_max=assignment["wordLimitMax"],
             )
             if r is not None:
+                prefilter_service.flag_review_outcomes(
+                    "assignment", req.assignmentId, req.studentId,
+                    submission["submissionId"], r)
                 return _pipeline_assignment_response(
-                    tenant, submission, r, word_count, start_time)
+                    tenant, submission, r, word_count, start_time,
+                    duplicate=any(f.get("flag") == "cohort_duplicate"
+                                  for f in reflex.get("flags", [])))
         except Exception as e:
             print(f"[ASSIGNMENT] Pipeline failed, falling back to legacy: {e}")
 
@@ -371,7 +387,8 @@ async def assignment_history(
 
 # ---------- helpers --------------------------------------------------------
 
-def _pipeline_assignment_response(tenant, submission, r, word_count, start_time):
+def _pipeline_assignment_response(tenant, submission, r, word_count, start_time,
+                                  duplicate=False):
     """Persist + shape the assignment response from a pipeline result.
     Reuses _build_response for the envelope; adds the pipeline-only fields."""
     scores = r["scores"]
@@ -399,7 +416,7 @@ def _pipeline_assignment_response(tenant, submission, r, word_count, start_time)
         "needsMentorHelp":  scores["totalScore"] < 40 or r["isGarbage"]
                             or r["authorship"]["aiLikelihoodPercent"] >= 90,
         "summary":          summary,
-        "plagiarismFlag":   "low",
+        "plagiarismFlag":   "high" if duplicate else "low",
         **r["authorship"],
     }
     try:
