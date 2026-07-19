@@ -6,16 +6,19 @@
 import time
 import json
 import os
-from fastapi import APIRouter, HTTPException
+import hashlib
+from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import Optional, Dict
 
 from app.database import query, execute
-from app.services import ai_service
+from app.services import ai_service, knowledge_service
 from app.services.feedback_service import ai_verdict
 from app.prompts import AI_DETECTION_CALIBRATION
 
 router = APIRouter(prefix="/api/review", tags=["industry-session"])
+
+MAX_REVIEWED_ATTEMPTS = int(os.getenv("MAX_REVIEWED_ATTEMPTS", "2"))
 
 
 # ─── Schema ───────────────────────────────────────────────────────────────────
@@ -255,9 +258,32 @@ async def get_sessions_for_student(student_id: int):
 # ─── POST /api/review/submit-industry-session ─────────────────────────────────
 # Concurrent-safe: each request is fully independent, no shared state.
 @router.post("/submit-industry-session")
-async def submit_industry_session(req: IndustrySessionInsightRequest):
+async def submit_industry_session(req: IndustrySessionInsightRequest,
+                                  background_tasks: BackgroundTasks):
     start = time.time()
     print(f"ℹ️  Session review start: student={req.studentId} session={req.sessionId}")
+
+    # ── Re-review policy: max 2 reviewed attempts, revised insight required ─
+    ins_tbl_existing = _insight_table()
+    if ins_tbl_existing:
+        prior = query(
+            f"SELECT insight_text, has_feedback FROM {ins_tbl_existing} "
+            f"WHERE session_id=%s AND student_id=%s ORDER BY id DESC",
+            (req.sessionId, req.studentId),
+        )
+        reviewed = sum(1 for p in prior if p.get("has_feedback"))
+        if reviewed >= MAX_REVIEWED_ATTEMPTS:
+            return {"success": False, "blocked": "attempt_limit",
+                    "message": ("You've used your re-attempt for this session review. "
+                                "Your final score stands.")}
+        new_text = (req.insightText or "").strip()
+        if reviewed >= 1 and prior and new_text:
+            old_text = (prior[0].get("insight_text") or "").strip()
+            if old_text and (hashlib.sha256(old_text.lower().encode()).hexdigest()
+                             == hashlib.sha256(new_text.lower().encode()).hexdigest()):
+                return {"success": False, "blocked": "identical_resubmission",
+                        "message": ("This is the same insight you already submitted. "
+                                    "Deepen it using your feedback, then resubmit.")}
 
     # 1. Load session with discovered columns
     sess_tbl = _session_table()
@@ -343,6 +369,26 @@ async def submit_industry_session(req: IndustrySessionInsightRequest):
         "⚠️ No content metadata stored — review will be based on title only. "
         "Ask faculty to add key_topics, examples, and outline for richer reviews."
     )
+
+    # ── Agent memory: crystallized session digest (built once, recalled) ────
+    # The pack distills the session into concepts/anchors/markers; the raw
+    # metadata stays below it as supporting detail. Slice 3 upgrades the
+    # `transcript` source to the full cleaned video transcript — same code,
+    # richer memory, automatic rebuild via the changed content hash.
+    try:
+        known = knowledge_service.get_or_build(
+            "industry_session", req.sessionId,
+            {"title": title, "mentor": mentor, "description": description,
+             "key_topics": key_topics, "outline": outline,
+             "outcomes": outcomes, "transcript": transcript},
+            background_tasks,
+        )
+        if known:
+            session_knowledge = (knowledge_service.render_for_prompt(known["pack"])
+                                 + "\n\n=== RAW SESSION METADATA (supporting detail) ===\n\n"
+                                 + session_knowledge)
+    except Exception as ke:
+        print(f"⚠️ Session knowledge unavailable, reviewing from raw metadata: {ke}")
 
     # 3. Get student insight — prefer explicit text, else pull from LMS session_feedback
     insight = (req.insightText or "").strip()

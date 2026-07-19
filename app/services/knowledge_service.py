@@ -119,18 +119,23 @@ def _case_study_sources(cs: dict) -> dict:
 
 
 def _assignment_sources(a: dict) -> dict:
+    # Assignment rows mirror the case-study shape (see assignment_db_service).
     return {
         "title":        a.get("title", ""),
         "brief":        a.get("description", "") or a.get("brief", ""),
-        "deliverables": a.get("deliverables", []) or a.get("requirements", []),
+        "questions":    a.get("questions", []),
+        "model_answer": a.get("modelAnswers", ""),
         "rubric":       a.get("gradingRubric", {}) or a.get("rubric", {}),
         "key_concepts": a.get("keyConcepts", []),
     }
 
 
 def _capstone_sources(c: dict) -> dict:
+    # Capstone rows are leaner: title/description (+ synthesized rubric passed
+    # in by the route). The builder still extracts concepts and specificity
+    # markers from the brief itself.
     return {
-        "title":      c.get("title", ""),
+        "title":      c.get("title", "") or "Capstone Project",
         "brief":      c.get("description", "") or c.get("brief", ""),
         "milestones": c.get("milestones", []),
         "rubric":     c.get("gradingRubric", {}) or c.get("rubric", {}),

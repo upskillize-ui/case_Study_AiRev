@@ -129,6 +129,27 @@ def get_latest_assignment_submission(tenant: Tenant, assignment_id: int, student
 
 # ---------- WRITE ---------------------------------------------------------
 
+def get_attempt_state(tenant: Tenant, assignment_id: int, student_id: int) -> dict:
+    """Attempt count + latest answer text for the re-review policy.
+
+    A submission only counts once it was actually reviewed (status='graded').
+    The AI-unavailable path leaves status='submitted', so it never consumes
+    the student's single re-attempt.
+    """
+    rows = tquery(
+        tenant,
+        """SELECT notes, status FROM assignment_submissions
+           WHERE assignment_id = %s AND student_id = %s
+           ORDER BY id DESC""",
+        (assignment_id, student_id),
+    )
+    reviewed = sum(1 for r in rows if r.get("status") == "graded")
+    return {
+        "reviewedAttempts": reviewed,
+        "latestAnswerText": (rows[0].get("notes") or "") if rows else "",
+    }
+
+
 def save_assignment_submission(
     tenant: Tenant,
     assignment_id: int,

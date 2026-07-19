@@ -290,6 +290,31 @@ def _trim(quote: str, limit: int = 120) -> str:
 
 # ─── Orchestration ───────────────────────────────────────────────────────────
 
+def review_with_knowledge(scope_type: str, scope_id: int, raw_source: dict,
+                          rubric: dict, student_answer: str, word_count: int,
+                          word_limit_min: int, word_limit_max: int,
+                          background_tasks=None) -> Optional[dict]:
+    """Shared entry for every review type: recall (or build) the knowledge
+    pack, then run the gated pipeline. Returns the pipeline result, or None
+    when no pack could be built (caller falls back to its legacy path).
+
+    One function, four callers — case study, assignment, capstone, session —
+    so the recall-then-review contract lives in exactly one place.
+    """
+    from app.services import knowledge_service  # local import avoids cycle
+
+    known = knowledge_service.get_or_build(
+        scope_type, scope_id, raw_source, background_tasks)
+    if known is None:
+        return None
+    return run_review(
+        scope_type=scope_type,
+        pack=known["pack"], pack_version=known["version"],
+        rubric=rubric, student_answer=student_answer, word_count=word_count,
+        word_limit_min=word_limit_min, word_limit_max=word_limit_max,
+    )
+
+
 def run_review(scope_type: str, pack: dict, pack_version: int,
                rubric: dict, student_answer: str, word_count: int,
                word_limit_min: int, word_limit_max: int) -> dict:

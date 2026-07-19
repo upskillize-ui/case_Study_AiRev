@@ -13,6 +13,8 @@
 
 import time
 import json
+import os
+import hashlib
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, Header
 from pydantic import BaseModel
@@ -22,7 +24,11 @@ from app.services import (
     scoring_service,
     feedback_service,
     assignment_db_service,
+    review_pipeline,
 )
+
+_PIPELINE_ON = os.getenv("REVIEW_PIPELINE", "on").lower() == "on"
+MAX_REVIEWED_ATTEMPTS = int(os.getenv("MAX_REVIEWED_ATTEMPTS", "2"))
 from app.utils.text_processor import (
     count_words, clean_text, find_mentioned_concepts
 )
@@ -111,6 +117,20 @@ async def submit_and_review_assignment(
             status_code=404,
             detail=f"Assignment {req.assignmentId} not found or inactive in tenant '{tenant.id}'",
         )
+
+    # ── Re-review policy: max 2 reviewed attempts, revised text required ───
+    state = assignment_db_service.get_attempt_state(tenant, req.assignmentId, req.studentId)
+    if state["reviewedAttempts"] >= MAX_REVIEWED_ATTEMPTS:
+        return {"success": False, "blocked": "attempt_limit",
+                "message": ("You've used your re-attempt for this assignment. "
+                            "Your final score stands — carry the feedback into the next one.")}
+    if state["reviewedAttempts"] >= 1 and state["latestAnswerText"] and (req.answerText or "").strip():
+        old_h = hashlib.sha256(state["latestAnswerText"].strip().lower().encode()).hexdigest()
+        new_h = hashlib.sha256(req.answerText.strip().lower().encode()).hexdigest()
+        if old_h == new_h:
+            return {"success": False, "blocked": "identical_resubmission",
+                    "message": ("This is the same answer you already submitted. "
+                                "Revise it using your feedback, then resubmit.")}
 
     cleaned_typed = clean_text(req.answerText or "")
     parts: list[str] = []
@@ -201,6 +221,22 @@ async def submit_and_review_assignment(
         except Exception as e:
             print(f"[ASSIGNMENT] DB update (short-submission path) failed: {e}")
         return _build_response(submission, partial, msg, start_time)
+
+    # ── Evidence-gated pipeline (primary path) ─────────────────────────────
+    if _PIPELINE_ON:
+        try:
+            r = review_pipeline.review_with_knowledge(
+                scope_type="assignment", scope_id=req.assignmentId,
+                raw_source=assignment, rubric=assignment["gradingRubric"],
+                student_answer=combined, word_count=word_count,
+                word_limit_min=assignment["wordLimitMin"],
+                word_limit_max=assignment["wordLimitMax"],
+            )
+            if r is not None:
+                return _pipeline_assignment_response(
+                    tenant, submission, r, word_count, start_time)
+        except Exception as e:
+            print(f"[ASSIGNMENT] Pipeline failed, falling back to legacy: {e}")
 
     try:
         ai_analysis = ai_service.analyze_answer(
@@ -334,6 +370,54 @@ async def assignment_history(
 
 
 # ---------- helpers --------------------------------------------------------
+
+def _pipeline_assignment_response(tenant, submission, r, word_count, start_time):
+    """Persist + shape the assignment response from a pipeline result.
+    Reuses _build_response for the envelope; adds the pipeline-only fields."""
+    scores = r["scores"]
+    grade = scoring_service.get_grade(scores["totalScore"])
+    summary = (f"You scored {scores['totalScore']}/100 ({grade}). "
+               f"{len(r['conceptsCovered'])} of "
+               f"{len(r['conceptsCovered']) + len(r['conceptsMissing'])} core concepts engaged.")
+
+    result = {
+        "totalScore":       scores["totalScore"],
+        "grade":            grade,
+        "rubricScores":     scores["rubricBreakdown"],
+        "strengths":        r["strengths"],
+        "improvements":     r["improvements"],
+        "missingConcepts":  r["conceptsMissing"],
+        "coveredConcepts":  r["conceptsCovered"],
+        "suggestedModules": [],
+        "detailedFeedback": r["detailedFeedback"],
+        "wordCount":        word_count,
+        "wordCountMessage": scores["wordCountNote"],
+        "scoreEmoji":       "",
+        "encouragement":    "",
+        "isGarbage":        r["isGarbage"],
+        "garbageWarning":   r["garbageWarning"],
+        "needsMentorHelp":  scores["totalScore"] < 40 or r["isGarbage"]
+                            or r["authorship"]["aiLikelihoodPercent"] >= 90,
+        "summary":          summary,
+        "plagiarismFlag":   "low",
+        **r["authorship"],
+    }
+    try:
+        assignment_db_service.update_assignment_submission_with_ai_results(
+            tenant, submission["submissionId"], result)
+    except Exception as db_err:
+        print(f"[ASSIGNMENT] DB update failed after pipeline review: {db_err}")
+
+    print(f"[ASSIGNMENT] ✅ Pipeline review: score={scores['totalScore']} grade={grade} "
+          f"path={r['decisions']['scoringPath']} gates={len(scores['gatesHit'])}")
+
+    response = _build_response(submission, result, summary, start_time)
+    response["feedback"]["howYouScored"]   = r["howYouScored"]
+    response["feedback"]["languageReport"] = r["languageReport"]
+    response["feedback"]["factualErrors"]  = r["factualErrors"]
+    response["_meta"] = {"pipeline": r["decisions"]}
+    return response
+
 
 def _build_response(submission: dict, result: dict, summary: str, start_time: float) -> dict:
     total_time = int((time.time() - start_time) * 1000)

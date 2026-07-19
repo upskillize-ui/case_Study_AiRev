@@ -327,25 +327,85 @@ async def knowledge_status(scope_type: str, scope_id: int):
     return {"status": "ready", "version": stored["version"]}
 
 
+def _capstone_pipeline_response(capstone, r, word_count, start_time):
+    """Persist + shape the capstone response from a pipeline result."""
+    import time as _time
+    from app.database import execute
+
+    scores = r["scores"]
+    grade = scoring_service.get_grade(scores["totalScore"])
+
+    try:
+        execute(
+            "UPDATE capstones SET grade = %s, feedback = %s, status = 'graded' WHERE id = %s",
+            (scores["totalScore"], json.dumps({
+                "summary":          f"Scored {scores['totalScore']}/100 ({grade}).",
+                "rubricScores":     scores["rubricBreakdown"],
+                "strengths":        r["strengths"],
+                "improvements":     r["improvements"],
+                "detailedFeedback": r["detailedFeedback"],
+                "howYouScored":     r["howYouScored"],
+                "decisions":        r["decisions"],
+            }, ensure_ascii=False), capstone["id"]),
+        )
+    except Exception as db_err:
+        print(f"⚠️  Capstone DB update failed: {db_err}")
+
+    total_time = int((_time.time() - start_time) * 1000)
+    print(f"✅ Capstone pipeline review: score={scores['totalScore']} grade={grade} "
+          f"path={r['decisions']['scoringPath']} time={total_time}ms")
+
+    return {
+        "success":    True,
+        "submission": {"submissionId": capstone["id"], "attemptNumber": 1},
+        "feedback": {
+            "score":            scores["totalScore"],
+            "grade":            grade,
+            "summary":          f"Scored {scores['totalScore']}/100 ({grade}).",
+            "rubricScores":     scores["rubricBreakdown"],
+            "strengths":        r["strengths"],
+            "improvements":     r["improvements"],
+            "missingConcepts":  r["conceptsMissing"],
+            "coveredConcepts":  r["conceptsCovered"],
+            "suggestions":      [],
+            "detailedFeedback": r["detailedFeedback"],
+            "wordCount":        word_count,
+            "wordCountMessage": scores["wordCountNote"],
+            "encouragement":    "",
+            "howYouScored":     r["howYouScored"],
+            "languageReport":   r["languageReport"],
+            "factualErrors":    r["factualErrors"],
+            "isGarbage":        r["isGarbage"],
+            "garbageWarning":   r["garbageWarning"],
+            **r["authorship"],
+        },
+        "_meta":            {"pipeline": r["decisions"]},
+        "mentorReport": {
+            "score": scores["totalScore"], "grade": grade,
+            "needsAttention": scores["totalScore"] < 40 or r["isGarbage"],
+            "gatesHit": scores["gatesHit"],
+            "rubricBreakdown": scores["rubricBreakdown"],
+            "aiLikelihoodPercent": r["authorship"]["aiLikelihoodPercent"],
+        },
+        "processingTimeMs": total_time,
+    }
+
+
 def _run_pipeline_review(case_study, req, submission, cleaned, word_count,
                          text_overlap, start_time, background_tasks):
     """Evidence-gated review: recall the knowledge pack, run the staged
     pipeline, persist, respond. Returns the response dict, or None when no
     pack could be built (caller falls back to legacy)."""
-    known = knowledge_service.get_or_build(
-        "case_study", req.caseStudyId, case_study, background_tasks,
-    )
-    if known is None:
-        return None
-
-    r = review_pipeline.run_review(
-        scope_type="case_study",
-        pack=known["pack"], pack_version=known["version"],
-        rubric=case_study["gradingRubric"],
+    r = review_pipeline.review_with_knowledge(
+        scope_type="case_study", scope_id=req.caseStudyId,
+        raw_source=case_study, rubric=case_study["gradingRubric"],
         student_answer=cleaned, word_count=word_count,
         word_limit_min=case_study["wordLimitMin"],
         word_limit_max=case_study["wordLimitMax"],
+        background_tasks=background_tasks,
     )
+    if r is None:
+        return None
     scores = r["scores"]
     grade = scoring_service.get_grade(scores["totalScore"])
 
@@ -862,6 +922,20 @@ async def submit_capstone_review(req: dict):
             {"name": "Communication",          "maxScore": 10},
         ]
     }
+
+    # ── Evidence-gated pipeline (primary path — capstones get full rigor) ──
+    if _PIPELINE_ON:
+        try:
+            r = review_pipeline.review_with_knowledge(
+                scope_type="capstone", scope_id=capstone["id"],
+                raw_source={**capstone, "gradingRubric": default_rubric},
+                rubric=default_rubric, student_answer=cleaned,
+                word_count=word_count, word_limit_min=0, word_limit_max=999999,
+            )
+            if r is not None:
+                return _capstone_pipeline_response(capstone, r, word_count, start_time)
+        except Exception as e:
+            print(f"⚠️  Capstone pipeline failed, falling back to legacy: {e}")
 
     try:
         ai_analysis = ai_service.analyze_answer(
