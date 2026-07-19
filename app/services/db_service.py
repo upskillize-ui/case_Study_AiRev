@@ -108,15 +108,16 @@ def get_latest_submission_file(case_study_id: int, student_id: int,
     if not student_id or student_id <= 0:
         return None
 
+    from app.database import DUAL_ID_MATCH
     sql = (
-        "SELECT id, file_url, file_name, notes, student_id "
-        "FROM case_study_submissions "
-        "WHERE case_study_id = %s AND student_id = %s "
+        f"SELECT id, file_url, file_name, notes, student_id "
+        f"FROM case_study_submissions "
+        f"WHERE case_study_id = %s AND {DUAL_ID_MATCH} "
     )
-    params: tuple = (case_study_id, student_id)
+    params: tuple = (case_study_id, student_id, student_id, student_id)
     if exclude_submission_id is not None:
         sql += "AND id <> %s "
-        params = (case_study_id, student_id, exclude_submission_id)
+        params = (case_study_id, student_id, student_id, student_id, exclude_submission_id)
     sql += "ORDER BY submitted_at DESC LIMIT 5"
 
     rows = query(sql, params)
@@ -149,11 +150,12 @@ def get_attempt_state(case_study_id: int, student_id: int) -> dict:
     any AI call. Reviews that fell to the AI-unavailable fallback are not
     counted (the student was never actually reviewed).
     """
+    from app.database import DUAL_ID_MATCH
     rows = query(
-        """SELECT notes, status FROM case_study_submissions
-           WHERE case_study_id = %s AND student_id = %s
+        f"""SELECT notes, status FROM case_study_submissions
+           WHERE case_study_id = %s AND {DUAL_ID_MATCH}
            ORDER BY id DESC""",
-        (case_study_id, student_id),
+        (case_study_id, student_id, student_id, student_id),
     )
     # A submission only counts as a used attempt once it was actually
     # REVIEWED (status='reviewed'). The AI-unavailable fallback path leaves

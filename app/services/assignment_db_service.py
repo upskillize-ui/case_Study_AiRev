@@ -108,13 +108,14 @@ def get_latest_assignment_submission(tenant: Tenant, assignment_id: int, student
     if not student_id or student_id <= 0:
         return None
 
+    from app.database import DUAL_ID_MATCH
     rows = tquery(
         tenant,
-        "SELECT id, file_path, file_name, notes, status "
-        "FROM assignment_submissions "
-        "WHERE assignment_id = %s AND student_id = %s "
-        "ORDER BY submitted_at DESC LIMIT 1",
-        (assignment_id, student_id),
+        f"SELECT id, file_path, file_name, notes, status "
+        f"FROM assignment_submissions "
+        f"WHERE assignment_id = %s AND {DUAL_ID_MATCH} "
+        f"ORDER BY submitted_at DESC LIMIT 1",
+        (assignment_id, student_id, student_id, student_id),
     )
     if not rows:
         return None
@@ -136,12 +137,13 @@ def get_attempt_state(tenant: Tenant, assignment_id: int, student_id: int) -> di
     The AI-unavailable path leaves status='submitted', so it never consumes
     the student's single re-attempt.
     """
+    from app.database import DUAL_ID_MATCH
     rows = tquery(
         tenant,
-        """SELECT notes, status FROM assignment_submissions
-           WHERE assignment_id = %s AND student_id = %s
+        f"""SELECT notes, status FROM assignment_submissions
+           WHERE assignment_id = %s AND {DUAL_ID_MATCH}
            ORDER BY id DESC""",
-        (assignment_id, student_id),
+        (assignment_id, student_id, student_id, student_id),
     )
     reviewed = sum(1 for r in rows if r.get("status") == "graded")
     return {
