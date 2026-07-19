@@ -242,11 +242,13 @@ async def submit_and_review_assignment(
                 student_answer=combined, word_count=word_count,
                 word_limit_min=assignment["wordLimitMin"],
                 word_limit_max=assignment["wordLimitMax"],
+                student_id=req.studentId,
             )
             if r is not None:
                 prefilter_service.flag_review_outcomes(
                     "assignment", req.assignmentId, req.studentId,
                     submission["submissionId"], r)
+                _remember_student_assignment(req, submission, r)
                 return _pipeline_assignment_response(
                     tenant, submission, r, word_count, start_time,
                     duplicate=any(f.get("flag") == "cohort_duplicate"
@@ -386,6 +388,24 @@ async def assignment_history(
 
 
 # ---------- helpers --------------------------------------------------------
+
+def _remember_student_assignment(req, submission, r):
+    """Person-memory fold + stylometry check. Never affects the review."""
+    from app.services import student_memory_service as smem
+    try:
+        ai_pct = r["authorship"]["aiLikelihoodPercent"]
+        profile = smem.get_profile(req.studentId)
+        if smem.authorship_shift(profile, ai_pct):
+            prefilter_service.flag_exception(
+                "assignment", req.assignmentId, req.studentId,
+                submission["submissionId"], "authorship_shift",
+                f"human-styled baseline (median ~{profile['aggregates'].get('ai_median')}% AI) "
+                f"suddenly reads ~{ai_pct}% AI-written")
+        smem.fold_review(req.studentId, "assignment", req.assignmentId,
+                         r["scores"]["totalScore"], r["conceptsMissing"], ai_pct)
+    except Exception as e:
+        print(f"[ASSIGNMENT] person-memory update failed (review unaffected): {e}")
+
 
 def _pipeline_assignment_response(tenant, submission, r, word_count, start_time,
                                   duplicate=False):

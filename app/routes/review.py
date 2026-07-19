@@ -338,6 +338,25 @@ async def knowledge_status(scope_type: str, scope_id: int):
     return {"status": "ready", "version": stored["version"]}
 
 
+def _remember_student(student_id, scope_type, scope_id, submission_id, r):
+    """Fold the outcome into person-memory + stylometry trend check.
+    Failures never affect the review."""
+    from app.services import student_memory_service as smem
+    try:
+        ai_pct = r["authorship"]["aiLikelihoodPercent"]
+        profile = smem.get_profile(student_id)
+        if smem.authorship_shift(profile, ai_pct):
+            prefilter_service.flag_exception(
+                scope_type, scope_id, student_id, submission_id,
+                "authorship_shift",
+                f"human-styled baseline (median ~{profile['aggregates'].get('ai_median')}% AI) "
+                f"suddenly reads ~{ai_pct}% AI-written")
+        smem.fold_review(student_id, scope_type, scope_id,
+                         r["scores"]["totalScore"], r["conceptsMissing"], ai_pct)
+    except Exception as e:
+        print(f"⚠️ person-memory update failed (review unaffected): {e}")
+
+
 def _capstone_pipeline_response(capstone, r, word_count, start_time):
     """Persist + shape the capstone response from a pipeline result."""
     import time as _time
@@ -414,11 +433,13 @@ def _run_pipeline_review(case_study, req, submission, cleaned, word_count,
         student_answer=cleaned, word_count=word_count,
         word_limit_min=case_study["wordLimitMin"],
         word_limit_max=case_study["wordLimitMax"],
-        background_tasks=background_tasks,
+        background_tasks=background_tasks, student_id=req.studentId,
     )
     if r is None:
         return None
     scores = r["scores"]
+    _remember_student(req.studentId, "case_study", req.caseStudyId,
+                      submission["submissionId"], r)
     grade = scoring_service.get_grade(scores["totalScore"])
 
     plagiarism = "low"
@@ -949,8 +970,11 @@ async def submit_capstone_review(req: dict):
                 raw_source={**capstone, "gradingRubric": default_rubric},
                 rubric=default_rubric, student_answer=cleaned,
                 word_count=word_count, word_limit_min=0, word_limit_max=999999,
+                student_id=student_id,
             )
             if r is not None:
+                _remember_student(student_id, "capstone", capstone["id"],
+                                  capstone["id"], r)
                 return _capstone_pipeline_response(capstone, r, word_count, start_time)
         except Exception as e:
             print(f"⚠️  Capstone pipeline failed, falling back to legacy: {e}")

@@ -297,7 +297,7 @@ def _trim(quote: str, limit: int = 120) -> str:
 def review_with_knowledge(scope_type: str, scope_id: int, raw_source: dict,
                           rubric: dict, student_answer: str, word_count: int,
                           word_limit_min: int, word_limit_max: int,
-                          background_tasks=None) -> Optional[dict]:
+                          background_tasks=None, student_id: int = 0) -> Optional[dict]:
     """Shared entry for every review type: recall (or build) the knowledge
     pack, then run the gated pipeline. Returns the pipeline result, or None
     when no pack could be built (caller falls back to its legacy path).
@@ -316,13 +316,14 @@ def review_with_knowledge(scope_type: str, scope_id: int, raw_source: dict,
         pack=known["pack"], pack_version=known["version"],
         rubric=rubric, student_answer=student_answer, word_count=word_count,
         word_limit_min=word_limit_min, word_limit_max=word_limit_max,
+        student_id=student_id,
     )
 
 
 def run_review(scope_type: str, pack: dict, pack_version: int,
                rubric: dict, student_answer: str, word_count: int,
                word_limit_min: int, word_limit_max: int,
-               scope_id: int = 0) -> dict:
+               scope_id: int = 0, student_id: int = 0) -> dict:
     """Full pipeline for one submission. Raises on AI failure — the route
     owns the fallback to the legacy path."""
     rubric_criteria = rubric.get("criteria", []) or []
@@ -350,7 +351,22 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
         + f"=== RUBRIC CRITERIA (judge each BY NAME) ===\n{criteria_list}\n\n"
         f"{AI_DETECTION_CALIBRATION}\n\n{_JUDGE_INSTRUCTIONS}"
     )
-    student_block = ai_service.frame_student_text(student_answer)
+
+    # Person-memory: continuity context for feedback wording. Deliberately in
+    # the per-student (non-cached) block, and structurally harmless to
+    # scoring — evidence gates + Python aggregation mean history cannot buy
+    # or cost marks.
+    continuity = ""
+    if student_id:
+        try:
+            from app.services import student_memory_service
+            continuity = student_memory_service.render_for_prompt(
+                student_memory_service.get_profile(student_id))
+        except Exception as se:
+            print(f"⚠️ student memory unavailable: {se}")
+
+    student_block = ((continuity + "\n\n") if continuity else "") \
+        + ai_service.frame_student_text(student_answer)
 
     review = ai_service.call_structured(
         blocks=[{"text": static_block, "cache": True},

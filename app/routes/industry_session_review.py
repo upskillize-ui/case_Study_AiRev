@@ -626,6 +626,21 @@ Return ONLY valid JSON (no markdown, no preamble, no backticks):
             "industry_session", req.sessionId, req.studentId, submission_id,
             "high_ai_authorship", f"~{ai_pct}% estimated AI-written")
 
+    # Person-memory: fold outcome + stylometry trend (advisory only).
+    try:
+        from app.services import student_memory_service as smem
+        profile = smem.get_profile(req.studentId)
+        if smem.authorship_shift(profile, ai_pct):
+            prefilter_service.flag_exception(
+                "industry_session", req.sessionId, req.studentId, submission_id,
+                "authorship_shift",
+                f"human-styled baseline (median ~{profile['aggregates'].get('ai_median')}% AI) "
+                f"suddenly reads ~{ai_pct}% AI-written")
+        smem.fold_review(req.studentId, "industry_session", req.sessionId,
+                         score, raw.get("critical_gaps", [])[:4], ai_pct)
+    except Exception as sme:
+        print(f"⚠️ person-memory update failed (review unaffected): {sme}")
+
     # 6. Persist feedback
     try:
         execute(
