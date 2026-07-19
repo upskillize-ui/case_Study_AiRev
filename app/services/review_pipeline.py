@@ -86,7 +86,15 @@ REVIEW_SCHEMA = {
         },
         "strengths":         {"type": "array", "items": {"type": "string"}},
         "improvements":      {"type": "array", "items": {"type": "string"}},
-        "detailed_feedback": {"type": "string"},
+        "feedback_points": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "3-6 point-wise feedback items. Each ONE specific, self-contained observation or instruction — not a paragraph, not a summary. Second person, concrete, tied to the student's actual text.",
+        },
+        "hard_truth": {
+            "type": "string",
+            "description": "The blunt bottom-line verdict in 1-2 sentences — the single most important thing the student must confront. Direct, no softening, but constructive. This is the conclusion, shown highlighted at the end.",
+        },
         "language_report": {
             "type": "object",
             "properties": {
@@ -111,7 +119,7 @@ REVIEW_SCHEMA = {
     },
     "required": ["is_garbage", "garbage_reason", "criteria", "concepts_covered",
                  "concepts_missing", "factual_errors", "strengths", "improvements",
-                 "detailed_feedback", "language_report", "authorship"],
+                 "feedback_points", "hard_truth", "language_report", "authorship"],
 }
 
 _JUDGE_INSTRUCTIONS = """You are AiRev's examiner. Judge the student's answer against the AGENT KNOWLEDGE above — it is your only ground truth. Be exacting in judgement, constructive in wording.
@@ -122,9 +130,10 @@ NON-NEGOTIABLE METHOD:
 3. Score each criterion strictly on what its NAME demands. Do not let fluency halo into substance scores.
 4. concepts_covered/missing: check against the MUST concepts in the knowledge. Mentioning a term is not covering a concept — the student must USE it correctly.
 5. factual_errors: quote the exact wrong claim. major = would mislead a practitioner; minor = imprecision.
-6. Feedback: direct, specific, second person. Name the paragraph/line. Coaching wording — the scores carry the severity, the words carry the way forward.
-7. language_report: up to 5 grammar issues with fixes, up to 5 misspellings, one redundancy note, one clarity note. Indian English is standard usage, never an error.
-8. Authorship: estimate per the calibration. Advisory only — it must not influence any score."""
+6. feedback_points: write 3-6 SEPARATE point-wise items — NOT one paragraph. Each point is one specific observation or instruction, second person, tied to the student's actual text (name the paragraph/line/figure). Coaching wording; the scores carry the severity.
+7. hard_truth: end with the single blunt bottom-line the student must confront — one or two sentences, direct and unsoftened but constructive. This is the conclusion, shown highlighted.
+8. language_report: up to 5 grammar issues with fixes, up to 5 misspellings, one redundancy note, one clarity note. Indian English is standard usage, never an error.
+9. Authorship: estimate per the calibration. Advisory only — it must not influence any score."""
 
 
 # ─── Pure functions: gates + aggregation (unit-tested, no I/O) ───────────────
@@ -400,7 +409,11 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
         "languageReport": review["language_report"],
         "strengths": review["strengths"],
         "improvements": review["improvements"],
-        "detailedFeedback": review["detailed_feedback"],
+        "feedbackPoints": review["feedback_points"],
+        "hardTruth": review["hard_truth"],
+        # detailedFeedback kept for any older UI: points joined + hard truth.
+        "detailedFeedback": " ".join(review["feedback_points"])
+                            + ("  " + review["hard_truth"] if review["hard_truth"] else ""),
         "conceptsCovered": review["concepts_covered"],
         "conceptsMissing": review["concepts_missing"],
         "factualErrors": review["factual_errors"],
@@ -435,6 +448,10 @@ def _garbage_result(review: dict, rubric_criteria: list, pack_version: int,
         "languageReport": review.get("language_report", {}),
         "strengths": [], "improvements":
             ["Re-read the case material and attempt a genuine analysis."],
+        "feedbackPoints": ["This submission did not read as a genuine attempt at the task.",
+                           "Re-read the brief and the source material before your next attempt."],
+        "hardTruth": ("Nothing here can be scored yet — a real analysis in your own words is "
+                      "the starting point." + (f" ({reason})" if reason else "")),
         "detailedFeedback": "Submission flagged as non-genuine. " + reason,
         "conceptsCovered": [], "conceptsMissing": [], "factualErrors": [],
         "authorship": {"aiLikelihoodPercent": 50, "humanLikelihoodPercent": 50,
