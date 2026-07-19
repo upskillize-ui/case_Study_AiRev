@@ -333,6 +333,30 @@ async def prepare_case_study(case_study_id: int, background_tasks: BackgroundTas
             "detail": "Knowledge build started. Check /knowledge-status."}
 
 
+@router.post("/prepare/capstone/{capstone_id}")
+async def prepare_capstone(capstone_id: int, background_tasks: BackgroundTasks):
+    from app.database import query
+    rows = query("SELECT id, title, description FROM capstones WHERE id = %s LIMIT 1",
+                 (capstone_id,))
+    if not rows:
+        raise HTTPException(status_code=404, detail="Capstone not found")
+    return _kick_build("capstone", capstone_id, rows[0], background_tasks)
+
+
+def _kick_build(scope_type: str, scope_id: int, raw: dict, background_tasks):
+    """Shared prepare logic: build the pack now unless already current."""
+    sources = knowledge_service.SOURCE_BUILDERS[scope_type](raw)
+    fresh_hash = knowledge_service.source_hash(sources)
+    stored = knowledge_service.get_pack(scope_type, scope_id)
+    if stored and stored["source_hash"] == fresh_hash:
+        return {"success": True, "status": "ready", "version": stored["version"],
+                "detail": "Knowledge already current."}
+    background_tasks.add_task(
+        knowledge_service.build_pack, scope_type, scope_id, sources, fresh_hash)
+    return {"success": True, "status": "building",
+            "detail": "Knowledge build started. Check /knowledge-status."}
+
+
 @router.get("/knowledge-status/{scope_type}/{scope_id}")
 async def knowledge_status(scope_type: str, scope_id: int):
     stored = knowledge_service.get_pack(scope_type, scope_id)

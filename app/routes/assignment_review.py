@@ -16,7 +16,7 @@ import json
 import os
 import hashlib
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Depends, Header, BackgroundTasks
 from app.services.capacity import capacity_guard
 from pydantic import BaseModel
 
@@ -93,6 +93,30 @@ async def list_student_assignments(student_id: int, tenant: Tenant = Depends(get
         })
 
     return {"success": True, "assignments": out, "tenant": tenant.id}
+
+
+# ---------- POST /api/review/prepare/assignment/{id} -----------------------
+# Trigger-1 webhook: faculty/admin calls this after creating or editing an
+# assignment so the agent reads the questions and builds its knowledge pack
+# BEFORE any student submits — "pre-ready", not lazy.
+@router.post("/prepare/assignment/{assignment_id}")
+async def prepare_assignment(assignment_id: int, background_tasks: BackgroundTasks,
+                             tenant: Tenant = Depends(get_tenant)):
+    from app.services import knowledge_service
+    assignment = assignment_db_service.get_assignment_by_id(tenant, assignment_id)
+    if not assignment:
+        raise HTTPException(status_code=404,
+                            detail=f"Assignment {assignment_id} not found in tenant '{tenant.id}'")
+    sources = knowledge_service.SOURCE_BUILDERS["assignment"](assignment)
+    fresh_hash = knowledge_service.source_hash(sources)
+    stored = knowledge_service.get_pack("assignment", assignment_id)
+    if stored and stored["source_hash"] == fresh_hash:
+        return {"success": True, "status": "ready", "version": stored["version"],
+                "detail": "Knowledge already current."}
+    background_tasks.add_task(
+        knowledge_service.build_pack, "assignment", assignment_id, sources, fresh_hash)
+    return {"success": True, "status": "building",
+            "detail": "Knowledge build started."}
 
 
 # ---------- POST /api/review/submit-assignment -----------------------------

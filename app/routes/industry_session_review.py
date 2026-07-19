@@ -747,6 +747,44 @@ Return ONLY valid JSON (no markdown, no preamble, no backticks):
     }
 
 
+# ─── POST /api/review/prepare/industry_session/{session_id} ───────────────────
+# Trigger-1 webhook: build the session digest/pack ahead of student reviews.
+# (The video-watch pipeline is triggered separately when a session is listed.)
+@router.post("/prepare/industry_session/{session_id}")
+async def prepare_session(session_id: int, background_tasks: BackgroundTasks):
+    sess_tbl = _session_table()
+    if not sess_tbl:
+        raise HTTPException(status_code=404, detail="No industry_sessions table")
+    c_title  = _col(sess_tbl, "title", "session_title", "name") or "id"
+    c_mentor = _col(sess_tbl, "speaker", "mentor_name", "speaker_name")
+    c_desc   = _col(sess_tbl, "description", "summary", "about")
+    c_topics = _col(sess_tbl, "key_topics", "topics")
+    c_outline = _col(sess_tbl, "session_outline", "outline", "agenda")
+    c_trans  = _col(sess_tbl, "video_transcript", "transcript")
+    sel = ["id", f"{c_title} AS title"]
+    for col, alias in [(c_mentor,"mentor"),(c_desc,"description"),(c_topics,"key_topics"),
+                       (c_outline,"outline"),(c_trans,"transcript")]:
+        if col: sel.append(f"{col} AS {alias}")
+    rows = query(f"SELECT {', '.join(sel)} FROM {sess_tbl} WHERE id=%s LIMIT 1", (session_id,))
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    watched = None
+    try:
+        watched = media_service.get_clean_transcript(session_id)
+    except Exception:
+        pass
+    raw = dict(rows[0]); raw["transcript"] = watched or raw.get("transcript") or ""
+    sources = knowledge_service.SOURCE_BUILDERS["industry_session"](raw)
+    fresh_hash = knowledge_service.source_hash(sources)
+    stored = knowledge_service.get_pack("industry_session", session_id)
+    if stored and stored["source_hash"] == fresh_hash:
+        return {"success": True, "status": "ready", "version": stored["version"],
+                "detail": "Knowledge already current."}
+    background_tasks.add_task(
+        knowledge_service.build_pack, "industry_session", session_id, sources, fresh_hash)
+    return {"success": True, "status": "building", "detail": "Knowledge build started."}
+
+
 # ─── GET /api/review/session-watch-status/{session_id} ────────────────────────
 # Ops visibility: has the agent watched this session's video yet?
 @router.get("/session-watch-status/{session_id}")
