@@ -179,6 +179,17 @@ def frame_student_text(text: str) -> str:
     return f"{STUDENT_TEXT_FRAME}\n<student_submission>\n{safe}\n</student_submission>"
 
 
+def _first_text(response) -> str:
+    """Return the first TEXT block's text from a Claude response, skipping
+    thinking/tool_use blocks. Claude 4.6-gen models (sonnet-5) emit a
+    ThinkingBlock as content[0], so `content[0].text` crashes — this is the
+    safe accessor everywhere raw text is needed."""
+    for block in getattr(response, "content", []) or []:
+        if getattr(block, "type", None) == "text":
+            return block.text
+    return ""
+
+
 def call_structured(blocks: list, schema: dict, tier: str = "default",
                     max_tokens: int = 3000, thinking_budget: int = 0,
                     system: str = SYSTEM_MSG_CLAUDE) -> dict:
@@ -200,6 +211,16 @@ def call_structured(blocks: list, schema: dict, tier: str = "default",
             part["cache_control"] = {"type": "ephemeral"}
         content.append(part)
 
+    # sonnet-5 (Claude 4.6 gen) emits extended-thinking blocks by default, and
+    # forced tool_choice ({"type":"tool"}) is INCOMPATIBLE with thinking — it
+    # caused intermittent incomplete tool calls (missing 'criteria'). Use
+    # tool_choice "auto" + an explicit instruction to call the tool; sonnet-5
+    # reliably complies, and thinking stays enabled for better judgement.
+    tool_instruction = ("\n\nYou MUST call the emit_result tool exactly once "
+                        "with your COMPLETE evaluation filling every required field. "
+                        "Do not answer in plain text.")
+    content[-1] = {**content[-1], "text": content[-1]["text"] + tool_instruction}
+
     kwargs = {
         "model": model,
         "max_tokens": max_tokens,
@@ -210,19 +231,26 @@ def call_structured(blocks: list, schema: dict, tier: str = "default",
             "description": "Emit the structured evaluation result.",
             "input_schema": schema,
         }],
-        "tool_choice": {"type": "tool", "name": "emit_result"},
+        "tool_choice": {"type": "auto"},
     }
     if thinking_budget > 0:
-        # Extended thinking is incompatible with forced tool_choice; let the
-        # model think, then require the tool via strong instruction instead.
         kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
-        kwargs["tool_choice"] = {"type": "auto"}
         kwargs["max_tokens"] = max_tokens + thinking_budget
 
     response = client.messages.create(**kwargs)
     for block in response.content:
-        if block.type == "tool_use" and block.name == "emit_result":
+        if getattr(block, "type", None) == "tool_use" and block.name == "emit_result":
             return block.input
+    # No tool call (rare) — try to parse a JSON object from any text block.
+    text = _first_text(response)
+    if text:
+        import json as _json, re as _re
+        m = _re.search(r"\{[\s\S]*\}", text)
+        if m:
+            try:
+                return _json.loads(m.group(0))
+            except Exception:
+                pass
     raise Exception(f"Model returned no structured result (model={model})")
 
 
@@ -248,7 +276,7 @@ def call_claude(prompt: str, max_tokens: int = 2000, system: str = SYSTEM_MSG_CL
                 system=system,
                 messages=[{"role": "user", "content": prompt}],
             )
-            return response.content[0].text
+            return _first_text(response)
         except Exception as e:
             print(f"❌ Claude call FAILED: {e}")
             print("⚠️  FALLING BACK to Hugging Face. Check ANTHROPIC_API_KEY / ANTHROPIC_MODEL / billing.")
@@ -287,6 +315,6 @@ def _analyze_with_claude(
         messages=[{"role": "user", "content": prompt}],
     )
 
-    text = response.content[0].text
+    text = _first_text(response)
     parsed = parse_ai_response(text)
     return parsed, model
