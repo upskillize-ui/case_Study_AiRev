@@ -676,12 +676,12 @@ async def case_studies_for_student(student_id: int):
              ON latest.case_study_id = cs.id
            WHERE cs.status IN ('published', 'active')
            ORDER BY cs.created_at DESC""",
-        (student_id, student_id, student_id, student_id),
+        (student_id,) * 6,   # DUAL_ID_MATCH used twice, 3 params each
     )
     if rows and not any(r.get("submission_id") for r in rows):
         from app.database import query as q2
         subs = q2("SELECT COUNT(*) AS n FROM case_study_submissions "
-                  f"WHERE {DUAL_ID_MATCH}", (student_id, student_id))
+                  f"WHERE {DUAL_ID_MATCH}", (student_id,) * 3)
         print(f"ℹ️  Case-study hub: {len(rows)} studies, ZERO submissions matched "
               f"for student {student_id} (either id). Rows under both ids: "
               f"{subs[0]['n'] if subs else '?'}. If Coursework shows a submission, "

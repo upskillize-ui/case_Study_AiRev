@@ -310,7 +310,7 @@ def get_student_assignments(tenant: Tenant, student_id: int) -> list:
             a.due_date IS NULL,
             a.due_date ASC,
             a.created_at DESC""",
-        (student_id, student_id, student_id, student_id),
+        (student_id,) * 6,   # DUAL_ID_MATCH used twice, 3 params each
     )
     _diagnose_if_odd(tenant, student_id, rows)
     return rows
@@ -327,11 +327,11 @@ def _diagnose_if_odd(tenant: Tenant, student_id: int, rows: list) -> None:
                   f"status='active'. Statuses in assignments table: "
                   f"{[(s.get('status'), s.get('n')) for s in statuses]}")
         elif not any(r.get("submission_id") for r in rows):
+            from app.database import DUAL_ID_MATCH
             subs = tquery(tenant,
-                          "SELECT COUNT(*) AS n FROM assignment_submissions "
-                          "WHERE student_id IN (%s, COALESCE((SELECT user_id FROM "
-                          "students WHERE id = %s LIMIT 1), -1))",
-                          (student_id, student_id))
+                          f"SELECT COUNT(*) AS n FROM assignment_submissions "
+                          f"WHERE {DUAL_ID_MATCH}",
+                          (student_id,) * 3)
             print(f"[ASSIGNMENT] {len(rows)} assignments listed but ZERO submissions "
                   f"matched for student {student_id} (either id form) — "
                   f"assignment_submissions rows under both ids: "

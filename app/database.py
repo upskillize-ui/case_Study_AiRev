@@ -23,14 +23,18 @@ def set_current_tenant(tenant: Tenant):
     _current_tenant.set(tenant)
 
 
-# The LMS carries TWO student identities: students.id (AiRev calls) and
-# users.id (Coursework-module writes). Any submission lookup must match
-# either, resolved via the students table. ONE definition — every list
-# query imports this instead of re-inventing it (live findings 19 Jul:
-# assignments AND case studies both missed Coursework submissions).
-# Takes two params: (student_id, student_id).
-DUAL_ID_MATCH = ("student_id IN (%s, COALESCE((SELECT user_id FROM students "
-                 "WHERE id = %s LIMIT 1), -1))")
+# The LMS carries TWO student identities and BOTH appear in submission rows:
+# the AiRev panel is mounted with users.id (frontend: studentId={user.id})
+# while the Coursework module writes students.id (via resolveStudent).
+# Confirmed 19 Jul by reading both codebases. Any submission lookup must
+# therefore match the given id AND both mappings — bidirectional:
+#   given users.id    -> students.id via (SELECT id  ... WHERE user_id = ?)
+#   given students.id -> users.id    via (SELECT user_id ... WHERE id  = ?)
+# ONE definition, imported everywhere. Takes THREE params: (sid, sid, sid).
+DUAL_ID_MATCH = (
+    "student_id IN (%s, "
+    "COALESCE((SELECT user_id FROM students WHERE id = %s LIMIT 1), -1), "
+    "COALESCE((SELECT id FROM students WHERE user_id = %s LIMIT 1), -1))")
 
 
 def get_current_tenant() -> Optional[Tenant]:
