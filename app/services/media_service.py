@@ -52,6 +52,10 @@ BFSI_GLOSSARY = (
 SEGMENT_SECONDS = 600          # 10-minute audio chunks
 MAX_VIDEO_MB = 800             # refuse absurd downloads; logged, not silent
 PROCESSING_TIMEOUT_MIN = 45    # a 'processing' row older than this may retry
+FAILED_RETRY_MIN = 24 * 60     # a failed watch retries at most once a day
+                               # (same URL). A changed URL retries immediately
+                               # via the hash. Prevents the retry storm live
+                               # verification exposed on 19 Jul.
 
 _CLEAN_INSTRUCTIONS = """You are AiRev's transcript filter. Below is a chunk of a raw industry-session transcript. Rewrite it as PURE TEACHING CONTENT:
 
@@ -118,7 +122,9 @@ def ensure_processing(session_id: int, video_url: Optional[str],
                 return "ready"
             if r["status"] == "processing" and (r["age_min"] or 0) < PROCESSING_TIMEOUT_MIN:
                 return "processing"
-            # failed, or processing timed out -> retry below
+            if r["status"] == "failed" and (r["age_min"] or 0) < FAILED_RETRY_MIN:
+                return "failed"   # permanent-looking failure: no retry storm
+            # stale processing, or failed past cooldown -> retry below
 
     if background_tasks is None:
         return "no_runner"

@@ -23,11 +23,40 @@ MAX_REVIEWED_ATTEMPTS = int(os.getenv("MAX_REVIEWED_ATTEMPTS", "2"))
 
 # ─── Schema ───────────────────────────────────────────────────────────────────
 class IndustrySessionInsightRequest(BaseModel):
+    # extra="allow": live verification (19 Jul) showed a student's written
+    # understanding arriving under a field name this model didn't declare —
+    # the review then saw an empty insight. We accept the body loosely and
+    # coalesce known aliases in _resolve_insight_text().
+    model_config = {"extra": "allow"}
+
     sessionId:   int
     studentId:   int
     insightText: Optional[str] = ""
     fileUrl:     Optional[str] = None
     fileName:    Optional[str] = None
+
+
+_INSIGHT_ALIASES = ("insight_text", "text", "answerText", "answer_text",
+                    "understanding", "keyTakeaway", "key_takeaway", "insight")
+
+
+def _resolve_insight_text(req: IndustrySessionInsightRequest) -> str:
+    """The declared field first, then known frontend aliases. Logs what the
+    body actually carried when the declared field is empty — so a frontend
+    field-name mismatch is visible in one log line instead of a 0/100 mystery."""
+    text = (req.insightText or "").strip()
+    if text:
+        return text
+    extra = req.model_extra or {}
+    for key in _INSIGHT_ALIASES:
+        val = extra.get(key)
+        if isinstance(val, str) and val.strip():
+            print(f"ℹ️  insight text arrived under alias '{key}' — frontend "
+                  f"should send 'insightText'")
+            return val.strip()
+    if extra:
+        print(f"⚠️ no insight text; request body extra keys were: {sorted(extra.keys())}")
+    return ""
 
 
 # ─── Table & column discovery (cached per process, safe for concurrent use) ───
@@ -291,7 +320,7 @@ async def submit_industry_session(req: IndustrySessionInsightRequest,
             return {"success": False, "blocked": "attempt_limit",
                     "message": ("You've used your re-attempt for this session review. "
                                 "Your final score stands.")}
-        new_text = (req.insightText or "").strip()
+        new_text = _resolve_insight_text(req)
         if reviewed >= 1 and prior and new_text:
             old_text = (prior[0].get("insight_text") or "").strip()
             if old_text and (hashlib.sha256(old_text.lower().encode()).hexdigest()
@@ -421,7 +450,7 @@ async def submit_industry_session(req: IndustrySessionInsightRequest,
         print(f"⚠️ Session knowledge unavailable, reviewing from raw metadata: {ke}")
 
     # 3. Get student insight — prefer explicit text, else pull from LMS session_feedback
-    insight = (req.insightText or "").strip()
+    insight = _resolve_insight_text(req)
 
     if not insight:
         lms_tbl = _lms_insight_table()

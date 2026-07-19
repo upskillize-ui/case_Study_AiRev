@@ -919,6 +919,14 @@ async def submit_capstone_review(req: dict):
             print(f"📄 Prior capstone file extraction failed: {why}")
 
     if not parts:
+        # State exactly which sources were empty — a "no content" mystery
+        # costs an hour; this line costs nothing. (Live finding 19 Jul:
+        # capstone 39 row had no file_url despite an LMS submission.)
+        print(f"[CAPSTONE] no content for capstone {capstone_id}: "
+              f"request answerText={'yes' if answer_text else 'EMPTY'}, "
+              f"request fileUrl={'yes' if file_url else 'EMPTY'}, "
+              f"row file_url={capstone.get('file_url') or 'EMPTY'} — "
+              f"check where the LMS stored this student's deliverable")
         total_time = int((_time.time() - start_time) * 1000)
         msg = ("We couldn't find any content for this capstone. Upload your project "
                "deliverable (PDF / DOCX / ZIP) or paste your write-up, then click Submit again.")
