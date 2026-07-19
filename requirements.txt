@@ -4,6 +4,7 @@ python-dotenv==1.0.1
 PyMySQL==1.1.1
 cryptography==46.0.7   # REQUIRED: PyMySQL needs this for sha256_password / caching_sha2_password auth (eaprep tenant DB)
 youtube-transcript-api==1.2.4   # session media pipeline: free captions before paid transcription
+apscheduler==3.11.3   # nightly consolidation (in-process — HF Spaces have no cron)
 httpx==0.28.1
 huggingface-hub==0.28.1
 anthropic==0.50.0

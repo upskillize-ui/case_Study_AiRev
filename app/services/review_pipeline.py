@@ -130,8 +130,12 @@ NON-NEGOTIABLE METHOD:
 # ─── Pure functions: gates + aggregation (unit-tested, no I/O) ───────────────
 
 def apply_gates(criteria: list, rubric_criteria: list, concepts_missing: list,
-                concepts_covered: list, factual_errors: list) -> dict:
-    """Apply deterministic caps. Returns per-criterion results + gate trace."""
+                concepts_covered: list, factual_errors: list,
+                gates: dict = None) -> dict:
+    """Apply deterministic caps. Returns per-criterion results + gate trace.
+    `gates` allows bounded, DB-tuned overrides (consolidation service);
+    defaults to the static GATES config. Pure function either way."""
+    GATES_ACTIVE = {**GATES, **(gates or {})}
     gates_hit = []
     by_name = { (c.get("name") or "").lower(): c for c in criteria }
     results = []
@@ -142,17 +146,17 @@ def apply_gates(criteria: list, rubric_criteria: list, concepts_missing: list,
         pct = int(judged.get("score_pct", 0)) if judged else 0
         evidence = judged.get("evidence_quotes", []) if judged else []
 
-        if not evidence and pct > GATES["no_evidence_cap"]:
+        if not evidence and pct > GATES_ACTIVE["no_evidence_cap"]:
             gates_hit.append({"gate": "no_evidence", "criterion": name,
-                              "from": pct, "to": GATES["no_evidence_cap"]})
-            pct = GATES["no_evidence_cap"]
+                              "from": pct, "to": GATES_ACTIVE["no_evidence_cap"]})
+            pct = GATES_ACTIVE["no_evidence_cap"]
 
         if (judged and not judged.get("case_specific")
                 and any(k in name.lower() for k in _SPECIFICITY_BOUND)
-                and pct > GATES["generic_answer_cap"]):
+                and pct > GATES_ACTIVE["generic_answer_cap"]):
             gates_hit.append({"gate": "generic_answer", "criterion": name,
-                              "from": pct, "to": GATES["generic_answer_cap"]})
-            pct = GATES["generic_answer_cap"]
+                              "from": pct, "to": GATES_ACTIVE["generic_answer_cap"]})
+            pct = GATES_ACTIVE["generic_answer_cap"]
 
         pct = max(0, min(100, pct))
         results.append({
@@ -169,8 +173,8 @@ def apply_gates(criteria: list, rubric_criteria: list, concepts_missing: list,
     must_total = len(concepts_missing) + len(concepts_covered)
     if must_total > 0:
         ratio = len(concepts_covered) / must_total
-        if ratio < GATES["concept_min_ratio"]:
-            total_cap = GATES["concept_total_cap"]
+        if ratio < GATES_ACTIVE["concept_min_ratio"]:
+            total_cap = GATES_ACTIVE["concept_total_cap"]
             gates_hit.append({"gate": "concept_coverage", "criterion": "TOTAL",
                               "from": 100, "to": total_cap,
                               "detail": f"{len(concepts_covered)}/{must_total} concepts covered"})
@@ -178,7 +182,7 @@ def apply_gates(criteria: list, rubric_criteria: list, concepts_missing: list,
     deduction = 0
     majors = [e for e in factual_errors if e.get("severity") == "major"][:3]
     minors = [e for e in factual_errors if e.get("severity") == "minor"][:3]
-    deduction = len(majors) * GATES["major_error_deduction"] + len(minors) * GATES["minor_error_deduction"]
+    deduction = len(majors) * GATES_ACTIVE["major_error_deduction"] + len(minors) * GATES_ACTIVE["minor_error_deduction"]
     if deduction:
         gates_hit.append({"gate": "factual_errors", "criterion": "TOTAL",
                           "from": 0, "to": -deduction,
@@ -308,7 +312,7 @@ def review_with_knowledge(scope_type: str, scope_id: int, raw_source: dict,
     if known is None:
         return None
     return run_review(
-        scope_type=scope_type,
+        scope_type=scope_type, scope_id=scope_id,
         pack=known["pack"], pack_version=known["version"],
         rubric=rubric, student_answer=student_answer, word_count=word_count,
         word_limit_min=word_limit_min, word_limit_max=word_limit_max,
@@ -317,16 +321,33 @@ def review_with_knowledge(scope_type: str, scope_id: int, raw_source: dict,
 
 def run_review(scope_type: str, pack: dict, pack_version: int,
                rubric: dict, student_answer: str, word_count: int,
-               word_limit_min: int, word_limit_max: int) -> dict:
+               word_limit_min: int, word_limit_max: int,
+               scope_id: int = 0) -> dict:
     """Full pipeline for one submission. Raises on AI failure — the route
     owns the fallback to the legacy path."""
     rubric_criteria = rubric.get("criteria", []) or []
     criteria_list = "\n".join(f"- \"{c['name']}\" (max {c['maxScore']} points)"
                               for c in rubric_criteria)
 
+    # What the agent learned in its sleep: calibration notes + verified
+    # anchors for this scope, plus bounded gate overrides. All optional —
+    # a scope the agent hasn't slept on reviews exactly as before.
+    sleep_context, gate_overrides = "", {}
+    if scope_id:
+        try:
+            from app.services import consolidation_service
+            sleep_context = consolidation_service.review_context(scope_type, scope_id)
+            tuned = consolidation_service.get_config_float(
+                "generic_answer_cap", GATES["generic_answer_cap"])
+            if tuned != GATES["generic_answer_cap"]:
+                gate_overrides["generic_answer_cap"] = int(tuned)
+        except Exception as ce:
+            print(f"⚠️ sleep context unavailable: {ce}")
+
     static_block = (  # cacheable prefix — identical for every student on this item
         f"{render_for_prompt(pack)}\n\n"
-        f"=== RUBRIC CRITERIA (judge each BY NAME) ===\n{criteria_list}\n\n"
+        + (f"{sleep_context}\n\n" if sleep_context else "")
+        + f"=== RUBRIC CRITERIA (judge each BY NAME) ===\n{criteria_list}\n\n"
         f"{AI_DETECTION_CALIBRATION}\n\n{_JUDGE_INSTRUCTIONS}"
     )
     student_block = ai_service.frame_student_text(student_answer)
@@ -353,7 +374,7 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
 
     gated = apply_gates(review["criteria"], rubric_criteria,
                         review["concepts_missing"], review["concepts_covered"],
-                        review["factual_errors"])
+                        review["factual_errors"], gates=gate_overrides)
     scores = aggregate(gated, word_count, word_limit_min, word_limit_max)
 
     ai_pct = max(0, min(100, int(review["authorship"]["ai_likelihood_percent"])))

@@ -89,9 +89,42 @@ async def serve_ui():
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
+# ===== Nightly consolidation (the agent's sleep) =====
+# HF Spaces have no cron; APScheduler runs in-process. 21:00 UTC = 02:30 IST.
+# Idempotent job — a Space restart mid-cycle is harmless. Manual trigger:
+# POST /api/admin/consolidate with x-admin-key = ADMIN_JOB_KEY.
+
+def _start_scheduler():
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.cron import CronTrigger
+        from app.services.consolidation_service import run_all_tenants
+
+        scheduler = AsyncIOScheduler()
+        scheduler.add_job(run_all_tenants, CronTrigger(hour=21, minute=0),
+                          id="nightly_consolidation", replace_existing=True)
+        scheduler.start()
+        print("   🌙 Nightly consolidation scheduled (21:00 UTC / 02:30 IST)")
+    except Exception as e:
+        print(f"   ⚠️ Scheduler unavailable: {e} — use POST /api/admin/consolidate")
+
+
+@app.post("/api/admin/consolidate")
+async def trigger_consolidation(x_admin_key: str = Header(default="")):
+    expected = os.getenv("ADMIN_JOB_KEY", "")
+    if not expected or x_admin_key != expected:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=401, detail="invalid x-admin-key")
+    from app.services.consolidation_service import run_all_tenants
+    import asyncio
+    result = await asyncio.to_thread(run_all_tenants)
+    return {"success": True, "summary": result}
+
+
 # ===== Startup =====
 @app.on_event("startup")
 async def startup():
+    _start_scheduler()
     print("")
     print("🚀 Upskillize AiRev Agent v3.1 (Multi-Tenant — per-tenant keys)")
     print(f"   AI Provider     : {os.getenv('AI_PROVIDER', 'huggingface')}")
