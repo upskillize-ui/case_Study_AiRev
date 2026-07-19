@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from typing import Optional, Dict
 
 from app.database import query, execute
-from app.services import ai_service, knowledge_service, prefilter_service
+from app.services import ai_service, knowledge_service, prefilter_service, media_service
 from app.services.feedback_service import ai_verdict
 from app.prompts import AI_DETECTION_CALIBRATION
 
@@ -124,7 +124,7 @@ def _ensure_insight_table() -> str:
 # Returns ALL published sessions for any student.
 # New sessions added by faculty auto-appear here for all students.
 @router.get("/industry-sessions-for-student/{student_id}")
-async def get_sessions_for_student(student_id: int):
+async def get_sessions_for_student(student_id: int, background_tasks: BackgroundTasks):
     sess_tbl = _session_table()
     if not sess_tbl:
         return {"success": True, "sessions": [], "total": 0,
@@ -138,6 +138,8 @@ async def get_sessions_for_student(student_id: int):
     c_topics   = _col(sess_tbl, "key_topics", "topics")
     c_outline  = _col(sess_tbl, "session_outline", "outline", "agenda")
     c_status   = _col(sess_tbl, "status", "is_active", "published")
+    c_video    = _col(sess_tbl, "video_url", "recording_url", "youtube_url",
+                      "video_link", "session_recording", "recording", "video")
     c_id       = "id"
 
     # Debug: log discovered config once per process
@@ -155,6 +157,7 @@ async def get_sessions_for_student(student_id: int):
     if c_desc:    selects.append(f"s.{c_desc} AS description")
     if c_topics:  selects.append(f"s.{c_topics} AS key_topics")
     if c_outline: selects.append(f"s.{c_outline} AS session_outline")
+    if c_video:   selects.append(f"s.{c_video} AS video_url")
 
     # Status filter
     if c_status:
@@ -250,6 +253,18 @@ async def get_sessions_for_student(student_id: int):
             "completed":    True,
         })
 
+    # ── Fully-automatic watch trigger: any listed session with a video and
+    # no ready transcript starts processing NOW, so the digest is ready
+    # before submissions begin. Guarded against duplicate starts.
+    if c_video:
+        for row in rows:
+            if row.get("video_url"):
+                try:
+                    media_service.ensure_processing(
+                        row[c_id], row["video_url"], background_tasks)
+                except Exception as me:
+                    print(f"⚠️ watch trigger failed for session {row[c_id]}: {me}")
+
     print(f"ℹ️  Sessions for student {student_id}: found {len(sessions)} | "
           f"ins_tbl={ins_tbl} lms_ins_tbl={lms_ins_tbl}")
     return {"success": True, "sessions": sessions, "total": len(sessions)}
@@ -296,6 +311,8 @@ async def submit_industry_session(req: IndustrySessionInsightRequest,
     c_topics   = _col(sess_tbl, "key_topics", "topics")
     c_outline  = _col(sess_tbl, "session_outline", "outline", "agenda")
     c_transcript = _col(sess_tbl, "video_transcript", "transcript")
+    c_video_sub  = _col(sess_tbl, "video_url", "recording_url", "youtube_url",
+                        "video_link", "session_recording", "recording", "video")
     c_examples = _col(sess_tbl, "examples_discussed", "examples")
     c_cases    = _col(sess_tbl, "case_studies", "cases")
     c_quotes   = _col(sess_tbl, "key_quotes", "quotes")
@@ -309,6 +326,7 @@ async def submit_industry_session(req: IndustrySessionInsightRequest,
     if c_topics:     sel.append(f"{c_topics} AS key_topics")
     if c_outline:    sel.append(f"{c_outline} AS session_outline")
     if c_transcript: sel.append(f"{c_transcript} AS video_transcript")
+    if c_video_sub:  sel.append(f"{c_video_sub} AS video_url")
     if c_examples:   sel.append(f"{c_examples} AS examples_discussed")
     if c_cases:      sel.append(f"{c_cases} AS case_studies")
     if c_quotes:     sel.append(f"{c_quotes} AS key_quotes")
@@ -329,9 +347,21 @@ async def submit_industry_session(req: IndustrySessionInsightRequest,
 
     title       = str(s.get("title") or f"Session #{req.sessionId}")
     mentor      = s.get("mentor_name") or "Industry Mentor"
+
+    # ── Senses: prefer the WATCHED transcript (full video, filtered to pure
+    # content) over whatever text the session row carries. If the video
+    # hasn't been watched yet, start now — this review proceeds on metadata
+    # and the next one gets the full session automatically.
+    watched = None
+    try:
+        watched = media_service.get_clean_transcript(req.sessionId)
+        if not watched and s.get("video_url"):
+            media_service.ensure_processing(req.sessionId, s["video_url"], background_tasks)
+    except Exception as me:
+        print(f"⚠️ media check failed (reviewing from stored metadata): {me}")
     key_topics  = safe_json(s.get("key_topics"))
     outline     = s.get("session_outline") or ""
-    transcript  = s.get("video_transcript") or ""
+    transcript  = watched or s.get("video_transcript") or ""
     description = s.get("description") or ""
     examples    = s.get("examples_discussed") or ""
     cases       = s.get("case_studies") or ""
@@ -616,6 +646,14 @@ Return ONLY valid JSON (no markdown, no preamble, no backticks):
         "feedback": {**raw, "score": score, "grade": grade},
         "_meta": {"provider": provider, "elapsed_ms": elapsed},
     }
+
+
+# ─── GET /api/review/session-watch-status/{session_id} ────────────────────────
+# Ops visibility: has the agent watched this session's video yet?
+@router.get("/session-watch-status/{session_id}")
+async def session_watch_status(session_id: int):
+    return {"success": True, "sessionId": session_id,
+            **media_service.watch_status(session_id)}
 
 
 # ─── GET /api/review/industry-session-history/{student_id}/{session_id} ───────
