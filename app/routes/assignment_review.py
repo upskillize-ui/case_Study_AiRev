@@ -61,6 +61,8 @@ class SubmitAssignmentRequest(BaseModel):
 
 @router.get("/assignments/{student_id}")
 async def list_student_assignments(student_id: int, tenant: Tenant = Depends(get_tenant)):
+    from app.database import canonical_student_id
+    student_id = canonical_student_id(student_id)
     rows = assignment_db_service.get_student_assignments(tenant, student_id)
 
     out = []
@@ -99,6 +101,8 @@ async def submit_and_review_assignment(
     req: SubmitAssignmentRequest,
     tenant: Tenant = Depends(get_tenant),
 ):
+    from app.database import canonical_student_id
+    req.studentId = canonical_student_id(req.studentId)
     start_time = time.time()
     print(f"[ASSIGNMENT][{tenant.id}] submission: student={req.studentId}, assignment={req.assignmentId}")
 
@@ -154,13 +158,20 @@ async def submit_and_review_assignment(
             tenant, req.assignmentId, req.studentId
         )
         if prior:
-            if prior.get("file_url"):
+            # Coursework stores the upload in file_path (not file_url) and may
+            # use an LMS-relative path — resolve both. Live finding 19 Jul.
+            prior_url = prior.get("file_url") or prior.get("file_path")
+            if prior_url:
+                if prior_url.startswith("/"):
+                    prior_url = "https://upskillize-lms-backend.onrender.com" + prior_url
                 extracted, why = extract_text_from_url(
-                    prior["file_url"], prior.get("file_name", "")
+                    prior_url, prior.get("file_name", "")
                 )
                 if extracted:
-                    file_used = prior.get("file_name") or prior["file_url"]
+                    file_used = prior.get("file_name") or prior_url
                     parts.append(extracted)
+                elif why:
+                    print(f"[ASSIGNMENT] prior file extraction failed: {why}")
             db_notes = clean_text(prior.get("notes") or "")
             if db_notes:
                 parts.append(db_notes)

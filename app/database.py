@@ -37,6 +37,30 @@ DUAL_ID_MATCH = (
     "COALESCE((SELECT id FROM students WHERE user_id = %s LIMIT 1), -1))")
 
 
+def canonical_student_id(given: int) -> int:
+    """Normalize an incoming student identifier to students.id — the form
+    the Coursework module writes and the canonical id for ALL AiRev reads
+    and writes.
+
+    The AiRev panel is mounted with users.id (frontend line:
+    `<AiRevPanel studentId={user.id}>`), so map users.id -> students.id via
+    the students table. If no mapping exists, the caller already sent
+    students.id (standalone UI, older integrations) — use it as-is.
+    Fail-open: on any DB error, return the given id unchanged rather than
+    blocking a review. DUAL_ID_MATCH remains on list queries so legacy rows
+    written under users.id stay visible."""
+    try:
+        rows = query("SELECT id FROM students WHERE user_id = %s LIMIT 1", (given,))
+        if rows and rows[0].get("id"):
+            resolved = int(rows[0]["id"])
+            if resolved != given:
+                print(f"ℹ️  student id normalized: users.id {given} -> students.id {resolved}")
+            return resolved
+    except Exception as e:
+        print(f"⚠️ canonical_student_id failed for {given}: {e} — using given id")
+    return given
+
+
 def get_current_tenant() -> Optional[Tenant]:
     return _current_tenant.get()
 

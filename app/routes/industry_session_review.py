@@ -204,6 +204,8 @@ def _ensure_insight_table() -> str:
 # New sessions added by faculty auto-appear here for all students.
 @router.get("/industry-sessions-for-student/{student_id}")
 async def get_sessions_for_student(student_id: int, background_tasks: BackgroundTasks):
+    from app.database import canonical_student_id
+    student_id = canonical_student_id(student_id)
     sess_tbl = _session_table()
     if not sess_tbl:
         return {"success": True, "sessions": [], "total": 0,
@@ -354,6 +356,8 @@ async def get_sessions_for_student(student_id: int, background_tasks: Background
 @router.post("/submit-industry-session")
 async def submit_industry_session(req: IndustrySessionInsightRequest,
                                   background_tasks: BackgroundTasks):
+    from app.database import canonical_student_id
+    req.studentId = canonical_student_id(req.studentId)
     start = time.time()
     print(f"ℹ️  Session review start: student={req.studentId} session={req.sessionId}")
 
@@ -753,6 +757,8 @@ async def session_watch_status(session_id: int):
 # ─── GET /api/review/industry-session-history/{student_id}/{session_id} ───────
 @router.get("/industry-session-history/{student_id}/{session_id}")
 async def get_session_history(student_id: int, session_id: int):
+    from app.database import canonical_student_id
+    student_id = canonical_student_id(student_id)
     ins_tbl = _insight_table()
     if not ins_tbl:
         return {"success": True, "history": []}

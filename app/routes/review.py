@@ -62,6 +62,8 @@ def _attempt_policy_block(case_study_id: int, student_id: int,
 # ── POST /api/review/submit ────────────────────────────────────────────────
 @router.post("/submit")
 async def submit_and_review(req: SubmitAnswerRequest, background_tasks: BackgroundTasks):
+    from app.database import canonical_student_id
+    req.studentId = canonical_student_id(req.studentId)
     start_time = time.time()
     print(f"ℹ️  New submission: student={req.studentId}, caseStudy={req.caseStudyId}")
 
@@ -628,6 +630,8 @@ async def test_review(req: TestReviewRequest):
 # ── GET /api/review/student-progress/{student_id} ─────────────────────────
 @router.get("/student-progress/{student_id}")
 async def student_progress(student_id: int):
+    from app.database import canonical_student_id
+    student_id = canonical_student_id(student_id)
     progress = db_service.get_student_progress(student_id)
     return {"success": True, "student": progress}
 
@@ -635,6 +639,8 @@ async def student_progress(student_id: int):
 # ── GET /api/review/case-study-history/{student_id}/{case_study_id} ───────
 @router.get("/case-study-history/{student_id}/{case_study_id}")
 async def case_study_history(student_id: int, case_study_id: int):
+    from app.database import canonical_student_id
+    student_id = canonical_student_id(student_id)
     history = db_service.get_submission_history(case_study_id, student_id)
     return {"success": True, "history": history}
 
@@ -646,6 +652,8 @@ async def case_study_history(student_id: int, case_study_id: int):
 
 @router.get("/case-studies-for-student/{student_id}")
 async def case_studies_for_student(student_id: int):
+    from app.database import canonical_student_id
+    student_id = canonical_student_id(student_id)
     # DUAL_ID_MATCH: Coursework-module submissions can be stored under
     # users.id while AiRev is called with students.id — match either.
     # Same fix family as assignments (live finding 19 Jul).
@@ -839,6 +847,8 @@ def _build_garbage_response(submission, case_study, text, word_count, reason, st
 # ── GET /api/review/capstones-for-student/{student_id} ────────────────────
 @router.get("/capstones-for-student/{student_id}")
 async def capstones_for_student(student_id: int):
+    from app.database import canonical_student_id
+    student_id = canonical_student_id(student_id)
     from app.database import query
     # capstones table may use users.id instead of students.id
     # Try both: direct match + lookup via students table
@@ -907,7 +917,8 @@ async def submit_capstone_review(req: dict):
 
     start_time = _time.time()
     capstone_id = req.get("capstoneId")
-    student_id  = req.get("studentId")
+    from app.database import canonical_student_id
+    student_id  = canonical_student_id(req.get("studentId") or 0)
     answer_text = (req.get("answerText") or "").strip()
     file_url    = req.get("fileUrl")
     file_name   = req.get("fileName")
