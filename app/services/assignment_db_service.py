@@ -268,11 +268,19 @@ def get_assignment_history(tenant: Tenant, assignment_id: int, student_id: int) 
 # ---------- STUDENT-FACING LISTS ------------------------------------------
 
 def get_student_assignments(tenant: Tenant, student_id: int) -> list:
-    """List of assignments. Submission columns reflect the LATEST attempt
-    (most recent row) since we now INSERT per attempt rather than overwrite."""
-    return tquery(
+    """List of assignments. Submission columns reflect the LATEST attempt.
+
+    ID tolerance (live finding 19 Jul): the LMS Coursework module can store
+    submissions under users.id while AiRev is called with students.id (the
+    same dual-ID reality capstones handle). We match either, resolved via
+    the students table. Self-diagnosing: an empty result logs WHY (no
+    assignments? status mismatch? no submissions under either id?) so a
+    blank AiRev hub is explained in one log line."""
+    id_match = ("student_id IN (%s, COALESCE((SELECT user_id FROM students "
+                "WHERE id = %s LIMIT 1), -1))")
+    rows = tquery(
         tenant,
-        """SELECT
+        f"""SELECT
             a.id, a.title, a.description, a.due_date, a.total_marks, a.status,
             latest.id            AS submission_id,
             latest.grade         AS submission_grade,
@@ -285,16 +293,16 @@ def get_student_assignments(tenant: Tenant, student_id: int) -> list:
               SELECT s1.*
               FROM assignment_submissions s1
               INNER JOIN (
-                  SELECT assignment_id, student_id, MAX(submitted_at) AS max_at
+                  SELECT assignment_id, MAX(submitted_at) AS max_at
                   FROM assignment_submissions
-                  WHERE student_id = %s
-                  GROUP BY assignment_id, student_id
+                  WHERE {id_match}
+                  GROUP BY assignment_id
               ) s2
                 ON s1.assignment_id = s2.assignment_id
-               AND s1.student_id    = s2.student_id
                AND s1.submitted_at  = s2.max_at
+              WHERE s1.{id_match}
           ) latest
-            ON latest.assignment_id = a.id AND latest.student_id = %s
+            ON latest.assignment_id = a.id
           WHERE a.status = 'active'
           ORDER BY
             CASE WHEN latest.status = 'graded'    THEN 3
@@ -303,8 +311,35 @@ def get_student_assignments(tenant: Tenant, student_id: int) -> list:
             a.due_date IS NULL,
             a.due_date ASC,
             a.created_at DESC""",
-        (student_id, student_id),
+        (student_id, student_id, student_id, student_id),
     )
+    _diagnose_if_odd(tenant, student_id, rows)
+    return rows
+
+
+def _diagnose_if_odd(tenant: Tenant, student_id: int, rows: list) -> None:
+    """One log line explaining an empty/submission-less hub. Cheap queries,
+    only run when something looks wrong."""
+    try:
+        if not rows:
+            statuses = tquery(tenant,
+                              "SELECT status, COUNT(*) AS n FROM assignments GROUP BY status")
+            print(f"[ASSIGNMENT] hub EMPTY for student {student_id} — no rows with "
+                  f"status='active'. Statuses in assignments table: "
+                  f"{[(s.get('status'), s.get('n')) for s in statuses]}")
+        elif not any(r.get("submission_id") for r in rows):
+            subs = tquery(tenant,
+                          "SELECT COUNT(*) AS n FROM assignment_submissions "
+                          "WHERE student_id IN (%s, COALESCE((SELECT user_id FROM "
+                          "students WHERE id = %s LIMIT 1), -1))",
+                          (student_id, student_id))
+            print(f"[ASSIGNMENT] {len(rows)} assignments listed but ZERO submissions "
+                  f"matched for student {student_id} (either id form) — "
+                  f"assignment_submissions rows under both ids: "
+                  f"{subs[0]['n'] if subs else '?'}. If the student did submit via "
+                  f"Coursework, the LMS is writing to a different table.")
+    except Exception as e:
+        print(f"[ASSIGNMENT] diagnostics failed: {e}")
 
 
 def get_assignment_submission_by_id(tenant: Tenant, submission_id: int, student_id: int) -> dict | None:
