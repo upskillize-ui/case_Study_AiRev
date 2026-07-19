@@ -34,7 +34,7 @@ MAX_REVIEWED_ATTEMPTS = int(os.getenv("MAX_REVIEWED_ATTEMPTS", "2"))
 from app.utils.text_processor import (
     count_words, clean_text, find_mentioned_concepts
 )
-from app.utils.file_extractor import extract_text_from_url
+from app.utils.file_extractor import extract_text_from_url, extract_upload
 from app.tenants import resolve_tenant_by_key, Tenant
 from app.database import set_current_tenant
 
@@ -56,6 +56,7 @@ class SubmitAssignmentRequest(BaseModel):
     answerText: Optional[str] = ""
     fileUrl: Optional[str] = None
     fileName: Optional[str] = None
+    fileData: Optional[str] = None   # base64 file bytes — storage-free upload path
 
 
 # ---------- GET /api/review/assignments/{student_id} -----------------------
@@ -165,14 +166,16 @@ async def submit_and_review_assignment(
     cleaned_typed = clean_text(req.answerText or "")
     parts: list[str] = []
     file_used = None
+    file_error = None
 
-    if req.fileUrl:
-        extracted, why = extract_text_from_url(req.fileUrl, req.fileName or "")
+    if req.fileData or req.fileUrl:
+        extracted, why = extract_upload(req.fileData, req.fileUrl, req.fileName or "")
         if extracted:
-            file_used = req.fileName or req.fileUrl
+            file_used = req.fileName or req.fileUrl or "uploaded file"
             parts.append(extracted)
             print(f"[ASSIGNMENT] Extracted file: {file_used} ({count_words(extracted)} words)")
         elif why:
+            file_error = why
             print(f"[ASSIGNMENT] Upload extraction failed: {why}")
 
     if cleaned_typed:
@@ -203,9 +206,14 @@ async def submit_and_review_assignment(
 
     if not parts:
         total_time = int((time.time() - start_time) * 1000)
-        msg = ("We couldn't find any answer for this assignment. Upload your work "
-               "as a PDF or Word document, or write your answer in the notes box, "
-               "then click Submit again.")
+        if file_error:
+            msg = (f"We received your file but couldn't read any text from it "
+                   f"({file_error}). Please check it opens correctly, then re-attach "
+                   f"it — or type your answer in the box — and submit again.")
+        else:
+            msg = ("We couldn't find any answer for this assignment. Attach your work "
+                   "(PDF, Word, Excel, image, or text), or type your answer in the box, "
+                   "then click Submit again.")
         return {
             "success": True,
             "submission": {"submissionId": 0, "attemptNumber": 0},
@@ -224,11 +232,16 @@ async def submit_and_review_assignment(
         return {"success": False, "blocked": reflex["reason"],
                 "message": reflex["message"]}
 
+    # Persist the COMBINED text (typed + extracted file) as the submission's
+    # stored answer. This is "read once, remember forever": the file is parsed
+    # exactly once at submit time, so New Review and Re-analyze later read the
+    # text straight from the DB with no dependency on the file still being
+    # fetchable. file_url/file_name are still recorded for provenance.
     submission = assignment_db_service.save_assignment_submission(
         tenant,
         req.assignmentId,
         req.studentId,
-        cleaned_typed or None,
+        combined or None,
         req.fileUrl,
         req.fileName,
     )
@@ -463,8 +476,8 @@ def _pipeline_assignment_response(tenant, submission, r, word_count, start_time,
         "coveredConcepts":  r["conceptsCovered"],
         "suggestedModules": [],
         "detailedFeedback": r["detailedFeedback"],
-            "feedbackPoints":  r.get("feedbackPoints", []),
-            "hardTruth":       r.get("hardTruth", ""),
+        "feedbackPoints":   r.get("feedbackPoints", []),
+        "hardTruth":        r.get("hardTruth", ""),
         "wordCount":        word_count,
         "wordCountMessage": scores["wordCountNote"],
         "scoreEmoji":       "",
@@ -511,6 +524,8 @@ def _build_response(submission: dict, result: dict, summary: str, start_time: fl
             "coveredConcepts":        result.get("coveredConcepts", []),
             "suggestions":            result.get("suggestedModules", []),
             "detailedFeedback":       result.get("detailedFeedback", ""),
+            "feedbackPoints":         result.get("feedbackPoints", []),
+            "hardTruth":              result.get("hardTruth", ""),
             "wordCount":              result.get("wordCount", 0),
             "wordCountMessage":       result.get("wordCountMessage", ""),
             "encouragement":          result.get("encouragement", ""),
@@ -537,6 +552,7 @@ def _empty_feedback(msg: str, helpful: bool = True) -> dict:
         ] if helpful else [],
         "missingConcepts": [], "coveredConcepts": [], "suggestions": [],
         "detailedFeedback": msg,
+        "feedbackPoints": [], "hardTruth": "",
         "wordCount": 0, "wordCountMessage": "",
         "encouragement": "Upload your work and click Submit — we'll take it from there.",
         "aiLikelihoodPercent": None, "humanLikelihoodPercent": None,

@@ -35,6 +35,7 @@ class IndustrySessionInsightRequest(BaseModel):
     insightText: Optional[str] = ""
     fileUrl:     Optional[str] = None
     fileName:    Optional[str] = None
+    fileData:    Optional[str] = None   # base64 file bytes — storage-free upload path
 
 
 _INSIGHT_ALIASES = ("insight_text", "text", "answerText", "answer_text",
@@ -523,12 +524,14 @@ async def submit_industry_session(req: IndustrySessionInsightRequest,
                         print(f"ℹ️  Pulled insight from LMS session_feedback ({len(insight)} chars)")
             except Exception as ex:
                 print(f"⚠️ LMS insight fetch error: {ex}")
-    if req.fileUrl:
+    if req.fileData or req.fileUrl:
         try:
-            from app.utils.file_extractor import extract_text_from_url
-            extracted, _ = extract_text_from_url(req.fileUrl, req.fileName or "")
+            from app.utils.file_extractor import extract_upload
+            extracted, why = extract_upload(req.fileData, req.fileUrl, req.fileName or "")
             if extracted:
                 insight = f"{insight}\n\n{extracted}".strip()
+            elif why:
+                print(f"⚠️ File extract skipped: {why}")
         except Exception as ex:
             print(f"⚠️ File extract error: {ex}")
 

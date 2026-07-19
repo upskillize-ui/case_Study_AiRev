@@ -18,6 +18,7 @@ class SubmitAnswerRequest(BaseModel):
     answerText: str = ""
     fileUrl: Optional[str] = None
     fileName: Optional[str] = None
+    fileData: Optional[str] = None   # base64 file bytes — storage-free upload path
 
 
 class TestReviewRequest(BaseModel):

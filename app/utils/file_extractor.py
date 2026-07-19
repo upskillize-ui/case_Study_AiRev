@@ -62,10 +62,60 @@ def extract_text_from_url(file_url: str, file_name: str = "") -> Tuple[str, str]
     if data is None:
         return "", why
 
+    return extract_text_from_bytes(data, file_name or file_url)
+
+
+def extract_text_from_base64(b64: str, file_name: str = "") -> Tuple[str, str]:
+    """Decode a base64 payload (optionally a data: URL) and extract its text.
+
+    This is the storage-free upload path: the browser sends the file's bytes
+    inline, so the agent never depends on Cloudinary or any external store.
+    Returns (extracted_text, reason) — same contract as extract_text_from_url.
+    """
+    if not b64:
+        return "", "no file data provided"
+    payload = b64.strip()
+    # Tolerate data-URL prefixes ("data:application/pdf;base64,....")
+    if payload.startswith("data:") and "," in payload:
+        payload = payload.split(",", 1)[1]
+    try:
+        data = base64.b64decode(payload, validate=False)
+    except Exception as e:
+        return "", f"base64 decode failed: {type(e).__name__}"
+    if not data:
+        return "", "file data was empty after decode"
+    return extract_text_from_bytes(data, file_name)
+
+
+def extract_upload(file_data: str = None, file_url: str = None,
+                   file_name: str = "") -> Tuple[str, str]:
+    """Single entry point every submit route uses for an attached file.
+
+    Prefers inline bytes (base64, storage-free) and falls back to a URL when
+    one is supplied — so a route works whether the browser sent the file's
+    bytes or a Cloudinary/LMS link. Returns (extracted_text, reason).
+    """
+    if file_data:
+        return extract_text_from_base64(file_data, file_name)
+    if file_url:
+        return extract_text_from_url(file_url, file_name)
+    return "", "no file provided"
+
+
+def extract_text_from_bytes(data: bytes, file_name: str = "") -> Tuple[str, str]:
+    """Extract reviewable text from already-in-memory file bytes.
+
+    Shared by both the URL path (download then extract) and the base64 path
+    (decode then extract), so every supported format behaves identically no
+    matter how the bytes arrived. Returns (extracted_text, reason).
+    """
+    if not data:
+        return "", "no file bytes provided"
+
     if len(data) > MAX_FILE_BYTES:
         return "", f"file too large ({len(data) // 1024} KB > {MAX_FILE_BYTES // 1024} KB)"
 
-    name = (file_name or file_url).lower()
+    name = (file_name or "").lower()
     ext = "." + name.rsplit(".", 1)[-1] if "." in name else ""
 
     try:

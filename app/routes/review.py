@@ -87,10 +87,10 @@ async def submit_and_review(req: SubmitAnswerRequest, background_tasks: Backgrou
     if cleaned:
         parts.append(cleaned)
 
-    if req.fileUrl:
-        extracted, why = extract_text_from_url(req.fileUrl, req.fileName or "")
+    if req.fileData or req.fileUrl:
+        extracted, why = extract_upload(req.fileData, req.fileUrl, req.fileName or "")
         if extracted:
-            file_used = req.fileName or req.fileUrl
+            file_used = req.fileName or req.fileUrl or "uploaded file"
             print(f"📄 Extracted file (this submission): {file_used} "
                   f"({count_words(extracted)} words)")
             if not cleaned or count_words(extracted) > word_count * 1.2:
@@ -428,7 +428,7 @@ def _remember_student(student_id, scope_type, scope_id, submission_id, r):
         print(f"⚠️ person-memory update failed (review unaffected): {e}")
 
 
-def _capstone_pipeline_response(capstone, r, word_count, start_time):
+def _capstone_pipeline_response(capstone, r, word_count, start_time, student_text=""):
     """Persist + shape the capstone response from a pipeline result."""
     import time as _time
     from app.database import execute
@@ -449,6 +449,9 @@ def _capstone_pipeline_response(capstone, r, word_count, start_time):
             "hardTruth":       r.get("hardTruth", ""),
                 "howYouScored":     r["howYouScored"],
                 "decisions":        r["decisions"],
+                # "read once, remember forever": stash the extracted submission
+                # text so Re-analyze can re-score without the file being re-sent.
+                "submissionText":   (student_text or "")[:55000],
             }, ensure_ascii=False), capstone["id"]),
         )
     except Exception as db_err:
@@ -955,6 +958,7 @@ async def submit_capstone_review(req: dict):
     answer_text = (req.get("answerText") or "").strip()
     file_url    = req.get("fileUrl")
     file_name   = req.get("fileName")
+    file_data   = req.get("fileData")   # base64 file bytes — storage-free path
 
     if not capstone_id or not student_id:
         raise HTTPException(status_code=400, detail="capstoneId and studentId are required")
@@ -987,7 +991,16 @@ async def submit_capstone_review(req: dict):
     parts = []
     if answer_text:
         parts.append(answer_text)
-    if file_url:
+    if file_data:
+        # Storage-free path: browser sent the file's bytes inline.
+        from app.utils.file_extractor import extract_text_from_base64
+        extracted, why = extract_text_from_base64(file_data, file_name or "")
+        if extracted:
+            print(f"📄 Extracted capstone file (inline): {file_name} ({len(extracted.split())} words)")
+            parts.append(extracted)
+        elif why:
+            print(f"📄 Capstone inline file extraction failed: {why}")
+    elif file_url:
         # Resolve relative LMS paths (e.g. /uploads/capstone/foo.pdf) to full URL.
         # The LMS backend serves /uploads as static files. Cloudinary URLs already
         # start with https:// so this is a no-op for those.
@@ -1032,6 +1045,21 @@ async def submit_capstone_review(req: dict):
             parts.append(extracted)
         elif why:
             print(f"📄 Prior capstone file extraction failed: {why}")
+
+    # Fallback 3: a prior review stashed the extracted submission text in the
+    # capstones.feedback JSON. This is what makes Re-analyze work storage-free —
+    # the file was parsed once at first submit and its text lives in the DB.
+    if not parts:
+        try:
+            prev = query("SELECT feedback FROM capstones WHERE id = %s LIMIT 1", (capstone["id"],))
+            if prev and prev[0].get("feedback"):
+                stored = json.loads(prev[0]["feedback"])
+                prior_text = (stored.get("submissionText") or "").strip()
+                if prior_text:
+                    print(f"📄 Reusing stored capstone text ({len(prior_text.split())} words) for re-analyze")
+                    parts.append(prior_text)
+        except Exception as ex:
+            print(f"[CAPSTONE] stored-text fallback failed: {ex}")
 
     if not parts:
         # State exactly which sources were empty — a "no content" mystery
@@ -1098,7 +1126,8 @@ async def submit_capstone_review(req: dict):
             if r is not None:
                 _remember_student(student_id, "capstone", capstone["id"],
                                   capstone["id"], r)
-                return _capstone_pipeline_response(capstone, r, word_count, start_time)
+                return _capstone_pipeline_response(capstone, r, word_count, start_time,
+                                                   student_text=cleaned)
         except Exception as e:
             print(f"⚠️  Capstone pipeline failed, falling back to legacy: {e}")
 
@@ -1144,6 +1173,7 @@ async def submit_capstone_review(req: dict):
                 "strengths":        feedback["strengths"],
                 "improvements":     feedback["improvements"],
                 "detailedFeedback": feedback["detailed"],
+                "submissionText":   (cleaned or "")[:55000],
             }), capstone["id"]),
         )
     except Exception as db_err:
