@@ -276,8 +276,7 @@ def get_student_assignments(tenant: Tenant, student_id: int) -> list:
     the students table. Self-diagnosing: an empty result logs WHY (no
     assignments? status mismatch? no submissions under either id?) so a
     blank AiRev hub is explained in one log line."""
-    id_match = ("student_id IN (%s, COALESCE((SELECT user_id FROM students "
-                "WHERE id = %s LIMIT 1), -1))")
+    from app.database import DUAL_ID_MATCH as id_match
     rows = tquery(
         tenant,
         f"""SELECT

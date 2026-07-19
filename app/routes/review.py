@@ -646,9 +646,12 @@ async def case_study_history(student_id: int, case_study_id: int):
 
 @router.get("/case-studies-for-student/{student_id}")
 async def case_studies_for_student(student_id: int):
-    from app.database import query
+    # DUAL_ID_MATCH: Coursework-module submissions can be stored under
+    # users.id while AiRev is called with students.id — match either.
+    # Same fix family as assignments (live finding 19 Jul).
+    from app.database import query, DUAL_ID_MATCH
     rows = query(
-        """SELECT cs.id, cs.course_id, cs.title, cs.description, cs.due_date,
+        f"""SELECT cs.id, cs.course_id, cs.title, cs.description, cs.due_date,
                   cs.total_marks, cs.status, cs.word_limit, cs.created_at,
                   latest.id            AS submission_id,
                   latest.grade         AS submission_grade,
@@ -661,20 +664,28 @@ async def case_studies_for_student(student_id: int):
                SELECT s1.*
                FROM case_study_submissions s1
                INNER JOIN (
-                   SELECT case_study_id, student_id, MAX(submitted_at) AS max_at
+                   SELECT case_study_id, MAX(submitted_at) AS max_at
                    FROM case_study_submissions
-                   WHERE student_id = %s
-                   GROUP BY case_study_id, student_id
+                   WHERE {DUAL_ID_MATCH}
+                   GROUP BY case_study_id
                ) s2
                  ON s1.case_study_id = s2.case_study_id
-                AND s1.student_id    = s2.student_id
                 AND s1.submitted_at  = s2.max_at
+               WHERE s1.{DUAL_ID_MATCH}
            ) latest
              ON latest.case_study_id = cs.id
            WHERE cs.status IN ('published', 'active')
            ORDER BY cs.created_at DESC""",
-        (student_id,),
+        (student_id, student_id, student_id, student_id),
     )
+    if rows and not any(r.get("submission_id") for r in rows):
+        from app.database import query as q2
+        subs = q2("SELECT COUNT(*) AS n FROM case_study_submissions "
+                  f"WHERE {DUAL_ID_MATCH}", (student_id, student_id))
+        print(f"ℹ️  Case-study hub: {len(rows)} studies, ZERO submissions matched "
+              f"for student {student_id} (either id). Rows under both ids: "
+              f"{subs[0]['n'] if subs else '?'}. If Coursework shows a submission, "
+              f"the LMS writes case studies to a different table.")
 
     out = []
     for r in rows:

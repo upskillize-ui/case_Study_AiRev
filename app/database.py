@@ -23,6 +23,16 @@ def set_current_tenant(tenant: Tenant):
     _current_tenant.set(tenant)
 
 
+# The LMS carries TWO student identities: students.id (AiRev calls) and
+# users.id (Coursework-module writes). Any submission lookup must match
+# either, resolved via the students table. ONE definition — every list
+# query imports this instead of re-inventing it (live findings 19 Jul:
+# assignments AND case studies both missed Coursework submissions).
+# Takes two params: (student_id, student_id).
+DUAL_ID_MATCH = ("student_id IN (%s, COALESCE((SELECT user_id FROM students "
+                 "WHERE id = %s LIMIT 1), -1))")
+
+
 def get_current_tenant() -> Optional[Tenant]:
     return _current_tenant.get()
 
