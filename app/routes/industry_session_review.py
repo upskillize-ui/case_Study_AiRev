@@ -7,7 +7,8 @@ import time
 import json
 import os
 import hashlib
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
+from app.services.capacity import capacity_guard
 from pydantic import BaseModel
 from typing import Optional, Dict
 
@@ -353,7 +354,7 @@ async def get_sessions_for_student(student_id: int, background_tasks: Background
 
 # ─── POST /api/review/submit-industry-session ─────────────────────────────────
 # Concurrent-safe: each request is fully independent, no shared state.
-@router.post("/submit-industry-session")
+@router.post("/submit-industry-session", dependencies=[Depends(capacity_guard)])
 async def submit_industry_session(req: IndustrySessionInsightRequest,
                                   background_tasks: BackgroundTasks):
     from app.database import canonical_student_id

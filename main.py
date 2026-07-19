@@ -12,10 +12,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
+from fastapi.responses import JSONResponse
 from app.routes.review import router as review_router
 from app.routes.assignment_review import router as assignment_router
 from app.routes.industry_session_review import router as industry_session_router   # ← ADD THIS
 from app.routes.exceptions import router as exceptions_router
+from app.services.capacity import CapacityFull, BUSY_MESSAGE, RETRY_AFTER_SECONDS, snapshot as capacity_snapshot
 from app.tenants import resolve_tenant_by_key, all_tenant_ids, configured_tenant_ids, TENANTS, Tenant
 from app.database import test_all_tenants, set_current_tenant
 
@@ -60,6 +62,19 @@ app.include_router(exceptions_router,        dependencies=[Depends(require_auth_
 
 # ===== Public endpoints (no auth) =====
 
+@app.exception_handler(CapacityFull)
+async def _capacity_full_handler(request, exc):
+    # HTTP 503 + Retry-After for correctness with any caller; body carries
+    # blocked="capacity" so the AiRev panel renders the courteous notice using
+    # its existing blocked-response handling.
+    return JSONResponse(
+        status_code=503,
+        headers={"Retry-After": str(RETRY_AFTER_SECONDS)},
+        content={"success": False, "blocked": "capacity", "busy": True,
+                 "retryAfterSeconds": RETRY_AFTER_SECONDS, "message": BUSY_MESSAGE},
+    )
+
+
 @app.get("/health")
 async def health():
     return {
@@ -67,8 +82,10 @@ async def health():
         "agent": "upskillize-multi-tenant-reviewer",
         "version": "3.1.0",
         "aiProvider": os.getenv("AI_PROVIDER", "huggingface"),
+        "model": os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5"),
         "tenants": all_tenant_ids(),
         "tenantsConfigured": configured_tenant_ids(),
+        "load": capacity_snapshot(),
     }
 
 

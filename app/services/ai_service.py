@@ -161,8 +161,8 @@ def _hf_chat(prompt: str, system: str = SYSTEM_MSG_HF, min_tokens: int = 0):
 # repeat reviews of the same question pay ~10% on the cached prefix.
 
 MODEL_TIERS = {
-    "default": lambda: os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"),
-    "strong":  lambda: os.getenv("ANTHROPIC_MODEL_STRONG", "claude-sonnet-4-5-20250929"),
+    "default": lambda: os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5"),
+    "strong":  lambda: os.getenv("ANTHROPIC_MODEL_STRONG", "claude-sonnet-5"),
 }
 
 STUDENT_TEXT_FRAME = (
@@ -241,7 +241,7 @@ def call_claude(prompt: str, max_tokens: int = 2000, system: str = SYSTEM_MSG_CL
         try:
             import anthropic
             client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-            model = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+            model = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5")
             response = client.messages.create(
                 model=model,
                 max_tokens=max_tokens,
@@ -278,7 +278,7 @@ def _analyze_with_claude(
     )
 
     # Default to Haiku 4.5 for speed. Override via ANTHROPIC_MODEL env var.
-    model = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+    model = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5")
 
     response = client.messages.create(
         model=model,

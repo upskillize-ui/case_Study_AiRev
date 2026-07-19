@@ -15,7 +15,8 @@ import time
 import json
 import os
 import hashlib
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
+from app.services.capacity import capacity_guard
 from app.models.schemas import SubmitAnswerRequest, TestReviewRequest, MentorApproveRequest
 from app.services import ai_service, scoring_service, feedback_service, db_service
 from app.services import knowledge_service, review_pipeline, prefilter_service
@@ -60,7 +61,7 @@ def _attempt_policy_block(case_study_id: int, student_id: int,
 
 
 # ── POST /api/review/submit ────────────────────────────────────────────────
-@router.post("/submit")
+@router.post("/submit", dependencies=[Depends(capacity_guard)])
 async def submit_and_review(req: SubmitAnswerRequest, background_tasks: BackgroundTasks):
     from app.database import canonical_student_id
     req.studentId = canonical_student_id(req.studentId)
@@ -906,7 +907,7 @@ async def list_all_published_case_studies():
 # ── POST /api/review/submit-capstone ──────────────────────────────────────
 # Capstones use `users.id` as student_id (not `students.id`), so we accept
 # either and resolve via the students table. Mirrors submit-assignment.
-@router.post("/submit-capstone")
+@router.post("/submit-capstone", dependencies=[Depends(capacity_guard)])
 async def submit_capstone_review(req: dict):
     """
     Body: { capstoneId, studentId, answerText, fileUrl, fileName }

@@ -17,6 +17,7 @@ import os
 import hashlib
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, Header
+from app.services.capacity import capacity_guard
 from pydantic import BaseModel
 
 from app.services import (
@@ -96,7 +97,7 @@ async def list_student_assignments(student_id: int, tenant: Tenant = Depends(get
 
 # ---------- POST /api/review/submit-assignment -----------------------------
 
-@router.post("/submit-assignment")
+@router.post("/submit-assignment", dependencies=[Depends(capacity_guard)])
 async def submit_and_review_assignment(
     req: SubmitAssignmentRequest,
     tenant: Tenant = Depends(get_tenant),
