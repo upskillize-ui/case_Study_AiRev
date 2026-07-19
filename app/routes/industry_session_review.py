@@ -54,8 +54,11 @@ def _resolve_insight_text(req: IndustrySessionInsightRequest) -> str:
             print(f"ℹ️  insight text arrived under alias '{key}' — frontend "
                   f"should send 'insightText'")
             return val.strip()
-    if extra:
-        print(f"⚠️ no insight text; request body extra keys were: {sorted(extra.keys())}")
+    # Always state what DID arrive — silence hides frontend bugs.
+    print(f"⚠️ no insight text in request: insightText="
+          f"{'empty-string' if req.insightText == '' else req.insightText!r}, "
+          f"fileUrl={'set' if req.fileUrl else 'none'}, "
+          f"extra keys={sorted(extra.keys()) if extra else '[]'}")
     return ""
 
 

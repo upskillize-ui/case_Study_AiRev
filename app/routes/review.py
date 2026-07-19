@@ -338,6 +338,50 @@ async def knowledge_status(scope_type: str, scope_id: int):
     return {"status": "ready", "version": stored["version"]}
 
 
+def _find_capstone_deliverable(capstone_id: int, student_id: int):
+    """Probe capstone-related tables for a stored file when the capstones row
+    itself has none. EXISTS-style column checks only — never SELECT
+    unconfirmed columns; handles uppercase information_schema keys."""
+    from app.database import query
+    try:
+        tables = query(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = DATABASE() AND table_name LIKE '%capstone%'")
+        names = [(t.get("table_name") or t.get("TABLE_NAME")) for t in tables]
+        for tbl in names:
+            if not tbl or tbl == "capstones":
+                continue
+            cols = query(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = DATABASE() AND table_name = %s", (tbl,))
+            colset = {(c.get("column_name") or c.get("COLUMN_NAME")) for c in cols}
+            file_col = next((c for c in ("file_url", "file_path", "submission_file",
+                                         "document_url", "file") if c in colset), None)
+            link_col = next((c for c in ("capstone_id", "project_id") if c in colset), None)
+            stu_col  = next((c for c in ("student_id", "user_id") if c in colset), None)
+            name_col = "file_name" if "file_name" in colset else None
+            if not (file_col and link_col):
+                continue
+            sql = (f"SELECT {file_col} AS f"
+                   + (f", {name_col} AS n" if name_col else "")
+                   + f" FROM {tbl} WHERE {link_col} = %s")
+            params = [capstone_id]
+            if stu_col:
+                sql += f" AND ({stu_col} = %s OR {stu_col} = " \
+                       f"(SELECT user_id FROM students WHERE id = %s LIMIT 1))"
+                params += [student_id, student_id]
+            sql += " LIMIT 1"
+            rows = query(sql, tuple(params))
+            if rows and rows[0].get("f"):
+                print(f"[CAPSTONE] deliverable located via probe: table={tbl} col={file_col}")
+                return rows[0]["f"], rows[0].get("n") or ""
+        print(f"[CAPSTONE] probe found no deliverable for capstone {capstone_id} "
+              f"in tables: {names}")
+    except Exception as e:
+        print(f"[CAPSTONE] deliverable probe failed: {e}")
+    return None, None
+
+
 def _remember_student(student_id, scope_type, scope_id, submission_id, r):
     """Fold the outcome into person-memory + stylometry trend check.
     Failures never affect the review."""
@@ -903,6 +947,22 @@ async def submit_capstone_review(req: dict):
             parts.append(extracted)
         elif why:
             print(f"📄 Capstone file extraction failed: {why}")
+
+    # Fallback 2: the capstones row can lack file_url — some LMS versions
+    # store uploads in a separate table. Probe candidates dynamically
+    # (playbook: interrogate the data before suspecting the code).
+    if not parts and not answer_text and not file_url and not capstone.get("file_url"):
+        found_url, found_name = _find_capstone_deliverable(capstone_id, student_id)
+        if found_url:
+            if found_url.startswith("/"):
+                found_url = "https://upskillize-lms-backend.onrender.com" + found_url
+            from app.utils.file_extractor import extract_text_from_url
+            extracted, why = extract_text_from_url(found_url, found_name or "")
+            if extracted:
+                print(f"📄 Extracted deliverable found by table probe: {found_url[:100]}")
+                parts.append(extracted)
+            elif why:
+                print(f"📄 Probed deliverable extraction failed: {why}")
 
     # Fallback: read previously-saved capstone file
     if not parts and capstone.get("file_url"):
