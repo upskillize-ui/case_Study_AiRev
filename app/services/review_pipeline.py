@@ -403,17 +403,29 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
     scores = aggregate(gated, word_count, word_limit_min, word_limit_max)
 
     ai_pct = max(0, min(100, int(review["authorship"]["ai_likelihood_percent"])))
+
+    # Point-wise feedback must never be blank: if the model left feedback_points
+    # empty, synthesise them from per-criterion notes (then improvements) so the
+    # card always renders discrete points rather than falling back to a blob.
+    fb_points = [p for p in (review.get("feedback_points") or []) if p and p.strip()]
+    if not fb_points:
+        fb_points = [f"{c['name']}: {c['note']}"
+                     for c in review.get("criteria", []) if c.get("note")][:6]
+    if not fb_points:
+        fb_points = [p for p in (review.get("improvements") or []) if p]
+    hard_truth = (review.get("hard_truth") or "").strip()
+
     return {
         "scores": scores,
         "howYouScored": build_how_you_scored(scores, pack, review["concepts_missing"]),
         "languageReport": review["language_report"],
         "strengths": review["strengths"],
         "improvements": review["improvements"],
-        "feedbackPoints": review["feedback_points"],
-        "hardTruth": review["hard_truth"],
+        "feedbackPoints": fb_points,
+        "hardTruth": hard_truth,
         # detailedFeedback kept for any older UI: points joined + hard truth.
-        "detailedFeedback": " ".join(review["feedback_points"])
-                            + ("  " + review["hard_truth"] if review["hard_truth"] else ""),
+        "detailedFeedback": " ".join(fb_points)
+                            + ("  " + hard_truth if hard_truth else ""),
         "conceptsCovered": review["concepts_covered"],
         "conceptsMissing": review["concepts_missing"],
         "factualErrors": review["factual_errors"],
@@ -437,6 +449,12 @@ def _garbage_result(review: dict, rubric_criteria: list, pack_version: int,
                   "evidence": [], "judgment": "Not a genuine attempt."}
                  for c in rubric_criteria]
     reason = review.get("garbage_reason", "").strip()
+    # Point-wise, not a blob: split the model's specific diagnosis into
+    # sentences so the non-genuine verdict renders as discrete points too.
+    import re as _re
+    _diag = [s.strip() for s in _re.split(r"(?<=[.!?])\s+", reason) if len(s.strip()) > 20]
+    _garbage_points = (_diag or ["This submission did not read as a genuine attempt at the task."]) + \
+        ["Re-read the brief and the source material, then write your own analysis before resubmitting."]
     return {
         "scores": {"totalScore": 0, "rawTotal": 0, "rubricBreakdown": breakdown,
                    "wordCountPenalty": 0, "wordCountNote": "", "errorDeduction": 0,
@@ -448,10 +466,10 @@ def _garbage_result(review: dict, rubric_criteria: list, pack_version: int,
         "languageReport": review.get("language_report", {}),
         "strengths": [], "improvements":
             ["Re-read the case material and attempt a genuine analysis."],
-        "feedbackPoints": ["This submission did not read as a genuine attempt at the task.",
-                           "Re-read the brief and the source material before your next attempt."],
-        "hardTruth": ("Nothing here can be scored yet — a real analysis in your own words is "
-                      "the starting point." + (f" ({reason})" if reason else "")),
+        "feedbackPoints": _garbage_points,
+        "hardTruth": ("Nothing here can be scored yet — a genuine attempt in your own words "
+                      "is where the marks begin. Resubmit with your own analysis of the "
+                      "assigned task."),
         "detailedFeedback": "Submission flagged as non-genuine. " + reason,
         "conceptsCovered": [], "conceptsMissing": [], "factualErrors": [],
         "authorship": {"aiLikelihoodPercent": 50, "humanLikelihoodPercent": 50,

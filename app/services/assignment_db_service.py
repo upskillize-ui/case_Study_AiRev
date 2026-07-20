@@ -237,13 +237,18 @@ def get_assignment_history(tenant: Tenant, assignment_id: int, student_id: int) 
     if not student_id or student_id <= 0 or not assignment_id:
         return []
 
+    # DUAL_ID_MATCH: the frontend passes users.id while submissions may be
+    # stored under students.id (or vice versa). A plain `student_id = %s` here
+    # returned zero rows, so History showed "No attempts yet" despite a graded
+    # attempt existing — match both ids like every other query in this module.
+    from app.database import DUAL_ID_MATCH
     rows = tquery(
         tenant,
-        """SELECT id, grade, feedback, status, submitted_at, file_name, notes
+        f"""SELECT id, grade, feedback, status, submitted_at, file_name, notes
            FROM assignment_submissions
-           WHERE assignment_id = %s AND student_id = %s
+           WHERE assignment_id = %s AND {DUAL_ID_MATCH}
            ORDER BY submitted_at DESC""",
-        (assignment_id, student_id),
+        (assignment_id, student_id, student_id, student_id),
     )
 
     out = []

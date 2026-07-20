@@ -371,9 +371,12 @@ def _find_capstone_deliverable(capstone_id: int, student_id: int):
     unconfirmed columns; handles uppercase information_schema keys."""
     from app.database import query
     try:
+        # '%%' not '%' — query() runs through PyMySQL param formatting, so a bare
+        # '%c' in '%capstone%' was read as a format spec → "not enough arguments
+        # for format string", crashing the whole probe.
         tables = query(
             "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema = DATABASE() AND table_name LIKE '%capstone%'")
+            "WHERE table_schema = DATABASE() AND table_name LIKE '%%capstone%%'")
         names = [(t.get("table_name") or t.get("TABLE_NAME")) for t in tables]
         for tbl in names:
             if not tbl or tbl == "capstones":
