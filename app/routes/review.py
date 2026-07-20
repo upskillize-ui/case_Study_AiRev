@@ -23,7 +23,7 @@ from app.services import knowledge_service, review_pipeline, prefilter_service
 from app.utils.text_processor import (
     count_words, clean_text, calculate_text_overlap, find_mentioned_concepts, is_likely_copy
 )
-from app.utils.file_extractor import extract_text_from_url
+from app.utils.file_extractor import extract_text_from_url, extract_upload
 
 router = APIRouter(prefix="/api/review", tags=["review"])
 
