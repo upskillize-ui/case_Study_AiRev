@@ -187,17 +187,36 @@ def extract_text_from_bytes(data: bytes, file_name: str = "") -> Tuple[str, str]
 # ---------- download (kept compatible with original) -----------------------
 
 def _download_file(file_url: str) -> Tuple[bytes, str]:
-    """Returns (bytes, reason). bytes is None on failure."""
+    """Returns (bytes, reason). bytes is None on failure.
+
+    Retries transient failures with backoff. Cloudinary serves PDFs as
+    image-type (available instantly) but Word/Excel/other as RAW-type, and a
+    freshly-uploaded RAW file takes a few seconds to propagate to the CDN — so
+    the very first fetch can 404. Without this retry, the first review of a
+    non-PDF upload failed and only the second attempt (seconds later) worked.
+    """
+    import time as _time
     cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME")
     api_key    = os.getenv("CLOUDINARY_API_KEY")
     api_secret = os.getenv("CLOUDINARY_API_SECRET")
 
-    try:
-        with httpx.Client(timeout=30, follow_redirects=True) as client:
-            r = client.get(file_url)
+    # 404/423/425/429/5xx are "not ready yet / transient" → wait and retry.
+    TRANSIENT = {404, 408, 423, 425, 429, 500, 502, 503, 504}
+    last = "download failed"
+    with httpx.Client(timeout=30, follow_redirects=True) as client:
+        for attempt in range(4):          # waits ~0 + 1.5 + 3 + 4.5s across tries
+            if attempt:
+                _time.sleep(1.5 * attempt)
+            try:
+                r = client.get(file_url)
+            except Exception as e:
+                last = f"download failed: {e}"
+                continue
+
             if r.status_code == 200:
                 return r.content, ""
-            # Authenticated Cloudinary fallback
+
+            # Authenticated Cloudinary fallback (different URL scheme — no retry)
             if r.status_code in (401, 403) and cloud_name and api_key and api_secret:
                 m = re.search(
                     rf"https://res\.cloudinary\.com/{re.escape(cloud_name)}/[^/]+/authenticated/(.+)",
@@ -207,14 +226,10 @@ def _download_file(file_url: str) -> Tuple[bytes, str]:
                     public_id = m.group(1)
                     try:
                         import cloudinary, cloudinary.utils
-                        cloudinary.config(
-                            cloud_name=cloud_name,
-                            api_key=api_key,
-                            api_secret=api_secret,
-                        )
+                        cloudinary.config(cloud_name=cloud_name, api_key=api_key,
+                                          api_secret=api_secret)
                         signed_url, _ = cloudinary.utils.cloudinary_url(
-                            public_id, type="authenticated", sign_url=True,
-                        )
+                            public_id, type="authenticated", sign_url=True)
                         r2 = client.get(signed_url)
                         if r2.status_code == 200:
                             return r2.content, ""
@@ -222,9 +237,14 @@ def _download_file(file_url: str) -> Tuple[bytes, str]:
                     except Exception as e:
                         return None, f"cloudinary sign failed: {e}"
                 return None, f"download HTTP {r.status_code} (no Cloudinary credentials to retry)"
+
+            if r.status_code in TRANSIENT:
+                last = f"download HTTP {r.status_code} (attempt {attempt + 1}/4, retrying)"
+                print(f"[EXTRACT] {last} — {file_url[:90]}")
+                continue                    # likely CDN propagation — wait and retry
+
             return None, f"download HTTP {r.status_code}"
-    except Exception as e:
-        return None, f"download failed: {e}"
+    return None, last
 
 
 # ---------- PDF ------------------------------------------------------------
