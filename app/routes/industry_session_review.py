@@ -12,7 +12,7 @@ from app.services.capacity import capacity_guard
 from pydantic import BaseModel
 from typing import Optional, Dict
 
-from app.database import query, execute
+from app.database import query, execute, DUAL_ID_MATCH
 from app.services import ai_service, knowledge_service, prefilter_service, media_service
 from app.services.feedback_service import ai_verdict
 from app.prompts import AI_DETECTION_CALIBRATION
@@ -147,6 +147,48 @@ def _lms_insight_table() -> Optional[str]:
     Columns: id, session_id, student_id, rating, key_takeaway, ..."""
     return _probe_table("session_feedback", "industry_session_insights", "session_insights")
 
+def _lms_understanding_table() -> Optional[str]:
+    """LMS `session_understandings` — `content` IS the student's written
+    understanding (Sequelize model SessionUnderstanding). Confirmed 21 Jul
+    by reading the LMS backend. Both LMS session tables store
+    student_id = users.id, so every lookup must use DUAL_ID_MATCH."""
+    return _probe_table("session_understandings")
+
+# LMS insight sources in priority order: (table-resolver, candidate columns).
+# session_understandings.content is the full written understanding;
+# session_feedback.key_takeaway is the shorter fallback.
+_LMS_INSIGHT_SOURCES = (
+    (_lms_understanding_table, ("content", "understanding", "text")),
+    (_lms_insight_table,       ("key_takeaway", "comments")),
+)
+
+def _fetch_lms_insight(session_id: int, student_id: int) -> str:
+    """Pull the student's stored insight text from the LMS tables.
+    DUAL_ID_MATCH because LMS writes users.id while AiRev canonicalizes
+    to students.id — the exact-match lookup this replaces was the reason
+    already-submitted students were asked to submit again."""
+    for resolve_table, col_candidates in _LMS_INSIGHT_SOURCES:
+        tbl = resolve_table()
+        if not tbl:
+            continue
+        col = _col(tbl, *col_candidates)
+        if not col:
+            continue
+        try:
+            rows = query(
+                f"SELECT {col} AS txt FROM {tbl} "
+                f"WHERE session_id=%s AND {DUAL_ID_MATCH} ORDER BY id DESC LIMIT 1",
+                (session_id, student_id, student_id, student_id),
+            )
+            if rows:
+                txt = (rows[0].get("txt") or "").strip()
+                if txt:
+                    print(f"ℹ️  Pulled insight from LMS {tbl}.{col} ({len(txt)} chars)")
+                    return txt
+        except Exception as ex:
+            print(f"⚠️ LMS insight fetch error ({tbl}): {ex}")
+    return ""
+
 def _get_columns(table: str) -> Dict[str, str]:
     """Return {column_name: data_type} for a table. Cached."""
     if table not in _col_cache:
@@ -249,74 +291,53 @@ def get_sessions_for_student(student_id: int, background_tasks: BackgroundTasks)
         status_filter = ""
 
     ins_tbl = _insight_table()
-    lms_ins_tbl = _lms_insight_table()  # session_feedback in LMS
 
-    # Show sessions where student has EITHER:
-    #   (a) submitted an insight in the LMS coursework page (session_feedback table), OR
-    #   (b) already done a review in AiRev (industry_session_submissions table)
+    # Show sessions where the student has EITHER submitted an insight in the
+    # LMS coursework page (session_understandings / session_feedback) OR
+    # already reviewed in AiRev (industry_session_submissions).
+    # DUAL_ID_MATCH throughout: LMS tables store users.id, AiRev canonicalizes
+    # to students.id, and legacy AiRev rows may carry either form. Exact-match
+    # here was why submitted sessions never appeared in the New Review queue.
+    conds: list = []
+    params: list = []
 
-    if ins_tbl and lms_ins_tbl:
-        sql = f"""
-            SELECT {', '.join(selects)},
-                   sub.id           AS submission_id,
-                   sub.submitted_at AS submitted_at,
-                   sub.score        AS score,
-                   sub.has_feedback AS has_feedback
-            FROM {sess_tbl} s
+    if ins_tbl:
+        sub_select = ("sub.id AS submission_id, sub.submitted_at AS submitted_at, "
+                      "sub.score AS score, sub.has_feedback AS has_feedback")
+        join_sql = f"""
             LEFT JOIN {ins_tbl} sub
                 ON sub.session_id = s.{c_id}
-               AND sub.student_id = %s
+               AND sub.{DUAL_ID_MATCH}
                AND sub.id = (
                     SELECT MAX(s2.id) FROM {ins_tbl} s2
-                    WHERE s2.session_id = s.{c_id} AND s2.student_id = %s
-               )
-            WHERE (
-                sub.id IS NOT NULL
-                OR EXISTS (
-                    SELECT 1 FROM {lms_ins_tbl} lms_chk
-                    WHERE lms_chk.session_id = s.{c_id}
-                      AND lms_chk.student_id = %s
-                )
-            )
-            {status_filter}
-            ORDER BY s.{c_id} DESC
-        """
-        rows = query(sql, (student_id, student_id, student_id))
+                    WHERE s2.session_id = s.{c_id} AND s2.{DUAL_ID_MATCH}
+               )"""
+        params += [student_id] * 6
+        conds.append("sub.id IS NOT NULL")
+    else:
+        sub_select = ("NULL AS submission_id, NULL AS submitted_at, "
+                      "NULL AS score, 0 AS has_feedback")
+        join_sql = ""
 
-    elif lms_ins_tbl:
-        # No AiRev submissions yet — show sessions with LMS insights only
+    for resolve_table, _cols in _LMS_INSIGHT_SOURCES:
+        lms_tbl = resolve_table()
+        if lms_tbl:
+            conds.append(
+                f"EXISTS (SELECT 1 FROM {lms_tbl} chk_{lms_tbl} "
+                f"WHERE chk_{lms_tbl}.session_id = s.{c_id} "
+                f"AND chk_{lms_tbl}.{DUAL_ID_MATCH})")
+            params += [student_id] * 3
+
+    if conds:
         sql = f"""
-            SELECT {', '.join(selects)},
-                   NULL AS submission_id, NULL AS submitted_at,
-                   NULL AS score, 0 AS has_feedback
+            SELECT {', '.join(selects)}, {sub_select}
             FROM {sess_tbl} s
-            WHERE EXISTS (
-                SELECT 1 FROM {lms_ins_tbl} lms_chk
-                WHERE lms_chk.session_id = s.{c_id}
-                  AND lms_chk.student_id = %s
-            )
+            {join_sql}
+            WHERE ({' OR '.join(conds)})
             {status_filter}
             ORDER BY s.{c_id} DESC
         """
-        rows = query(sql, (student_id,))
-
-    elif ins_tbl:
-        # Only AiRev table — show student's own AiRev submissions
-        sql = f"""
-            SELECT {', '.join(selects)},
-                   sub.id           AS submission_id,
-                   sub.submitted_at AS submitted_at,
-                   sub.score        AS score,
-                   sub.has_feedback AS has_feedback
-            FROM {sess_tbl} s
-            INNER JOIN {ins_tbl} sub
-                ON sub.session_id = s.{c_id}
-               AND sub.student_id = %s
-            {status_filter}
-            ORDER BY s.{c_id} DESC
-        """
-        rows = query(sql, (student_id,))
-
+        rows = query(sql, tuple(params))
     else:
         rows = []
 
@@ -349,7 +370,8 @@ def get_sessions_for_student(student_id: int, background_tasks: BackgroundTasks)
                     print(f"⚠️ watch trigger failed for session {row[c_id]}: {me}")
 
     print(f"ℹ️  Sessions for student {student_id}: found {len(sessions)} | "
-          f"ins_tbl={ins_tbl} lms_ins_tbl={lms_ins_tbl}")
+          f"ins_tbl={ins_tbl} lms_fb={_lms_insight_table()} "
+          f"lms_und={_lms_understanding_table()}")
     return {"success": True, "sessions": sessions, "total": len(sessions)}
 
 
@@ -509,21 +531,7 @@ def submit_industry_session(req: IndustrySessionInsightRequest,
     insight = _resolve_insight_text(req)
 
     if not insight:
-        lms_tbl = _lms_insight_table()
-        if lms_tbl:
-            try:
-                lms_rows = query(
-                    f"SELECT key_takeaway, rating FROM {lms_tbl} "
-                    f"WHERE session_id=%s AND student_id=%s ORDER BY id DESC LIMIT 1",
-                    (req.sessionId, req.studentId)
-                )
-                if lms_rows:
-                    takeaway = (lms_rows[0].get("key_takeaway") or "").strip()
-                    if takeaway:
-                        insight = takeaway
-                        print(f"ℹ️  Pulled insight from LMS session_feedback ({len(insight)} chars)")
-            except Exception as ex:
-                print(f"⚠️ LMS insight fetch error: {ex}")
+        insight = _fetch_lms_insight(req.sessionId, req.studentId)
     if req.fileData or req.fileUrl:
         try:
             from app.utils.file_extractor import extract_upload
