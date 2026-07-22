@@ -186,12 +186,10 @@ def submit_and_review_assignment(
             tenant, req.assignmentId, req.studentId
         )
         if prior:
-            # Coursework stores the upload in file_path (not file_url) and may
-            # use an LMS-relative path — resolve both. Live finding 19 Jul.
+            # Coursework stores the upload in file_path (not file_url); relative
+            # LMS paths resolve inside extract_text_from_url (resolve_lms_url).
             prior_url = prior.get("file_url") or prior.get("file_path")
             if prior_url:
-                if prior_url.startswith("/"):
-                    prior_url = "https://upskillize-lms-backend.onrender.com" + prior_url
                 extracted, why = extract_text_from_url(
                     prior_url, prior.get("file_name", "")
                 )
@@ -216,6 +214,10 @@ def submit_and_review_assignment(
                    "then click Submit again.")
         return {
             "success": True,
+            # Explicit no-content signal (same contract as industry sessions):
+            # frontends render a compose prompt instead of a scored 0 card.
+            "status": "needs_input",
+            "needsInput": True,
             "submission": {"submissionId": 0, "attemptNumber": 0},
             "feedback": _empty_feedback(msg, helpful=True),
             "processingTimeMs": total_time,

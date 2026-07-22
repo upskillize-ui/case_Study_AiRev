@@ -119,6 +119,10 @@ def submit_and_review(req: SubmitAnswerRequest, background_tasks: BackgroundTask
                "answer box (or upload a PDF), then click Submit again.")
         return {
             "success": True,
+            # Explicit no-content signal (same contract as industry sessions):
+            # frontends render a compose prompt instead of a scored 0 card.
+            "status": "needs_input",
+            "needsInput": True,
             "submission": {"submissionId": 0, "attemptNumber": 0},
             "feedback": {
                 "score": 0, "grade": "-", "scoreEmoji": "📝",
@@ -1004,15 +1008,9 @@ def submit_capstone_review(req: dict):
         elif why:
             print(f"📄 Capstone inline file extraction failed: {why}")
     elif file_url:
-        # Resolve relative LMS paths (e.g. /uploads/capstone/foo.pdf) to full URL.
-        # The LMS backend serves /uploads as static files. Cloudinary URLs already
-        # start with https:// so this is a no-op for those.
-        resolved_url = file_url
-        if file_url.startswith("/"):
-            resolved_url = "https://upskillize-lms-backend.onrender.com" + file_url
-            print(f"[CAPSTONE] resolved relative path to: {resolved_url}")
+        # Relative LMS paths resolve inside extract_text_from_url (resolve_lms_url).
         from app.utils.file_extractor import extract_text_from_url
-        extracted, why = extract_text_from_url(resolved_url, file_name or "")
+        extracted, why = extract_text_from_url(file_url, file_name or "")
         if extracted:
             print(f"📄 Extracted capstone file: {file_name} ({len(extracted.split())} words)")
             parts.append(extracted)
@@ -1025,8 +1023,6 @@ def submit_capstone_review(req: dict):
     if not parts and not answer_text and not file_url and not capstone.get("file_url"):
         found_url, found_name = _find_capstone_deliverable(capstone_id, student_id)
         if found_url:
-            if found_url.startswith("/"):
-                found_url = "https://upskillize-lms-backend.onrender.com" + found_url
             from app.utils.file_extractor import extract_text_from_url
             extracted, why = extract_text_from_url(found_url, found_name or "")
             if extracted:
@@ -1037,12 +1033,8 @@ def submit_capstone_review(req: dict):
 
     # Fallback: read previously-saved capstone file
     if not parts and capstone.get("file_url"):
-        prior_url = capstone["file_url"]
-        if prior_url.startswith("/"):
-            prior_url = "https://upskillize-lms-backend.onrender.com" + prior_url
-            print(f"[CAPSTONE] fallback resolved relative path to: {prior_url}")
         from app.utils.file_extractor import extract_text_from_url
-        extracted, why = extract_text_from_url(prior_url, "")
+        extracted, why = extract_text_from_url(capstone["file_url"], "")
         if extracted:
             print(f"📄 Extracted prior capstone file: {prior_url}")
             parts.append(extracted)
@@ -1078,6 +1070,9 @@ def submit_capstone_review(req: dict):
                "deliverable (PDF / DOCX / ZIP) or paste your write-up, then click Submit again.")
         return {
             "success": True,
+            # Explicit no-content signal (same contract as industry sessions).
+            "status": "needs_input",
+            "needsInput": True,
             "submission": {"submissionId": capstone["id"], "attemptNumber": 1},
             "feedback": {
                 "score": 0, "grade": "-",

@@ -49,6 +49,21 @@ ZIP_MAX_TOTAL   = 60 * 1024 * 1024   # unpacked-bytes bomb guard
 
 # ---------- public entry ---------------------------------------------------
 
+# LMS rows often store uploads as relative paths (e.g. /uploads/x.pdf) that
+# only resolve against the LMS backend. Centralised here so EVERY extraction
+# path benefits — case studies previously skipped this and their stored-file
+# fallback silently failed, breaking one-click review of submitted work.
+LMS_FILE_BASE_URL = os.getenv(
+    "LMS_FILE_BASE_URL", "https://upskillize-lms-backend.onrender.com")
+
+
+def resolve_lms_url(file_url: str) -> str:
+    """Absolute URLs pass through; LMS-relative paths get the backend base."""
+    if file_url and file_url.startswith("/"):
+        return LMS_FILE_BASE_URL + file_url
+    return file_url
+
+
 def extract_text_from_url(file_url: str, file_name: str = "") -> Tuple[str, str]:
     """
     Returns (extracted_text, reason).
@@ -58,6 +73,7 @@ def extract_text_from_url(file_url: str, file_name: str = "") -> Tuple[str, str]
     if not file_url:
         return "", "no file_url provided"
 
+    file_url = resolve_lms_url(file_url)
     data, why = _download_file(file_url)
     if data is None:
         return "", why
