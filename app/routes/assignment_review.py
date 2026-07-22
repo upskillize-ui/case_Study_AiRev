@@ -57,6 +57,10 @@ class SubmitAssignmentRequest(BaseModel):
     fileUrl: Optional[str] = None
     fileName: Optional[str] = None
     fileData: Optional[str] = None   # base64 file bytes — storage-free upload path
+    # True = store the submission (text extracted once) WITHOUT scoring it.
+    # Used by Coursework submits so the item lands in AiRev's New Review queue
+    # and is reviewed only when the student clicks it there.
+    storeOnly: bool = False
 
 
 # ---------- GET /api/review/assignments/{student_id} -----------------------
@@ -150,18 +154,21 @@ def submit_and_review_assignment(
         )
 
     # ── Re-review policy: max 2 reviewed attempts, revised text required ───
-    state = assignment_db_service.get_attempt_state(tenant, req.assignmentId, req.studentId)
-    if state["reviewedAttempts"] >= MAX_REVIEWED_ATTEMPTS:
-        return {"success": False, "blocked": "attempt_limit",
-                "message": ("You've used your re-attempt for this assignment. "
-                            "Your final score stands — carry the feedback into the next one.")}
-    if state["reviewedAttempts"] >= 1 and state["latestAnswerText"] and (req.answerText or "").strip():
-        old_h = hashlib.sha256(state["latestAnswerText"].strip().lower().encode()).hexdigest()
-        new_h = hashlib.sha256(req.answerText.strip().lower().encode()).hexdigest()
-        if old_h == new_h:
-            return {"success": False, "blocked": "identical_resubmission",
-                    "message": ("This is the same answer you already submitted. "
-                                "Revise it using your feedback, then resubmit.")}
+    # storeOnly (Coursework submits): storage is not a review attempt, so the
+    # policy does not apply — it runs when the stored text is actually reviewed.
+    if not req.storeOnly:
+        state = assignment_db_service.get_attempt_state(tenant, req.assignmentId, req.studentId)
+        if state["reviewedAttempts"] >= MAX_REVIEWED_ATTEMPTS:
+            return {"success": False, "blocked": "attempt_limit",
+                    "message": ("You've used your re-attempt for this assignment. "
+                                "Your final score stands — carry the feedback into the next one.")}
+        if state["reviewedAttempts"] >= 1 and state["latestAnswerText"] and (req.answerText or "").strip():
+            old_h = hashlib.sha256(state["latestAnswerText"].strip().lower().encode()).hexdigest()
+            new_h = hashlib.sha256(req.answerText.strip().lower().encode()).hexdigest()
+            if old_h == new_h:
+                return {"success": False, "blocked": "identical_resubmission",
+                        "message": ("This is the same answer you already submitted. "
+                                    "Revise it using your feedback, then resubmit.")}
 
     cleaned_typed = clean_text(req.answerText or "")
     parts: list[str] = []
@@ -229,8 +236,11 @@ def submit_and_review_assignment(
           f"(file={'yes' if file_used else 'no'}, typed={'yes' if cleaned_typed else 'no'})")
 
     # ── Reflexes: zero-token checks before any AI spend ────────────────────
-    reflex = prefilter_service.check("assignment", req.assignmentId, req.studentId, combined)
-    if not reflex["ok"]:
+    # storeOnly skips them: storage must never be withheld — the checks run
+    # when the stored text is actually reviewed.
+    reflex = {} if req.storeOnly else prefilter_service.check(
+        "assignment", req.assignmentId, req.studentId, combined)
+    if reflex and not reflex["ok"]:
         return {"success": False, "blocked": reflex["reason"],
                 "message": reflex["message"]}
 
@@ -253,6 +263,17 @@ def submit_and_review_assignment(
         "assignment", req.assignmentId, req.studentId,
         submission["submissionId"], combined, word_count,
         text_hash=reflex.get("text_hash"))
+
+    if req.storeOnly:
+        total_time = int((time.time() - start_time) * 1000)
+        print(f"[ASSIGNMENT] 📥 Stored without review (storeOnly): "
+              f"submission={submission['submissionId']}")
+        return {
+            "success": True, "stored": True, "status": "stored",
+            "submission": submission,
+            "message": "Submission stored. Open AiRev → New Review for AI feedback.",
+            "processingTimeMs": total_time,
+        }
 
     if word_count < 30:
         msg = (f"Your submission is very short ({word_count} words). "

@@ -72,7 +72,11 @@ def submit_and_review(req: SubmitAnswerRequest, background_tasks: BackgroundTask
     if not case_study:
         raise HTTPException(status_code=404, detail="Case study not found or not published")
 
-    blocked = _attempt_policy_block(req.caseStudyId, req.studentId, req.answerText or "")
+    # storeOnly (Coursework submits): storage is not a review attempt, so the
+    # attempt policy does not apply — the policy runs when the student actually
+    # reviews the stored text from the New Review queue.
+    blocked = None if req.storeOnly else _attempt_policy_block(
+        req.caseStudyId, req.studentId, req.answerText or "")
     if blocked:
         print(f"ℹ️  Submission blocked: {blocked['blocked']} "
               f"(student={req.studentId}, caseStudy={req.caseStudyId})")
@@ -151,8 +155,11 @@ def submit_and_review(req: SubmitAnswerRequest, background_tasks: BackgroundTask
           f"file={'yes' if file_used else 'no'})")
 
     # ── Reflexes: zero-token checks before any AI spend ────────────────────
-    reflex = prefilter_service.check("case_study", req.caseStudyId, req.studentId, cleaned)
-    if not reflex["ok"]:
+    # storeOnly skips them: storage must never be withheld — the checks run
+    # when the stored text is actually reviewed.
+    reflex = {} if req.storeOnly else prefilter_service.check(
+        "case_study", req.caseStudyId, req.studentId, cleaned)
+    if reflex and not reflex["ok"]:
         return {"success": False, "blocked": reflex["reason"],
                 "message": reflex["message"]}
 
@@ -169,6 +176,16 @@ def submit_and_review(req: SubmitAnswerRequest, background_tasks: BackgroundTask
         "case_study", req.caseStudyId, req.studentId,
         submission["submissionId"], cleaned, word_count,
         text_hash=reflex.get("text_hash"))
+
+    if req.storeOnly:
+        total_time = int((time.time() - start_time) * 1000)
+        print(f"📥 Stored without review (storeOnly): submission={submission['submissionId']}")
+        return {
+            "success": True, "stored": True, "status": "stored",
+            "submission": submission,
+            "message": "Submission stored. Open AiRev → New Review for AI feedback.",
+            "processingTimeMs": total_time,
+        }
 
     pre_garbage_reason = _pre_garbage_check(cleaned, word_count)
     if pre_garbage_reason:

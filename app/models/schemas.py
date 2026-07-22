@@ -19,6 +19,10 @@ class SubmitAnswerRequest(BaseModel):
     fileUrl: Optional[str] = None
     fileName: Optional[str] = None
     fileData: Optional[str] = None   # base64 file bytes — storage-free upload path
+    # True = store the submission (text extracted once) WITHOUT scoring it.
+    # Used by Coursework submits so the item lands in AiRev's New Review queue
+    # and is reviewed only when the student clicks it there.
+    storeOnly: bool = False
 
 
 class TestReviewRequest(BaseModel):

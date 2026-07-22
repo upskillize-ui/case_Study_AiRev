@@ -402,7 +402,15 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
                         review["factual_errors"], gates=gate_overrides)
     scores = aggregate(gated, word_count, word_limit_min, word_limit_max)
 
-    ai_pct = max(0, min(100, int(review["authorship"]["ai_likelihood_percent"])))
+    # Authorship is ADVISORY — a missing or malformed field must never crash
+    # the scoring pipeline (live 22 Jul: KeyError 'authorship' dropped a review
+    # to the legacy path). Default to an honest "uncertain" estimate instead.
+    _authorship = review.get("authorship") or {}
+    try:
+        ai_pct = max(0, min(100, int(_authorship.get("ai_likelihood_percent", 50))))
+    except (TypeError, ValueError):
+        ai_pct = 50
+    _ai_reason = _authorship.get("reason") or "Authorship signals unavailable for this review."
 
     # Point-wise feedback must never be blank: if the model left feedback_points
     # empty, synthesise them from per-criterion notes (then improvements) so the
@@ -432,7 +440,7 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
         "authorship": {
             "aiLikelihoodPercent": ai_pct,
             "humanLikelihoodPercent": 100 - ai_pct,
-            "aiDetectionReason": review["authorship"]["reason"],
+            "aiDetectionReason": _ai_reason,
             "aiVerdict": ai_verdict(ai_pct),
         },
         "isGarbage": False,
