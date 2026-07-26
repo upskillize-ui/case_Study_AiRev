@@ -211,7 +211,13 @@ def _report_usage(model: str, usage) -> None:
     base = os.getenv("LMS_BASE_URL", "").rstrip("/")
     secret = os.getenv("INTERNAL_CREDIT_SECRET", "")
     student_id = _student_ctx.get()
-    if not base or not secret or not student_id or usage is None:
+    if not base or not secret:
+        print("[usage] OFF: LMS_BASE_URL / INTERNAL_CREDIT_SECRET not set in this Space")
+        return
+    if not student_id:
+        print("[usage] skipped: no student context on this review")
+        return
+    if usage is None:
         return
     try:
         eff_in = (int(getattr(usage, "input_tokens", 0) or 0)
@@ -227,6 +233,7 @@ def _report_usage(model: str, usage) -> None:
             headers={"Content-Type": "application/json", "X-Internal-Secret": secret},
             method="POST")
         _urllib_request.urlopen(req, timeout=5).read()
+        print(f"[usage] AiRev -> LMS user {student_id}: {model}")
     except Exception as e:
         print(f"[usage] report skipped: {e}")
 
