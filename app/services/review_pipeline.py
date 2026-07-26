@@ -315,6 +315,8 @@ def review_with_knowledge(scope_type: str, scope_id: int, raw_source: dict,
     so the recall-then-review contract lives in exactly one place.
     """
     from app.services import knowledge_service  # local import avoids cycle
+    from app.services import ai_service
+    ai_service.set_student_context(student_id)   # cost attribution → Student Cost Sheet
 
     known = knowledge_service.get_or_build(
         scope_type, scope_id, raw_source, background_tasks)

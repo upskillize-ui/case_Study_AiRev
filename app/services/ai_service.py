@@ -190,6 +190,47 @@ def _first_text(response) -> str:
     return ""
 
 
+# ─── Per-student cost attribution (Student Cost Sheet) ───────────────────────
+# Routes/pipeline set the current student via set_student_context(); every
+# Claude call in this module then reports its real token usage to the LMS,
+# which logs agent_usage + handles credits. Best-effort: never breaks a review.
+# Needs env LMS_BASE_URL + INTERNAL_CREDIT_SECRET.
+import contextvars as _contextvars
+import json as _json
+import urllib.request as _urllib_request
+
+_student_ctx = _contextvars.ContextVar("airev_student_id", default=None)
+
+
+def set_student_context(student_id) -> None:
+    """Call at the start of any flow that knows the student. 0/None clears."""
+    _student_ctx.set(student_id or None)
+
+
+def _report_usage(model: str, usage) -> None:
+    base = os.getenv("LMS_BASE_URL", "").rstrip("/")
+    secret = os.getenv("INTERNAL_CREDIT_SECRET", "")
+    student_id = _student_ctx.get()
+    if not base or not secret or not student_id or usage is None:
+        return
+    try:
+        eff_in = (int(getattr(usage, "input_tokens", 0) or 0)
+                  + round(0.10 * int(getattr(usage, "cache_read_input_tokens", 0) or 0))
+                  + round(1.25 * int(getattr(usage, "cache_creation_input_tokens", 0) or 0)))
+        body = _json.dumps({
+            "userId": student_id, "agent": "AiRev", "model": model,
+            "input_tokens": eff_in,
+            "output_tokens": int(getattr(usage, "output_tokens", 0) or 0),
+        }).encode()
+        req = _urllib_request.Request(
+            f"{base}/api/ai-credits/consume-internal", data=body,
+            headers={"Content-Type": "application/json", "X-Internal-Secret": secret},
+            method="POST")
+        _urllib_request.urlopen(req, timeout=5).read()
+    except Exception as e:
+        print(f"[usage] report skipped: {e}")
+
+
 def call_structured(blocks: list, schema: dict, tier: str = "default",
                     max_tokens: int = 3000, thinking_budget: int = 0,
                     system: str = SYSTEM_MSG_CLAUDE) -> dict:
@@ -238,6 +279,7 @@ def call_structured(blocks: list, schema: dict, tier: str = "default",
         kwargs["max_tokens"] = max_tokens + thinking_budget
 
     response = client.messages.create(**kwargs)
+    _report_usage(model, getattr(response, "usage", None))
     for block in response.content:
         if getattr(block, "type", None) == "tool_use" and block.name == "emit_result":
             return block.input
@@ -276,6 +318,7 @@ def call_claude(prompt: str, max_tokens: int = 2000, system: str = SYSTEM_MSG_CL
                 system=system,
                 messages=[{"role": "user", "content": prompt}],
             )
+            _report_usage(model, getattr(response, "usage", None))
             return _first_text(response)
         except Exception as e:
             print(f"❌ Claude call FAILED: {e}")
@@ -314,6 +357,7 @@ def _analyze_with_claude(
         system=SYSTEM_MSG_CLAUDE,
         messages=[{"role": "user", "content": prompt}],
     )
+    _report_usage(model, getattr(response, "usage", None))
 
     text = _first_text(response)
     parsed = parse_ai_response(text)
