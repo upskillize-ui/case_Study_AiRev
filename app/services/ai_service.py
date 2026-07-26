@@ -207,10 +207,26 @@ def set_student_context(student_id) -> None:
     _student_ctx.set(student_id or None)
 
 
+def _lms_user_id(sid):
+    """AiRev runs on students.id; the LMS bills by users.id. Map back via the
+    students table (mirror of canonical_student_id). Fail-open: unmapped ids
+    (already users.id in standalone flows) pass through unchanged."""
+    try:
+        from app.database import query
+        rows = query("SELECT user_id FROM students WHERE id = %s LIMIT 1", (sid,))
+        if rows and rows[0].get("user_id"):
+            return int(rows[0]["user_id"])
+    except Exception:
+        pass
+    return sid
+
+
 def _report_usage(model: str, usage) -> None:
     base = os.getenv("LMS_BASE_URL", "").rstrip("/")
     secret = os.getenv("INTERNAL_CREDIT_SECRET", "")
     student_id = _student_ctx.get()
+    if student_id:
+        student_id = _lms_user_id(student_id)
     if not base or not secret:
         print("[usage] OFF: LMS_BASE_URL / INTERNAL_CREDIT_SECRET not set in this Space")
         return
