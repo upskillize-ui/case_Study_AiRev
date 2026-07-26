@@ -3,7 +3,9 @@
 # produce a clean pure-content transcript, remember it forever.
 #
 # Pipeline per video (runs in the background, never blocks a review):
-#   1. Resolve the source. YouTube -> existing captions first (free, instant).
+#   1. Resolve the source. Uploaded transcript file (.vtt/.srt/.txt — Zoom and
+#      Meet export these with the recording) -> parse directly, zero
+#      transcription cost. YouTube -> existing captions (free, instant).
 #      Anything else (Cloudinary / MP4 / LMS storage) -> download.
 #   2. ffmpeg: extract mono 16 kHz audio, segment into 10-minute chunks
 #      (keeps each transcription call under API size limits).
@@ -103,7 +105,8 @@ def ensure_processing(session_id: int, video_url: Optional[str],
     Concurrency-guarded: a fresh 'processing' row blocks duplicate starts."""
     if not video_url:
         return "no_video"
-    if not os.getenv("TRANSCRIBE_API_KEY") and not _is_youtube(video_url):
+    if (not os.getenv("TRANSCRIBE_API_KEY") and not _is_youtube(video_url)
+            and not _is_transcript_file(video_url)):
         # Honest capability statement — no key, no non-YouTube transcription.
         print(f"ℹ️  session {session_id}: video present but TRANSCRIBE_API_KEY "
               f"not set — captions-only mode")
@@ -183,7 +186,10 @@ def _is_youtube(url: str) -> bool:
 
 
 def _obtain_raw_transcript(video_url: str) -> tuple[str, str]:
-    """Returns (raw_text, method). Order: YouTube captions → download+Whisper."""
+    """Returns (raw_text, method).
+    Order: uploaded transcript file → YouTube captions → download+Whisper."""
+    if _is_transcript_file(video_url):
+        return _fetch_uploaded_transcript(video_url), "uploaded_transcript"
     m = _YT_RE.search(video_url)
     if m:
         try:
@@ -195,6 +201,49 @@ def _obtain_raw_transcript(video_url: str) -> tuple[str, str]:
                 "YouTube video without accessible captions. Upload the video "
                 "file or transcript to the LMS for this session.")
     return _download_and_whisper(video_url), "whisper"
+
+
+# Zoom cloud recordings ship a .vtt audio transcript; Meet exports .vtt/.txt
+# (a Meet transcript saved as a Google Doc must be exported to .txt first —
+# Docs links are not fetchable). Ingesting these skips Whisper entirely.
+_TRANSCRIPT_EXTS = (".vtt", ".srt", ".txt")
+_TRANSCRIPT_MAX_BYTES = 5 * 1024 * 1024
+_TS_LINE_RE = re.compile(r"^\s*(\d+\s*$|\d{1,2}:\d{2}(:\d{2})?[.,]\d{3}\s+-->)")
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _is_transcript_file(url: str) -> bool:
+    return (url or "").split("?", 1)[0].lower().endswith(_TRANSCRIPT_EXTS)
+
+
+def _fetch_uploaded_transcript(url: str) -> str:
+    """Download a caption/transcript file and reduce it to plain speech text."""
+    from app.utils.file_extractor import resolve_lms_url
+    resp = httpx.get(resolve_lms_url(url), follow_redirects=True, timeout=120.0)
+    if resp.status_code >= 400:
+        raise Exception(f"transcript download HTTP {resp.status_code}")
+    if len(resp.content) > _TRANSCRIPT_MAX_BYTES:
+        raise Exception("transcript file exceeds 5MB — is this really a transcript?")
+    return _parse_caption_text(resp.content.decode("utf-8-sig", errors="ignore"))
+
+
+def _parse_caption_text(raw: str) -> str:
+    """VTT/SRT/plain text → speech text: drop headers, cue numbers, timestamp
+    lines, markup tags; collapse consecutive duplicate lines (rolling
+    captions repeat). Speaker names are kept — they carry teaching context."""
+    out: list[str] = []
+    for line in raw.splitlines():
+        line = _TAG_RE.sub("", line).strip()
+        if (not line or line.upper().startswith(("WEBVTT", "NOTE", "STYLE", "REGION"))
+                or _TS_LINE_RE.match(line)):
+            continue
+        if out and out[-1] == line:      # rolling-caption duplicate
+            continue
+        out.append(line)
+    text = " ".join(out).strip()
+    if len(text) < 200:
+        raise Exception(f"parsed transcript too short ({len(text)} chars)")
+    return text
 
 
 def _youtube_captions(video_id: str) -> str:
