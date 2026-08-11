@@ -394,7 +394,7 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
             schema=REVIEW_SCHEMA, tier="strong", max_tokens=3500,
             thinking_budget=int(os.getenv("THINKING_BUDGET", "2000")),
         )
-        scoring_path = "sonnet-thinking-escalated"
+        scoring_path = "strong-thinking-escalated"
 
     if review.get("is_garbage"):
         return _garbage_result(review, rubric_criteria, pack_version, scoring_path)

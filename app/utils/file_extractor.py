@@ -34,7 +34,11 @@ logger = logging.getLogger(__name__)
 
 MAX_FILE_BYTES = int(os.getenv("MAX_FILE_BYTES", str(10 * 1024 * 1024)))   # 10 MB
 MAX_OCR_PAGES = int(os.getenv("MAX_OCR_PAGES", "5"))                       # OCR cap
-OCR_MODEL = os.getenv("OCR_MODEL", "claude-sonnet-4-5")                    # vision-capable
+# Vision-capable model for OCR. Defaults to the same Haiku every other
+# Claude call uses (single source of truth in ai_service) — a Sonnet
+# default here billed silently for weeks before anyone noticed.
+from app.services.ai_service import HAIKU as _HAIKU
+OCR_MODEL = os.getenv("OCR_MODEL", _HAIKU)
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
 TEXT_EXTS  = {".txt", ".md"}

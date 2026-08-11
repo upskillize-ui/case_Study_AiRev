@@ -82,7 +82,7 @@ async def health():
         "agent": "upskillize-multi-tenant-reviewer",
         "version": "3.1.0",
         "aiProvider": os.getenv("AI_PROVIDER", "huggingface"),
-        "model": os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5"),
+        "model": _model_tiers()["default"](),
         "tenants": all_tenant_ids(),
         "tenantsConfigured": configured_tenant_ids(),
         "load": capacity_snapshot(),
@@ -138,6 +138,37 @@ async def trigger_consolidation(x_admin_key: str = Header(default="")):
     return {"success": True, "summary": result}
 
 
+def _model_tiers():
+    """Deferred import — keeps main.py importable before services are ready."""
+    from app.services.ai_service import MODEL_TIERS
+    return MODEL_TIERS
+
+
+def _print_model_policy() -> None:
+    """Print every CLAUDE model this process will call, and shout if any is
+    off-policy. A Sonnet default hid in the OCR path for weeks and only
+    surfaced on the billing page — the startup log is where that belongs.
+
+    Whisper (TRANSCRIBE_MODEL) is printed for visibility but not policed:
+    it is a different provider with its own pricing.
+    """
+    from app.utils.file_extractor import OCR_MODEL
+    tiers = _model_tiers()
+
+    claude = {
+        "reviews":     tiers["default"](),
+        "escalation":  tiers["strong"](),   # also knowledge builds + consolidation
+        "ocr":         OCR_MODEL,
+    }
+    allow = os.getenv("ALLOWED_MODEL_PREFIX", "claude-haiku")
+    print("   Models          : " + " · ".join(f"{k}={v}" for k, v in claude.items())
+          + f" · transcribe={os.getenv('TRANSCRIBE_MODEL', 'whisper-1')}")
+    off = sorted({v for v in claude.values() if not v.startswith(allow)})
+    if off:
+        print(f"   ⚠️  OFF-POLICY MODEL IN USE: {', '.join(off)} "
+              f"(policy prefix '{allow}') — this WILL cost more than Haiku.")
+
+
 # ===== Startup =====
 @app.on_event("startup")
 async def startup():
@@ -157,6 +188,7 @@ async def startup():
     print("")
     print("🚀 Upskillize AiRev Agent v3.1 (Multi-Tenant — per-tenant keys)")
     print(f"   AI Provider     : {os.getenv('AI_PROVIDER', 'huggingface')}")
+    _print_model_policy()
     print(f"   Allowed Origins : {ALLOWED_ORIGINS}")
     print(f"   Registered      : {all_tenant_ids()}")
     configured = configured_tenant_ids()

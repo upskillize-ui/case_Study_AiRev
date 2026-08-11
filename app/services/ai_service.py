@@ -160,9 +160,17 @@ def _hf_chat(prompt: str, system: str = SYSTEM_MSG_HF, min_tokens: int = 0):
 # failures. Static blocks (knowledge pack, rubric) are marked cacheable so
 # repeat reviews of the same question pay ~10% on the cached prefix.
 
+# ONE canonical default model for every Claude call in this codebase.
+# Policy (11 Aug 2026): Haiku everywhere — no Sonnet on any path, including
+# escalation, knowledge builds, nightly consolidation and OCR. Env vars still
+# override per tier, so raising one tier later is config, not a code change.
+HAIKU = "claude-haiku-4-5"
+
 MODEL_TIERS = {
-    "default": lambda: os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5"),
-    "strong":  lambda: os.getenv("ANTHROPIC_MODEL_STRONG", "claude-sonnet-5"),
+    "default": lambda: os.getenv("ANTHROPIC_MODEL", HAIKU),
+    # 'strong' is no longer a bigger model — it is the same model given an
+    # extended thinking budget on low-confidence/garbage escalation.
+    "strong":  lambda: os.getenv("ANTHROPIC_MODEL_STRONG", HAIKU),
 }
 
 STUDENT_TEXT_FRAME = (
@@ -334,7 +342,7 @@ def call_claude(prompt: str, max_tokens: int = 2000, system: str = SYSTEM_MSG_CL
         try:
             import anthropic
             client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-            model = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5")
+            model = os.getenv("ANTHROPIC_MODEL", HAIKU)
             response = client.messages.create(
                 model=model,
                 max_tokens=max_tokens,
@@ -372,7 +380,7 @@ def _analyze_with_claude(
     )
 
     # Default to Haiku 4.5 for speed. Override via ANTHROPIC_MODEL env var.
-    model = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5")
+    model = os.getenv("ANTHROPIC_MODEL", HAIKU)
 
     response = client.messages.create(
         model=model,
