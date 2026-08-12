@@ -33,6 +33,11 @@ from app.database import tquery, texecute
 from app.services import ai_service
 
 _TABLE = "derived_rubrics"
+# Bump when the derivation RULES change: it is part of the cache key, so every
+# stored rubric re-derives under the new rules. (v2: criteria must be
+# verifiable from the submission — "Link shared in WhatsApp group" scored 0
+# for everyone because the agent cannot see WhatsApp.)
+RUBRIC_VERSION = 2
 # Per-tenant: one tenant's CREATE TABLE must never suppress another's.
 _tables_ready: set = set()
 
@@ -62,11 +67,11 @@ RUBRIC_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "name": {"type": "string",
-                             "description": "Short criterion name naming what is judged, in the task's own terms."},
+                             "description": "Short criterion name naming what is judged, in the task's own terms. MUST be judgeable from the submitted text/files alone — never something requiring access to WhatsApp, a live URL, attendance, or any system outside this submission."},
                     "maxScore": {"type": "integer", "minimum": 5, "maximum": 60,
                                  "description": "Weight out of 100. All criteria must total exactly 100."},
                     "what_earns_it": {"type": "string",
-                                      "description": "One sentence: what a submission must show to earn full marks here."},
+                                      "description": "One sentence: what the SUBMITTED TEXT OR FILES must contain to earn full marks here. If you cannot state that without needing to see something outside the submission, this criterion is invalid."},
                 },
                 "required": ["name", "maxScore", "what_earns_it"],
             },
@@ -93,7 +98,13 @@ RULES:
 3. Weight by what the task emphasises. maxScore values must total EXACTLY 100.
 4. Name criteria in the task's own language, so a student reading the name knows what was judged.
 5. Be demanding but fair: full marks must mean the task was genuinely done, not that words were written.
-6. Never invent a requirement the task does not state."""
+6. Never invent a requirement the task does not state.
+7. VERIFIABILITY IS MANDATORY. You will judge ONLY the text and files the student uploads to this platform. You cannot open links, visit published pages, see a WhatsApp group, check attendance, or view anything outside the submission. NEVER create a criterion you could not evidence from the submission itself — an unverifiable criterion scores 0 for everyone and fails students who did the work.
+   - "Link shared in WhatsApp group"        -> NOT allowed (you cannot see WhatsApp)
+   - "Artifact is live and publicly hosted" -> NOT allowed (you cannot open the link)
+   - "A published link is provided"          -> allowed (visible in the submission)
+   - "The write-up explains what was built"  -> allowed (visible in the submission)
+   Where the task requires off-platform actions, judge the evidence of them that appears IN the submission, and weight the rest onto what you can actually read."""
 
 
 def _ensure_table(tenant) -> None:
@@ -120,6 +131,7 @@ def source_hash(task: dict) -> str:
         "description": task.get("description", ""),
         "questions": task.get("questions", []),
         "marks": task.get("maxScore", 100),
+        "rules": RUBRIC_VERSION,
     }, sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.md5(blob.encode()).hexdigest()
 
@@ -255,6 +267,14 @@ def get_or_derive(tenant, scope_type: str, scope_id: int, task: dict) -> dict:
         payload = derive(task)
     except Exception as e:
         return _fallback(str(e)[:120])
+
+    suspect = [c["name"] for c in payload["criteria"]
+               if any(w in c["name"].lower() for w in
+                      ("whatsapp group", "shared in", "posted in", "attendance",
+                       "is live", "publicly host"))]
+    if suspect:
+        print(f"⚠️  possibly UNVERIFIABLE criteria for {scope_type} {scope_id} "
+              f"(agent cannot see off-platform actions): {suspect}")
 
     names = ", ".join(c["name"] for c in payload["criteria"])
     print(f"🎯 Rubric derived for {scope_type} {scope_id} "
