@@ -31,6 +31,10 @@ from app.services import (
 
 _PIPELINE_ON = os.getenv("REVIEW_PIPELINE", "on").lower() == "on"
 MAX_REVIEWED_ATTEMPTS = int(os.getenv("MAX_REVIEWED_ATTEMPTS", "2"))
+# Below this word count AND with no readable attachment we DECLINE to score,
+# rather than award a 0 the student never earned. Image- and artifact-first
+# tasks legitimately carry very little text.
+MIN_REVIEWABLE_WORDS = int(os.getenv("MIN_REVIEWABLE_WORDS", "30"))
 from app.utils.text_processor import (
     count_words, clean_text, find_mentioned_concepts
 )
@@ -208,6 +212,9 @@ def submit_and_review_assignment(
                     file_used = prior.get("file_name") or prior_url
                     parts.append(extracted)
                 elif why:
+                    # Record it, don't just print it: the student is then told
+                    # WHICH file failed and why, not "no file was attached".
+                    file_error = f"{prior.get('file_name') or 'your file'}: {why}"
                     print(f"[ASSIGNMENT] prior file extraction failed: {why}")
             db_notes = clean_text(prior.get("notes") or "")
             if db_notes:
@@ -238,6 +245,40 @@ def submit_and_review_assignment(
     word_count = count_words(combined)
     print(f"[ASSIGNMENT] {word_count} words combined "
           f"(file={'yes' if file_used else 'no'}, typed={'yes' if cleaned_typed else 'no'})")
+
+    # A SHORT answer is not automatically a FAILING answer. Many tasks here are
+    # image- or artifact-first (create an image, publish an artifact, share a
+    # link), where the attachment IS the deliverable and the text is a caption.
+    # The old rule scored those 0/100 without ever calling the AI — students
+    # were failed by a word count for doing the task correctly.
+    #
+    # Decline to score ONLY when there is too little readable content, and say
+    # exactly what was found. This runs BEFORE any DB write, so nothing is
+    # stored, nothing is graded, and the item stays cleanly re-reviewable.
+    # storeOnly is exempt: storage must accept short work — the gate applies
+    # when the stored work is actually reviewed.
+    if not req.storeOnly and word_count < MIN_REVIEWABLE_WORDS and not file_used:
+        found = f"{word_count} word{'' if word_count == 1 else 's'} of text"
+        if file_error:
+            found += f", and your attachment could not be read ({file_error})"
+        elif req.fileData or req.fileUrl or req.fileName:
+            found += ", and no readable text could be taken from your attachment"
+        else:
+            found += ", and no file was attached"
+        msg = (f"We haven't scored this yet — we could only find {found}. "
+               f"If your work is in a file, re-attach it (PDF, Word, image or text); "
+               f"if it is written work, add your reasoning in the answer box. "
+               f"No score has been recorded for this attempt.")
+        print(f"[ASSIGNMENT] NOT SCORED (too little readable content): "
+              f"words={word_count}, file_error={file_error or 'none'} — no row written")
+        return {
+            "success": True,
+            "status": "needs_input",
+            "needsInput": True,
+            "submission": {"submissionId": 0, "attemptNumber": 0},
+            "feedback": _empty_feedback(msg, helpful=True),
+            "processingTimeMs": int((time.time() - start_time) * 1000),
+        }
 
     # ── Reflexes: zero-token checks before any AI spend ────────────────────
     # storeOnly skips them: storage must never be withheld — the checks run
@@ -278,36 +319,6 @@ def submit_and_review_assignment(
             "message": "Submission stored. Open AiRev → New Review for AI feedback.",
             "processingTimeMs": total_time,
         }
-
-    if word_count < 30:
-        msg = (f"Your submission is very short ({word_count} words). "
-               "Please add more detail and resubmit so we can give you useful feedback.")
-        partial = {
-            "totalScore": 0, "grade": "—",
-            "rubricScores": [], "strengths": [],
-            "improvements": [
-                "Expand on your reasoning — show your working.",
-                "Reference specific facts, formulas, or sources from the lecture.",
-                "Aim for at least a few paragraphs of substance.",
-            ],
-            "missingConcepts": [], "coveredConcepts": [],
-            "suggestedModules": [], "detailedFeedback": msg,
-            "wordCount": word_count, "wordCountMessage": "very short",
-            "encouragement": "Add more detail and resubmit — you've got this.",
-            "isGarbage": True, "garbageWarning": msg,
-            "aiLikelihoodPercent": None, "humanLikelihoodPercent": None,
-            "aiDetectionReason": "Not analysed (too short).", "aiVerdict": "uncertain",
-            "scoreEmoji": "—",
-            "plagiarismFlag": "low", "needsMentorHelp": True,
-            "summary": msg,
-        }
-        try:
-            assignment_db_service.update_assignment_submission_with_ai_results(
-                tenant, submission["submissionId"], partial
-            )
-        except Exception as e:
-            print(f"[ASSIGNMENT] DB update (short-submission path) failed: {e}")
-        return _build_response(submission, partial, msg, start_time)
 
     # ── Evidence-gated pipeline (primary path) ─────────────────────────────
     if _PIPELINE_ON:

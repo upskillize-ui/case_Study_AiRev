@@ -3,3 +3,8 @@
 .env
 *.egg-info/
 __pycache__
+
+# Bulk-review output contains student ids and scores — never commit it.
+bulk_review_log.csv
+cleared_zeros.csv
+*.csv
