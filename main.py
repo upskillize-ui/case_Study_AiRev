@@ -208,24 +208,10 @@ async def startup():
     print("")
 
 
-# ===== DEBUG (remove after diagnosis) =====
-@app.get("/api/debug/keycheck")
-async def debug_keycheck(x_api_key: str = Header(default="")):
-    received = x_api_key
-    received_len = len(received)
-    received_preview = received[:6] + "..." + received[-4:] if received_len > 10 else received
-    tenants_info = []
-    for tid, tenant in TENANTS.items():
-        try:
-            stored = tenant.api_key
-            stored_len = len(stored)
-            stored_preview = stored[:6] + "..." + stored[-4:] if stored_len > 10 else stored
-            matches = stored == received
-            tenants_info.append({"tenant_id": tid, "env_var_name": tenant.api_key_env, "stored_length": stored_len, "stored_preview": stored_preview, "matches_received": matches})
-        except RuntimeError as e:
-            tenants_info.append({"tenant_id": tid, "env_var_name": tenant.api_key_env, "error": str(e)})
-    return {"received_x_api_key": {"length": received_len, "preview": received_preview, "is_empty": received_len == 0}, "tenants": tenants_info}
-# ===== END DEBUG =====
+# NOTE: /api/debug/keycheck was removed on 12 Aug 2026.
+# It required no auth and returned each tenant key's length and its first
+# six / last four characters to any caller on the internet. The startup log
+# already reports which tenants are configured; that is the safe equivalent.
 
 
 if __name__ == "__main__":

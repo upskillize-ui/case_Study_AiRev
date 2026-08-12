@@ -187,7 +187,16 @@ def save_assignment_submission(
     return {"submissionId": submission_id, "attemptNumber": attempt_number}
 
 
-def update_assignment_submission_with_ai_results(tenant: Tenant, submission_id: int, result: dict):
+def update_assignment_submission_with_ai_results(tenant: Tenant, submission_id: int,
+                                                result: dict, max_marks: int = 100):
+    """Persist the review. `grade` is written in the ASSIGNMENT's own marks
+    scale, not as a raw 0-100 percentage.
+
+    The rubric engine always works in percent; the assignment may be out of 10.
+    Writing 100-scale numbers into a 10-mark field showed learners "0/100" on a
+    10-mark task and would have shown "70" out of 10 for a good answer. The
+    percentage is kept in the feedback payload so the card can show both.
+    """
     feedback_payload = {
         "grade":            result.get("grade"),
         "totalScore":       result.get("totalScore"),
@@ -203,6 +212,9 @@ def update_assignment_submission_with_ai_results(tenant: Tenant, submission_id: 
         "wordCount":        result.get("wordCount"),
         "wordCountMessage": result.get("wordCountMessage", ""),
         "summary":          result.get("summary", ""),
+        # Both scales, explicitly, so no consumer has to guess which one it has.
+        "scorePercent":     result.get("totalScore"),
+        "outOf":            max_marks,
         "aiLikelihoodPercent":    result.get("aiLikelihoodPercent"),
         "humanLikelihoodPercent": result.get("humanLikelihoodPercent"),
         "aiDetectionReason":      result.get("aiDetectionReason", ""),
@@ -220,12 +232,25 @@ def update_assignment_submission_with_ai_results(tenant: Tenant, submission_id: 
             status   = 'graded'
           WHERE id = %s""",
         (
-            int(round(float(result.get("totalScore", 0)))),
+            _scaled_marks(result.get("totalScore", 0), max_marks),
             json.dumps(feedback_payload, ensure_ascii=False),
             submission_id,
         ),
     )
 
+
+def _scaled_marks(percent, max_marks: int) -> float:
+    """0-100 rubric percentage -> the assignment's own marks scale.
+
+    Kept to one decimal so a 10-mark task can express 6.5 rather than
+    collapsing every mid-band answer to the same integer.
+    """
+    try:
+        pct = max(0.0, min(100.0, float(percent or 0)))
+        marks = max(1, int(max_marks or 100))
+    except (TypeError, ValueError):
+        return 0.0
+    return round(pct * marks / 100.0, 1)
 
 # ---------- HISTORY (NEW) -------------------------------------------------
 

@@ -27,6 +27,7 @@ from app.services import (
     assignment_db_service,
     review_pipeline,
     prefilter_service,
+    rubric_service,
 )
 
 _PIPELINE_ON = os.getenv("REVIEW_PIPELINE", "on").lower() == "on"
@@ -178,6 +179,10 @@ def submit_and_review_assignment(
                         "message": ("This is the same answer you already submitted. "
                                     "Revise it using your feedback, then resubmit.")}
 
+    # The assignment's own marks scale (10, 20, 100 ...). The rubric engine
+    # scores in percent; grades are persisted in THIS scale.
+    max_marks = int(assignment.get("maxScore") or 100)
+
     cleaned_typed = clean_text(req.answerText or "")
     parts: list[str] = []
     file_used = None
@@ -320,15 +325,38 @@ def submit_and_review_assignment(
             "processingTimeMs": total_time,
         }
 
+    # ── Adaptive rubric ────────────────────────────────────────────────────
+    # The agent designs criteria for THIS task (derived once per assignment,
+    # cached, rebuilt when faculty edit it) instead of grading every task
+    # against one fixed template. Word limits come from the same derivation,
+    # so an image-first task is not penalised for a short caption.
+    adaptive = rubric_service.get_or_derive(
+        tenant, "assignment", req.assignmentId, assignment)
+    adaptive_rubric = {"criteria": adaptive["criteria"]}
+    word_min, word_max = adaptive["wordMin"], adaptive["wordMax"]
+    # AUDIT: `assignment` is ALSO the knowledge-pack source. Mutating it here
+    # changed the pack's content hash and staled every pack, so the derived
+    # rubric travels separately and the task text stays untouched.
+
+    # AUDIT: apply_gates decides "case specificity" by substring-matching
+    # criterion NAMES ("evidence", "application", "practical" ...). With
+    # free-text derived names that fired by accident, capping a criterion at
+    # 40% and telling the student they "never engaged this case's facts" — on
+    # tasks that have no case at all. Disable that gate for non-written
+    # deliverables, where there is no source material to be specific about.
+    gate_overrides = ({} if adaptive.get("submissionKind") in ("written", "mixed")
+                      else {"generic_answer_cap": 100})
+
     # ── Evidence-gated pipeline (primary path) ─────────────────────────────
     if _PIPELINE_ON:
         try:
             r = review_pipeline.review_with_knowledge(
                 scope_type="assignment", scope_id=req.assignmentId,
-                raw_source=assignment, rubric=assignment["gradingRubric"],
+                raw_source=assignment, rubric=adaptive_rubric,
                 student_answer=combined, word_count=word_count,
-                word_limit_min=assignment["wordLimitMin"],
-                word_limit_max=assignment["wordLimitMax"],
+                word_limit_min=word_min,
+                word_limit_max=word_max,
+                gate_overrides=gate_overrides,
                 student_id=req.studentId,
             )
             if r is not None:
@@ -339,7 +367,8 @@ def submit_and_review_assignment(
                 return _pipeline_assignment_response(
                     tenant, submission, r, word_count, start_time,
                     duplicate=any(f.get("flag") == "cohort_duplicate"
-                                  for f in reflex.get("flags", [])))
+                                  for f in reflex.get("flags", [])),
+                    max_marks=max_marks)
         except Exception as e:
             print(f"[ASSIGNMENT] Pipeline failed, falling back to legacy: {e}")
 
@@ -352,7 +381,7 @@ def submit_and_review_assignment(
             },
             model_answer=assignment["modelAnswers"],
             student_answer=combined,
-            grading_rubric=assignment["gradingRubric"],
+            grading_rubric=adaptive_rubric,
             key_concepts=assignment["keyConcepts"],
         )
     except Exception as e:
@@ -368,7 +397,11 @@ def submit_and_review_assignment(
             "submission": submission,
         }
 
-    rubric_topics = [c.get("name", "") for c in assignment["gradingRubric"]["criteria"]]
+    # AUDIT: derived criterion names are task phrases, not concepts — feeding
+    # them to the substring matcher produced bogus "missing concepts". Only
+    # use them when the rubric was NOT derived.
+    rubric_topics = ([] if adaptive.get("derived")
+                     else [c.get("name", "") for c in adaptive_rubric["criteria"]])
     if rubric_topics:
         concept_check = find_mentioned_concepts(combined, rubric_topics)
         ai_analysis["conceptsCovered"] = list(set(
@@ -380,12 +413,11 @@ def submit_and_review_assignment(
         ]
 
     scores = scoring_service.calculate_scores(
-        ai_analysis, assignment["gradingRubric"], word_count,
-        assignment["wordLimitMin"], assignment["wordLimitMax"],
+        ai_analysis, adaptive_rubric, word_count,
+        word_min, word_max,
     )
     feedback = feedback_service.generate_feedback(
-        scores, ai_analysis, word_count,
-        assignment["wordLimitMin"], assignment["wordLimitMax"],
+        scores, ai_analysis, word_count, word_min, word_max,
     )
 
     result = {
@@ -414,7 +446,7 @@ def submit_and_review_assignment(
 
     try:
         assignment_db_service.update_assignment_submission_with_ai_results(
-            tenant, submission["submissionId"], result
+            tenant, submission["submissionId"], result, max_marks
         )
     except Exception as db_err:
         print(f"[ASSIGNMENT] DB update failed after AI review: {db_err}")
@@ -495,7 +527,7 @@ def _remember_student_assignment(req, submission, r):
 
 
 def _pipeline_assignment_response(tenant, submission, r, word_count, start_time,
-                                  duplicate=False):
+                                  duplicate=False, max_marks: int = 100):
     """Persist + shape the assignment response from a pipeline result.
     Reuses _build_response for the envelope; adds the pipeline-only fields."""
     scores = r["scores"]
@@ -530,7 +562,7 @@ def _pipeline_assignment_response(tenant, submission, r, word_count, start_time,
     }
     try:
         assignment_db_service.update_assignment_submission_with_ai_results(
-            tenant, submission["submissionId"], result)
+            tenant, submission["submissionId"], result, max_marks)
     except Exception as db_err:
         print(f"[ASSIGNMENT] DB update failed after pipeline review: {db_err}")
 

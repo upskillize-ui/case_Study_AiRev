@@ -306,7 +306,8 @@ def _trim(quote: str, limit: int = 120) -> str:
 def review_with_knowledge(scope_type: str, scope_id: int, raw_source: dict,
                           rubric: dict, student_answer: str, word_count: int,
                           word_limit_min: int, word_limit_max: int,
-                          background_tasks=None, student_id: int = 0) -> Optional[dict]:
+                          background_tasks=None, student_id: int = 0,
+                          gate_overrides: Optional[dict] = None) -> Optional[dict]:
     """Shared entry for every review type: recall (or build) the knowledge
     pack, then run the gated pipeline. Returns the pipeline result, or None
     when no pack could be built (caller falls back to its legacy path).
@@ -327,14 +328,15 @@ def review_with_knowledge(scope_type: str, scope_id: int, raw_source: dict,
         pack=known["pack"], pack_version=known["version"],
         rubric=rubric, student_answer=student_answer, word_count=word_count,
         word_limit_min=word_limit_min, word_limit_max=word_limit_max,
-        student_id=student_id,
+        student_id=student_id, gate_overrides_in=gate_overrides,
     )
 
 
 def run_review(scope_type: str, pack: dict, pack_version: int,
                rubric: dict, student_answer: str, word_count: int,
                word_limit_min: int, word_limit_max: int,
-               scope_id: int = 0, student_id: int = 0) -> dict:
+               scope_id: int = 0, student_id: int = 0,
+               gate_overrides_in: Optional[dict] = None) -> dict:
     """Full pipeline for one submission. Raises on AI failure — the route
     owns the fallback to the legacy path."""
     rubric_criteria = rubric.get("criteria", []) or []
@@ -355,6 +357,13 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
                 gate_overrides["generic_answer_cap"] = int(tuned)
         except Exception as ce:
             print(f"⚠️ sleep context unavailable: {ce}")
+
+    # Caller overrides win: the review route knows things the nightly tuner
+    # cannot, e.g. that this task has no case material for a "case specificity"
+    # gate to be meaningful about.
+    if gate_overrides_in:
+        gate_overrides.update(gate_overrides_in)
+        print(f"ℹ️  gate overrides from caller: {gate_overrides_in}")
 
     static_block = (  # cacheable prefix — identical for every student on this item
         f"{render_for_prompt(pack)}\n\n"

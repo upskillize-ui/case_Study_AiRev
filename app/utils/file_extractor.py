@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 # ---------- config ---------------------------------------------------------
 
 MAX_FILE_BYTES = int(os.getenv("MAX_FILE_BYTES", str(10 * 1024 * 1024)))   # 10 MB
+NO_TEXT_IN_IMAGE = "image contains no readable text"
 MAX_OCR_PAGES = int(os.getenv("MAX_OCR_PAGES", "5"))                       # OCR cap
 # Vision-capable model for OCR. Defaults to the same Haiku every other
 # Claude call uses (single source of truth in ai_service) — a Sonnet
@@ -429,12 +430,18 @@ def _ocr_with_claude(images: List[Tuple[str, str]], kind: str) -> Tuple[str, str
     content.append({
         "type": "text",
         "text": (
-            f"The image(s) above are a student's {kind} for a case-study answer. "
-            "Transcribe ALL handwritten or printed text you can read, exactly as written. "
-            "Preserve paragraph breaks and bullet points. Do not summarize, do not add "
-            "commentary, do not correct grammar. If multiple pages are shown, separate them "
-            "with a blank line. If a section is unreadable, write [unreadable] in its place. "
-            "Output only the transcription — no preamble."
+            f"The image(s) above are a student's {kind} submitted as coursework. "
+            "Do BOTH of the following.\n"
+            "1. TEXT — transcribe ALL handwritten or printed text exactly as written, "
+            "preserving paragraph breaks and bullet points. Do not summarize, do not add "
+            "commentary, do not correct grammar. Mark unreadable parts [unreadable]. "
+            "Write NONE if the image contains no readable text.\n"
+            "2. VISUAL — state factually what the image shows (subject, setting, style, "
+            "any chart/diagram/screen and what it depicts). Describe only what is "
+            "visible; never infer intent or judge quality.\n\n"
+            "Answer in exactly this format:\n"
+            "TEXT:\n<transcription or NONE>\n\n"
+            "VISUAL:\n<one short factual paragraph>"
         ),
     })
 
@@ -446,10 +453,15 @@ def _ocr_with_claude(images: List[Tuple[str, str]], kind: str) -> Tuple[str, str
             messages=[{"role": "user", "content": content}],
         )
         text_parts = [b.text for b in msg.content if getattr(b, "type", "") == "text"]
-        text = _clean("\n".join(text_parts))
-        if not text:
-            return "", "OCR returned empty text"
-        return text, ""
+        raw = _clean("\n".join(text_parts))
+        if not raw or raw.strip().upper().strip(" .") == "NO_TEXT":
+            # Not an error: an AI-generated picture or a photo legitimately
+            # carries no text. Signalled distinctly so the caller can record
+            # that an attachment EXISTS instead of concluding that the student
+            # submitted nothing — which is what produced the fabricated
+            # "your submission lacks an AI-generated image" criticism.
+            return "", NO_TEXT_IN_IMAGE
+        return raw, ""
     except Exception as e:
         logger.exception("vision OCR failed")
         return "", f"OCR failed: {type(e).__name__}"
