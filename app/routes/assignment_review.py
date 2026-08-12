@@ -452,7 +452,7 @@ def submit_and_review_assignment(
         print(f"[ASSIGNMENT] DB update failed after AI review: {db_err}")
 
     return _build_response(
-        submission, result, feedback["studentFeedback"]["summary"], start_time
+        submission, result, feedback["studentFeedback"]["summary"], start_time, max_marks
     )
 
 
@@ -532,7 +532,8 @@ def _pipeline_assignment_response(tenant, submission, r, word_count, start_time,
     Reuses _build_response for the envelope; adds the pipeline-only fields."""
     scores = r["scores"]
     grade = scoring_service.get_grade(scores["totalScore"])
-    summary = (f"You scored {scores['totalScore']}/100 ({grade}). "
+    awarded = assignment_db_service.scaled_marks(scores["totalScore"], max_marks)
+    summary = (f"You scored {_fmt(awarded)}/{max_marks} ({grade}). "
                f"{len(r['conceptsCovered'])} of "
                f"{len(r['conceptsCovered']) + len(r['conceptsMissing'])} core concepts engaged.")
 
@@ -569,7 +570,7 @@ def _pipeline_assignment_response(tenant, submission, r, word_count, start_time,
     print(f"[ASSIGNMENT] ✅ Pipeline review: score={scores['totalScore']} grade={grade} "
           f"path={r['decisions']['scoringPath']} gates={len(scores['gatesHit'])}")
 
-    response = _build_response(submission, result, summary, start_time)
+    response = _build_response(submission, result, summary, start_time, max_marks)
     response["feedback"]["howYouScored"]   = r["howYouScored"]
     response["feedback"]["languageReport"] = r["languageReport"]
     response["feedback"]["factualErrors"]  = r["factualErrors"]
@@ -577,13 +578,27 @@ def _pipeline_assignment_response(tenant, submission, r, word_count, start_time,
     return response
 
 
-def _build_response(submission: dict, result: dict, summary: str, start_time: float) -> dict:
+def _fmt(v) -> str:
+    """3.0 -> "3", 3.4 -> "3.4" — marks read naturally on the card."""
+    f = float(v)
+    return str(int(f)) if f == int(f) else f"{f:.1f}"
+
+
+def _build_response(submission: dict, result: dict, summary: str, start_time: float,
+                    max_marks: int = 100) -> dict:
     total_time = int((time.time() - start_time) * 1000)
+    awarded = assignment_db_service.scaled_marks(result.get("totalScore", 0), max_marks)
     return {
         "success":    True,
         "submission": submission,
         "feedback": {
+            # `score` stays the 0-100 percentage (the progress ring is a
+            # percentage arc); `scoreMarks` / `outOf` are the assignment's real
+            # marks, which is what the student is actually graded on.
             "score":                  result["totalScore"],
+            "scorePercent":           result["totalScore"],
+            "scoreMarks":             awarded,
+            "outOf":                  max_marks,
             "grade":                  result["grade"],
             "scoreEmoji":             result.get("scoreEmoji", "—"),
             "summary":                summary,

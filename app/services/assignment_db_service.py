@@ -232,14 +232,14 @@ def update_assignment_submission_with_ai_results(tenant: Tenant, submission_id: 
             status   = 'graded'
           WHERE id = %s""",
         (
-            _scaled_marks(result.get("totalScore", 0), max_marks),
+            scaled_marks(result.get("totalScore", 0), max_marks),
             json.dumps(feedback_payload, ensure_ascii=False),
             submission_id,
         ),
     )
 
 
-def _scaled_marks(percent, max_marks: int) -> float:
+def scaled_marks(percent, max_marks: int) -> float:
     """0-100 rubric percentage -> the assignment's own marks scale.
 
     Kept to one decimal so a 10-mark task can express 6.5 rather than
