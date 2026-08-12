@@ -7,7 +7,7 @@ import time
 import json
 import os
 import hashlib
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Header
 from app.services.capacity import capacity_guard
 from pydantic import BaseModel
 from typing import Optional, Dict
@@ -379,7 +379,11 @@ def get_sessions_for_student(student_id: int, background_tasks: BackgroundTasks)
 # Concurrent-safe: each request is fully independent, no shared state.
 @router.post("/submit-industry-session", dependencies=[Depends(capacity_guard)])
 def submit_industry_session(req: IndustrySessionInsightRequest,
-                                  background_tasks: BackgroundTasks):
+                            background_tasks: BackgroundTasks,
+                            x_admin_key: str = Header(default="")):
+    # Who pays for this run — header-only authority, before any AI spend.
+    if ai_service.begin_run_billing(x_admin_key):
+        print("ℹ️  staff-initiated session review — student will not be billed")
     from app.database import canonical_student_id
     req.studentId = canonical_student_id(req.studentId)
     start = time.time()

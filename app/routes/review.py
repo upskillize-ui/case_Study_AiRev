@@ -15,7 +15,7 @@ import time
 import json
 import os
 import hashlib
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Header
 from app.services.capacity import capacity_guard
 from app.models.schemas import SubmitAnswerRequest, TestReviewRequest, MentorApproveRequest
 from app.services import ai_service, scoring_service, feedback_service, db_service
@@ -62,7 +62,12 @@ def _attempt_policy_block(case_study_id: int, student_id: int,
 
 # ── POST /api/review/submit ────────────────────────────────────────────────
 @router.post("/submit", dependencies=[Depends(capacity_guard)])
-def submit_and_review(req: SubmitAnswerRequest, background_tasks: BackgroundTasks):
+def submit_and_review(req: SubmitAnswerRequest, background_tasks: BackgroundTasks,
+                      x_admin_key: str = Header(default="")):
+    # Who pays for this run — header-only authority, set before any AI spend.
+    staff_run = ai_service.begin_run_billing(x_admin_key)
+    if staff_run:
+        print("ℹ️  staff-initiated review — student will not be billed")
     from app.database import canonical_student_id
     req.studentId = canonical_student_id(req.studentId)
     start_time = time.time()
@@ -967,7 +972,9 @@ def list_all_published_case_studies():
 # Capstones use `users.id` as student_id (not `students.id`), so we accept
 # either and resolve via the students table. Mirrors submit-assignment.
 @router.post("/submit-capstone", dependencies=[Depends(capacity_guard)])
-def submit_capstone_review(req: dict):
+def submit_capstone_review(req: dict, x_admin_key: str = Header(default="")):
+    if ai_service.begin_run_billing(x_admin_key):
+        print("ℹ️  staff-initiated capstone review — student will not be billed")
     """
     Body: { capstoneId, studentId, answerText, fileUrl, fileName }
     studentId may be users.id OR students.id — we resolve both.

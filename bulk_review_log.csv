@@ -1,0 +1,4 @@
+type,item_id,student_id,submission_id,title,ok,score,grade,ai_percent,detail,ms
+assignment,17,52,2218,Day 01:ChaGpt Assignment - Yourself in 5 years,True,7,F,18,,38276
+assignment,20,357,2222,Day 03: Perplexity and Grok,True,49,C,50,,49527
+assignment,20,52,2220,Day 03: Perplexity and Grok,True,0,F,50,,64745

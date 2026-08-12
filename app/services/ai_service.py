@@ -215,6 +215,27 @@ def set_student_context(student_id) -> None:
     _student_ctx.set(student_id or None)
 
 
+# Staff-initiated runs (faculty bulk review, admin re-runs) still review the
+# work, but must never debit the learner. The decision is carried for the whole
+# synchronous call chain of one request, set once at the route boundary.
+_no_bill_ctx = _contextvars.ContextVar("airev_no_bill", default=False)
+
+
+def begin_run_billing(x_admin_key: str = "") -> bool:
+    """Decide who pays for this run; returns True when it is staff-initiated.
+
+    Authority comes ONLY from the x-admin-key header matching ADMIN_JOB_KEY —
+    never from the request body, so a learner cannot mark their own review
+    free. Call at the top of every submit route, unconditionally, so the
+    per-request value is always explicit rather than inherited.
+    """
+    import hmac
+    expected = os.getenv("ADMIN_JOB_KEY", "")
+    admin = bool(expected) and hmac.compare_digest(str(x_admin_key or ""), expected)
+    _no_bill_ctx.set(admin)
+    return admin
+
+
 def _lms_user_id(sid):
     """AiRev runs on students.id; the LMS bills by users.id. Map back via the
     students table (mirror of canonical_student_id). Fail-open: unmapped ids
@@ -237,6 +258,9 @@ def _report_usage(model: str, usage) -> None:
         student_id = _lms_user_id(student_id)
     if not base or not secret:
         print("[usage] OFF: LMS_BASE_URL / INTERNAL_CREDIT_SECRET not set in this Space")
+        return
+    if _no_bill_ctx.get():
+        print("[usage] NOT BILLED: staff-initiated review (valid ADMIN_JOB_KEY)")
         return
     if not student_id:
         print("[usage] skipped: no student context on this review")

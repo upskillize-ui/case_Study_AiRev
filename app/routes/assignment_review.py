@@ -130,7 +130,11 @@ def prepare_assignment(assignment_id: int, background_tasks: BackgroundTasks,
 def submit_and_review_assignment(
     req: SubmitAssignmentRequest,
     tenant: Tenant = Depends(get_tenant),
+    x_admin_key: str = Header(default=""),
 ):
+    # Who pays for this run — header-only authority, set before any AI spend.
+    if ai_service.begin_run_billing(x_admin_key):
+        print("[ASSIGNMENT] staff-initiated review — student will not be billed")
     from app.database import canonical_student_id
     req.studentId = canonical_student_id(req.studentId)
     start_time = time.time()
