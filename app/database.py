@@ -37,12 +37,51 @@ def set_current_tenant(tenant: Tenant):
 # The LMS carries TWO student identities and BOTH appear in submission rows:
 # the AiRev panel is mounted with users.id (frontend: studentId={user.id})
 # while the Coursework module writes students.id (via resolveStudent).
-# Confirmed 19 Jul by reading both codebases. Any submission lookup must
-# therefore match the given id AND both mappings — bidirectional:
-#   given users.id    -> students.id via (SELECT id  ... WHERE user_id = ?)
-#   given students.id -> users.id    via (SELECT user_id ... WHERE id  = ?)
-# ONE definition, imported everywhere. Takes THREE params: (sid, sid, sid).
+# Confirmed 19 Jul by reading both codebases. The original lookup therefore
+# matched the given id AND both mappings — bidirectional.
+#
+# THAT IS A DATA LEAK. The two id ranges OVERLAP, so the bidirectional match
+# resolves one learner's id into other learners' rows. Measured against
+# production on 13 Aug 2026:
+#
+#   1,435 submissions were returnable for two different learners
+#   378 of 503 distinct student_id values were ambiguous
+#   a lookup for 937 expanded to IN (937, 1178, 827) and returned the work of
+#   THREE people: student 937, student 1178, and student 827 (user_id 937)
+#
+# Enrolment cannot disambiguate them — 1,449 rows have both candidates enrolled
+# in the same course, because the cohort shares courses.
+#
+# What the data DOES say: of 2,087 submissions only TWO carry a student_id that
+# is not a valid students.id. The column is students.id in practice. So the
+# correct lookup is a single exact match, and the reverse hops are what break
+# it.
+#
+# STRICT_STUDENT_ID=1 switches to that single match. Each learner resolves to
+# exactly one canonical id and canonical ids are injective across real users,
+# so every row is returned to at most ONE learner — the bleed is closed by
+# construction, not narrowed. Cost: ~2 rows stored under a users.id stop being
+# visible to their owner. The rows are untouched; unset the variable and they
+# return.
+#
+# Default is OFF: deploying this changes nothing until the variable is set.
+#
+# CAVEAT — do NOT run tools/bulk_review.py with this ON yet. It reads
+# student_id straight from the database (a students.id) and passes it to the
+# route, which feeds it to canonical_student_id() — and that maps
+# user_id -> id, so a students.id that collides with another learner's user_id
+# resolves to the wrong person. Panel traffic is unaffected (it sends users.id,
+# which is what canonical_student_id expects). Making the id space explicit at
+# the route boundary is the follow-up that clears this.
+#
+# BOTH forms take THREE params: (sid, sid, sid). Identical arity, so no call
+# site changes — the strict form simply binds the same id three times.
+STRICT_STUDENT_ID = os.getenv("STRICT_STUDENT_ID", "").strip().lower() in {
+    "1", "true", "yes", "on"}
+
 DUAL_ID_MATCH = (
+    "student_id IN (%s, %s, %s)"          # strict: all three bind the same id
+    if STRICT_STUDENT_ID else
     "student_id IN (%s, "
     "COALESCE((SELECT user_id FROM students WHERE id = %s LIMIT 1), -1), "
     "COALESCE((SELECT id FROM students WHERE user_id = %s LIMIT 1), -1))")
