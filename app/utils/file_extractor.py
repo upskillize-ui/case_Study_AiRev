@@ -43,6 +43,13 @@ OCR_MODEL = os.getenv("OCR_MODEL", _HAIKU)
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
 TEXT_EXTS  = {".txt", ".md"}
+# Audio/video. AiRev reviews WRITTEN work; there is nothing to extract from a
+# video. Named explicitly because the unknown-extension fallback used to decode
+# them as UTF-8 with errors="ignore": a WhatsApp .mp4 became "272004 words" of
+# binary garbage, which then exceeded the notes column and 500'd the submit
+# (live, 13 Aug). Reject them by name, with a message the student can act on.
+MEDIA_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".3gp", ".wmv",
+              ".flv", ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".wma"}
 CODE_EXTS  = {".py", ".sql", ".js", ".ts", ".jsx", ".tsx", ".java", ".c",
               ".cpp", ".r", ".json", ".html", ".css", ".sh", ".yaml", ".yml"}
 SHEET_MAX_ROWS  = 300     # per sheet — enough for any coursework workbook
@@ -50,6 +57,39 @@ SHEET_MAX_COLS  = 40
 SHEET_MAX_CHARS = 60000   # whole-workbook render cap; truncation is stated
 ZIP_MAX_FILES   = 25
 ZIP_MAX_TOTAL   = 60 * 1024 * 1024   # unpacked-bytes bomb guard
+
+# Hard ceiling on returned text. The OCR, sheet and code paths already cap
+# themselves; the .txt/.md and unknown-extension paths did not, so a 10 MB file
+# could return ~10M characters — too long for the notes column (DataError 1406,
+# HTTP 500, submission lost) and an enormous token bill if it ever reached the
+# model. One ceiling, applied at every unbounded exit.
+MAX_TEXT_CHARS = int(os.getenv("MAX_TEXT_CHARS", "50000"))
+
+
+def _cap(text: str) -> str:
+    """Trim to MAX_TEXT_CHARS and say so — silent truncation reads as a short
+    answer to the reviewer, which would cost the learner marks."""
+    if len(text) <= MAX_TEXT_CHARS:
+        return text
+    return (text[:MAX_TEXT_CHARS] +
+            f"\n\n[Note: submission truncated at {MAX_TEXT_CHARS} characters "
+            f"for review; the original file was longer.]")
+
+
+def _looks_like_text(data: bytes, sample: int = 4096) -> bool:
+    """True when these bytes are plausibly human-readable text.
+
+    Guards the last-resort decode. Binary containers (video, audio, archives)
+    survive errors="ignore" as long strings of control characters that look
+    like content to every downstream word count.
+    """
+    chunk = data[:sample]
+    if not chunk:
+        return False
+    if b"\x00" in chunk:                       # NUL bytes never appear in text
+        return False
+    printable = sum(1 for b in chunk if 9 <= b <= 13 or 32 <= b <= 126 or b >= 160)
+    return printable / len(chunk) >= 0.85
 
 
 # ---------- public entry ---------------------------------------------------
@@ -159,9 +199,17 @@ def extract_text_from_bytes(data: bytes, file_name: str = "") -> Tuple[str, str]
                 "select 'Word Document (.docx)', and re-upload."
             )
 
+        # Audio / video ----------------------------------------------------
+        if ext in MEDIA_EXTS:
+            return "", (
+                f"{ext} is a video or audio file, and AiRev reviews written work. "
+                "Upload your write-up as PDF, Word, an image of your notes, or "
+                "type it into the answer box."
+            )
+
         # Plain text ------------------------------------------------------
         if ext in TEXT_EXTS:
-            return _clean(data.decode("utf-8", errors="ignore")), ""
+            return _cap(_clean(data.decode("utf-8", errors="ignore"))), ""
         if ext == ".rtf":
             return _extract_rtf(data)
 
@@ -198,7 +246,12 @@ def extract_text_from_bytes(data: bytes, file_name: str = "") -> Tuple[str, str]
                 return text, ""
         if _looks_like_image(data):
             return _extract_image(data, ".png")
-        return _clean(data.decode("utf-8", errors="ignore")), ""
+        if not _looks_like_text(data):
+            return "", (
+                "this file type could not be read as text. Upload your work as "
+                "PDF, Word, Excel, an image, or type it into the answer box."
+            )
+        return _cap(_clean(data.decode("utf-8", errors="ignore"))), ""
 
     except Exception as e:
         logger.exception("extraction crashed")
@@ -303,7 +356,15 @@ def _extract_scanned_pdf(data: bytes) -> Tuple[str, str]:
     except Exception as e:
         return "", f"pdf rasterize open failed: {e}"
 
-    n = min(len(pdf), MAX_OCR_PAGES)
+    # Read the page count BEFORE the finally block closes the document. This
+    # used to be re-read after close(), where the handle is NULL — pypdfium2
+    # then raised ctypes.ArgumentError and the whole extraction crashed, so a
+    # scanned PDF returned "extraction failed" instead of its OCR text.
+    try:
+        total_pages = len(pdf)
+    except Exception as e:
+        return "", f"pdf page count failed: {e}"
+    n = min(total_pages, MAX_OCR_PAGES)
     if n == 0:
         return "", "PDF has zero pages"
 
@@ -328,12 +389,12 @@ def _extract_scanned_pdf(data: bytes) -> Tuple[str, str]:
     text, why = _ocr_with_claude(images_b64, kind="scanned PDF")
     if not text:
         return "", why
-    if len(pdf) > MAX_OCR_PAGES:
+    if total_pages > MAX_OCR_PAGES:
         text += (
             f"\n\n[Note: only the first {MAX_OCR_PAGES} pages were OCR-processed "
-            f"out of {len(pdf)} total. Increase MAX_OCR_PAGES to read more.]"
+            f"out of {total_pages} total. Increase MAX_OCR_PAGES to read more.]"
         )
-    return text, ""
+    return _cap(text), ""
 
 
 # ---------- DOCX -----------------------------------------------------------
