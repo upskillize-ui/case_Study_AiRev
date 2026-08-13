@@ -58,11 +58,12 @@ SHEET_MAX_CHARS = 60000   # whole-workbook render cap; truncation is stated
 ZIP_MAX_FILES   = 25
 ZIP_MAX_TOTAL   = 60 * 1024 * 1024   # unpacked-bytes bomb guard
 
-# Hard ceiling on returned text. The OCR, sheet and code paths already cap
-# themselves; the .txt/.md and unknown-extension paths did not, so a 10 MB file
-# could return ~10M characters — too long for the notes column (DataError 1406,
-# HTTP 500, submission lost) and an enormous token bill if it ever reached the
-# model. One ceiling, applied at every unbounded exit.
+# Hard ceiling on returned text, enforced ONCE in extract_text_from_bytes().
+# A 10 MB file could otherwise return ~10M characters — past the notes column
+# (DataError 1406, HTTP 500, submission lost) and an enormous token bill if it
+# reached the model. The sheet/zip/code paths have their own tighter bounds;
+# PDF, DOCX, RTF and image OCR have none, which is why this must live at the
+# shared exit rather than in whichever branch was being debugged that day.
 MAX_TEXT_CHARS = int(os.getenv("MAX_TEXT_CHARS", "50000"))
 
 
@@ -169,7 +170,22 @@ def extract_text_from_bytes(data: bytes, file_name: str = "") -> Tuple[str, str]
     Shared by both the URL path (download then extract) and the base64 path
     (decode then extract), so every supported format behaves identically no
     matter how the bytes arrived. Returns (extracted_text, reason).
+
+    THE CEILING LIVES HERE, at the one exit every caller uses. It was first
+    applied per-branch, which left _extract_pdf, _extract_docx, _extract_rtf
+    and _extract_image uncapped — a 10 MB text-based PDF or Word file would
+    still have produced millions of characters and reproduced the exact
+    DataError 1406 / HTTP 500 that lost a submission on 13 Aug. A guard that
+    only covers the branch you happened to debug is not a guard. Capping the
+    single exit also means a format added later is bounded by default.
     """
+    text, reason = _extract_dispatch(data, file_name)
+    return _cap(text), reason
+
+
+def _extract_dispatch(data: bytes, file_name: str = "") -> Tuple[str, str]:
+    """Format detection and per-format extraction. Callers use
+    extract_text_from_bytes(), which applies the length ceiling."""
     if not data:
         return "", "no file bytes provided"
 
@@ -209,7 +225,7 @@ def extract_text_from_bytes(data: bytes, file_name: str = "") -> Tuple[str, str]
 
         # Plain text ------------------------------------------------------
         if ext in TEXT_EXTS:
-            return _cap(_clean(data.decode("utf-8", errors="ignore"))), ""
+            return _clean(data.decode("utf-8", errors="ignore")), ""
         if ext == ".rtf":
             return _extract_rtf(data)
 
@@ -251,7 +267,7 @@ def extract_text_from_bytes(data: bytes, file_name: str = "") -> Tuple[str, str]
                 "this file type could not be read as text. Upload your work as "
                 "PDF, Word, Excel, an image, or type it into the answer box."
             )
-        return _cap(_clean(data.decode("utf-8", errors="ignore"))), ""
+        return _clean(data.decode("utf-8", errors="ignore")), ""
 
     except Exception as e:
         logger.exception("extraction crashed")
