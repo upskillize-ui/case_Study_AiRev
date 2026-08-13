@@ -88,6 +88,18 @@ class Pending:
         return self.notes_len > 0 or bool(self.file_name)
 
 
+def _fmt_score(res) -> str:
+    """Marks the learner sees, with the percentage in brackets.
+
+    Falls back to a bare percentage for older reviews saved before
+    scoreMarks/outOf existed — never invents a denominator.
+    """
+    marks, out_of = res.extra.get("marks"), res.extra.get("outOf")
+    if marks is None or not out_of:
+        return f"{res.score}%"
+    return f"{marks}/{out_of} ({res.score}%)"
+
+
 @dataclass
 class Result:
     pending: Pending
@@ -211,8 +223,15 @@ def review_one(p: Pending, agent_url: str, api_key: str, timeout: int) -> Result
             return Result(p, False, detail=f"blocked: {data['blocked']}", ms=ms)
         fb = data.get("feedback") or {}
         if data.get("success") and fb:
+            # fb["score"] is the rubric PERCENT. The student is graded in the
+            # item's own marks (scoreMarks/outOf, written by review_payload).
+            # Print both — "19/100" on a 10-mark assignment reads as a score
+            # out of a hundred and is the same /100 confusion the review card
+            # had.
             return Result(p, True, score=fb.get("score"), grade=fb.get("grade", ""),
-                          ms=ms, extra={"ai": fb.get("aiLikelihoodPercent")})
+                          ms=ms, extra={"ai": fb.get("aiLikelihoodPercent"),
+                                        "marks": fb.get("scoreMarks"),
+                                        "outOf": fb.get("outOf")})
         if data.get("partialReview"):
             return Result(p, False, detail="partial: AI unavailable, saved", ms=ms)
         return Result(p, False, detail=f"unexpected response: {str(data)[:120]}", ms=ms)
@@ -300,7 +319,7 @@ def main() -> None:
             if res.ok:
                 ai = res.extra.get("ai")
                 print(f"  [{i}/{len(batch)}] OK   item {p.item_id} student {p.student_id} "
-                      f"-> {res.score}/100 {res.grade}"
+                      f"-> {_fmt_score(res)} {res.grade}"
                       + (f" (est. {ai}% AI)" if ai is not None else "")
                       + f"  {res.ms}ms")
             else:
@@ -310,11 +329,13 @@ def main() -> None:
     with open(args.out, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["type", "item_id", "student_id", "submission_id", "title",
-                    "ok", "score", "grade", "ai_percent", "detail", "ms"])
+                    "ok", "marks", "out_of", "percent", "grade",
+                    "ai_percent", "detail", "ms"])
         for r in results:
             p = r.pending
             w.writerow([p.review_type, p.item_id, p.student_id, p.submission_id,
-                        p.title, r.ok, r.score, r.grade, r.extra.get("ai"),
+                        p.title, r.ok, r.extra.get("marks"), r.extra.get("outOf"),
+                        r.score, r.grade, r.extra.get("ai"),
                         r.detail, r.ms])
 
     ok = sum(1 for r in results if r.ok)
