@@ -168,6 +168,29 @@ def _print_model_policy() -> None:
         print(f"   ⚠️  OFF-POLICY MODEL IN USE: {', '.join(off)} "
               f"(policy prefix '{allow}') — this WILL cost more than Haiku.")
 
+    # WHERE the calls go matters as much as WHICH model answers them: a gateway
+    # sees every submission we send, and a silently-empty chain means every
+    # review quietly degrades to HuggingFace. Print the order, so a missing
+    # secret is caught in the startup log rather than on a bill or in a grade.
+    from app.services.ai_service import providers
+    chain = providers()
+    if not chain:
+        print("   ⚠️  NO CLAUDE PROVIDER CONFIGURED — every review will fall "
+              "back to HuggingFace. Set STARTUPAPI_API_KEY + STARTUPAPI_BASE_URL "
+              "and/or ANTHROPIC_API_KEY.")
+    else:
+        order = " → ".join(
+            f"{i+1}.{p.name}({p.base_url or 'api.anthropic.com'})"
+            for i, p in enumerate(chain))
+        print(f"   Claude providers: {order}")
+        if len(chain) == 1:
+            print(f"   ⚠️  NO FALLBACK: '{chain[0].name}' is the only provider. "
+                  f"If it runs out of balance, reviews drop to HuggingFace.")
+        hosts = [p.base_url for p in chain if p.base_url]
+        if len(hosts) != len(set(hosts)):
+            print("   ⚠️  Two providers share a base URL — the fallback points at "
+                  "the same host as the primary and will fail with it.")
+
 
 # ===== Startup =====
 @app.on_event("startup")
