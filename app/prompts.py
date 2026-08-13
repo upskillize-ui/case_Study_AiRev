@@ -102,7 +102,7 @@ Questions: {questions_str}
     "Specific genuine strength tied to the text — 1 sentence"
   ],
   "improvements": [
-    "Concrete fix the student can apply on the next attempt — 1 sentence",
+    "Concrete fix the student can apply on the next attempt — 1 sentence. STAY INSIDE THE TASK'S OWN TOOL: if the task names a tool (ChatGPT, Claude, Perplexity, Canva...), every suggestion must be achievable with THAT tool. Never send the student to a different product — a 'Day 01: ChatGPT' task must not be answered with 'use DALL-E, Midjourney or Stable Diffusion'. The learner is being taught that tool this week; redirecting them elsewhere is off-syllabus and reads as the reviewer not having read the task.",
     "Concrete fix the student can apply on the next attempt — 1 sentence",
     "Concrete fix the student can apply on the next attempt — 1 sentence"
   ],
