@@ -46,8 +46,29 @@ _SPECIFICITY_BOUND = ("evidence", "application", "analysis", "depth", "practical
 REVIEW_SCHEMA = {
     "type": "object",
     "properties": {
-        "is_garbage":     {"type": "boolean"},
-        "garbage_reason": {"type": "string"},
+        # DEFINITION MATTERS. This field had no description, so the model was
+        # free to read "garbage" as "weak" — and did: on 13 Aug a 125-word
+        # answer OCR'd from a student's image was flagged garbage and scored a
+        # hard 0, bypassing the rubric entirely. Seven more in the same run.
+        # A thin or wrong answer is NOT garbage; it is a low score with reasons.
+        "is_garbage": {
+            "type": "boolean",
+            "description": (
+                "TRUE only when this is not an attempt at the task at all: "
+                "random characters, lorem ipsum, a copy of the question, a "
+                "single word, an unrelated document, or text with no "
+                "propositional content. "
+                "FALSE for every genuine attempt, however short, weak, "
+                "off-target, generic or poorly reasoned — those are scored by "
+                "the rubric and given a low mark with reasons, which is what "
+                "the learner can act on. If a human marker would write a "
+                "comment on it, it is not garbage."),
+        },
+        "garbage_reason": {
+            "type": "string",
+            "description": ("Only when is_garbage is true: one sentence naming "
+                            "what the text actually contains."),
+        },
         "criteria": {
             "type": "array",
             "items": {
@@ -233,6 +254,35 @@ def aggregate(gated: dict, word_count: int, word_limit_min: int,
     }
 
 
+# A garbage verdict zeroes a submission outright, so it needs a second,
+# objective opinion. Above this word count the rubric decides instead.
+GARBAGE_HARD_ZERO_MAX_WORDS = int(os.getenv("GARBAGE_HARD_ZERO_MAX_WORDS", "40"))
+
+
+def should_hard_zero(review: dict, word_count: int) -> bool:
+    """Whether a garbage verdict may bypass the rubric and award 0.
+
+    The model's judgement alone is not enough. It zeroed 125 words of a real
+    submission on 13 Aug, and seven more in the same batch — every one a
+    genuine attempt that a human marker would have written a comment on.
+
+    So the zero now requires BOTH the verdict AND objectively negligible
+    content. Above the threshold the flag stays advisory: the exception queue
+    still sees it, and the rubric scores the work. That costs nothing in
+    rigour — real nonsense earns near-zero on every criterion anyway, and the
+    learner gets per-criterion reasons instead of a bare "not a genuine
+    attempt" they cannot act on. The shortcut only ever saved tokens.
+
+    Pure function: no I/O, so the boundary is testable.
+    """
+    if not review.get("is_garbage"):
+        return False
+    try:
+        return int(word_count) <= GARBAGE_HARD_ZERO_MAX_WORDS
+    except (TypeError, ValueError):
+        return True          # unknown length — trust the verdict
+
+
 def needs_escalation(review: dict) -> bool:
     """Low-confidence criteria or garbage suspicion warrant the strong model."""
     if not GATES["low_confidence_escalate"]:
@@ -405,7 +455,7 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
         )
         scoring_path = "strong-thinking-escalated"
 
-    if review.get("is_garbage"):
+    if should_hard_zero(review, word_count):
         return _garbage_result(review, rubric_criteria, pack_version, scoring_path)
 
     gated = apply_gates(review["criteria"], rubric_criteria,
