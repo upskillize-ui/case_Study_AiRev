@@ -19,6 +19,7 @@
 import json
 from app.database import tquery, texecute
 from app.tenants import Tenant
+from app.services import review_payload
 
 
 # ---------- READ ----------------------------------------------------------
@@ -197,32 +198,10 @@ def update_assignment_submission_with_ai_results(tenant: Tenant, submission_id: 
     10-mark task and would have shown "70" out of 10 for a good answer. The
     percentage is kept in the feedback payload so the card can show both.
     """
-    feedback_payload = {
-        "grade":            result.get("grade"),
-        "totalScore":       result.get("totalScore"),
-        "scoreEmoji":       result.get("scoreEmoji"),
-        "rubricScores":     result.get("rubricScores", []),
-        "strengths":        result.get("strengths", []),
-        "improvements":     result.get("improvements", []),
-        "missingConcepts":  result.get("missingConcepts", []),
-        "coveredConcepts":  result.get("coveredConcepts", []),
-        "suggestedModules": result.get("suggestedModules", []),
-        "detailedFeedback": result.get("detailedFeedback", ""),
-        "encouragement":    result.get("encouragement", ""),
-        "wordCount":        result.get("wordCount"),
-        "wordCountMessage": result.get("wordCountMessage", ""),
-        "summary":          result.get("summary", ""),
-        # Both scales, explicitly, so no consumer has to guess which one it has.
-        "scorePercent":     result.get("totalScore"),
-        "outOf":            max_marks,
-        "aiLikelihoodPercent":    result.get("aiLikelihoodPercent"),
-        "humanLikelihoodPercent": result.get("humanLikelihoodPercent"),
-        "aiDetectionReason":      result.get("aiDetectionReason", ""),
-        "aiVerdict":              result.get("aiVerdict", ""),
-        "isGarbage":              bool(result.get("isGarbage")),
-        "garbageWarning":         result.get("garbageWarning", ""),
-        "reviewedBy":             "ai",
-    }
+    awarded = scaled_marks(result.get("totalScore", 0), max_marks)
+    feedback_payload = review_payload.build(result, max_marks, awarded)
+    # Assignment-specific extras live here, not in the shared shape.
+    feedback_payload["scoreEmoji"] = result.get("scoreEmoji")
 
     texecute(
         tenant,
@@ -232,7 +211,7 @@ def update_assignment_submission_with_ai_results(tenant: Tenant, submission_id: 
             status   = 'graded'
           WHERE id = %s""",
         (
-            scaled_marks(result.get("totalScore", 0), max_marks),
+            awarded,
             json.dumps(feedback_payload, ensure_ascii=False),
             submission_id,
         ),

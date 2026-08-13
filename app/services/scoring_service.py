@@ -159,3 +159,56 @@ def get_grade_label(score: int) -> str:
     if score >= 40: return "Below Average"
     if score >= 30: return "Poor"
     return "Needs Significant Improvement"
+
+def fmt_marks(value) -> str:
+    """3.0 -> "3", 3.4 -> "3.4" — marks read naturally on a review card."""
+    f = float(value)
+    return str(int(f)) if f == int(f) else f"{f:.1f}"
+
+
+def build_summary(awarded, max_marks, concepts_covered: int,
+                  concepts_total: int) -> str:
+    """The one-line headline under the score ring.
+
+    Deliberately excludes the grade letter: the card already displays it in
+    48pt beside this sentence, so repeating it is noise. Concept coverage is
+    phrased for a student, not for us — "key points this task expected"
+    rather than "core concepts engaged".
+    """
+    line = f"You scored {fmt_marks(awarded)} out of {fmt_marks(max_marks)}."
+    if concepts_total > 0:
+        line += (f" You covered {concepts_covered} of the {concepts_total} "
+                 f"key points this task expected.")
+    return line
+
+
+def scale_rubric(rubric_breakdown: list, max_marks) -> list:
+    """Express each rubric row in the task's OWN marks.
+
+    Criterion weights are computed out of 100 — that is the scoring engine's
+    native unit and aggregate() depends on it. But a 10-mark assignment must
+    not show a criterion as "16.8/35"; a student reads that as 35 marks.
+
+    The marks fields are ADDED, never substituted: reviews stored before this
+    change carry only score/maxScore, and the frontend needs to keep rendering
+    those. Presence of maxScoreMarks is what tells the UI not to scale again.
+    """
+    total = float(max_marks or 100)
+
+    def _num(v) -> float:
+        # A non-numeric score must not 500 the request AFTER the AI spend and
+        # BEFORE the DB write. Degrade to 0 and keep the review.
+        try:
+            return float(v or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    out = []
+    for row in rubric_breakdown or []:
+        if not isinstance(row, dict):
+            continue
+        scaled = dict(row)
+        scaled["maxScoreMarks"] = round(_num(row.get("maxScore")) * total / 100, 2)
+        scaled["scoreMarks"]    = round(_num(row.get("score"))    * total / 100, 2)
+        out.append(scaled)
+    return out

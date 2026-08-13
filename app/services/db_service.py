@@ -13,6 +13,7 @@
 
 import json
 from app.database import query, execute
+from app.services import review_payload
 
 
 # ===== CASE STUDIES =====
@@ -196,37 +197,30 @@ def save_submission(case_study_id: int, student_id: int, answer_text: str,
     return {"submissionId": submission_id, "attemptNumber": attempt_number}
 
 
-def update_submission_with_ai_results(submission_id: int, result: dict):
-    """Persist AI analysis to the LMS schema."""
+def update_submission_with_ai_results(submission_id: int, result: dict,
+                                      max_marks: int = 100):
+    """Persist AI analysis to the LMS schema.
+
+    NOTE on the `grade` column: it stays a 0-100 percentage, which is what the
+    LMS and existing faculty views already read. `max_marks` therefore affects
+    only the feedback payload — outOf/scoreMarks — so the review card can show
+    a 20-mark case study as 15.6/20 instead of claiming "78 out of 100".
+    Changing the column's meaning is a separate migration, not a display fix.
+    """
     rubric_scores_dict = {
         r.get("criteria", f"Criterion {i+1}"): r.get("score", 0)
         for i, r in enumerate(result.get("rubricScores", []))
     }
 
-    feedback_payload = {
-        "grade":            result.get("grade"),
-        "totalScore":       result.get("totalScore"),
-        "scoreEmoji":       result.get("scoreEmoji"),
-        "strengths":        result.get("strengths", []),
-        "improvements":     result.get("improvements", []),
-        "missingConcepts":  result.get("missingConcepts", []),
-        "coveredConcepts":  result.get("coveredConcepts", []),
-        "suggestedModules": result.get("suggestedModules", []),
-        "detailedFeedback": result.get("detailedFeedback", ""),
-        "plagiarismFlag":   result.get("plagiarismFlag", "low"),
-        "needsMentorHelp":  bool(result.get("needsMentorHelp")),
-        "wordCount":        result.get("wordCount"),
-        "wordCountMessage": result.get("wordCountMessage", ""),
-        "aiLikelihoodPercent":    result.get("aiLikelihoodPercent"),
-        "humanLikelihoodPercent": result.get("humanLikelihoodPercent"),
-        "aiDetectionReason":      result.get("aiDetectionReason", ""),
-        "aiVerdict":              result.get("aiVerdict", ""),
-        "isGarbage":              bool(result.get("isGarbage")),
-        "garbageWarning":         result.get("garbageWarning", ""),
-        "encouragement":          result.get("encouragement", ""),
-        "rubricScores":           result.get("rubricScores", []),
-        "summary":                result.get("summary", ""),
-    }
+    percent  = result.get("totalScore") or 0
+    marks    = max(1, int(max_marks or 100))
+    feedback_payload = review_payload.build(
+        result, max_marks=marks,
+        score_marks=round(max(0.0, min(100.0, float(percent))) * marks / 100, 1))
+    # Case-study-specific extras.
+    feedback_payload["scoreEmoji"]      = result.get("scoreEmoji")
+    feedback_payload["plagiarismFlag"]  = result.get("plagiarismFlag", "low")
+    feedback_payload["needsMentorHelp"] = bool(result.get("needsMentorHelp"))
 
     execute(
         """UPDATE case_study_submissions SET

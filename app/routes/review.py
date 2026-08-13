@@ -199,7 +199,9 @@ def submit_and_review(req: SubmitAnswerRequest, background_tasks: BackgroundTask
             submission, case_study, cleaned, word_count, pre_garbage_reason, start_time,
         )
         try:
-            db_service.update_submission_with_ai_results(submission["submissionId"], garbage_payload["_internal"])
+            db_service.update_submission_with_ai_results(
+                submission["submissionId"], garbage_payload["_internal"],
+                case_study.get("maxScore", 100))
             db_service.update_performance_tracker(req.studentId, req.caseStudyId, 0)
         except Exception as db_err:
             print(f"⚠️  DB update (garbage path) failed: {db_err}")
@@ -298,7 +300,8 @@ def submit_and_review(req: SubmitAnswerRequest, background_tasks: BackgroundTask
     }
 
     try:
-        db_service.update_submission_with_ai_results(submission["submissionId"], result)
+        db_service.update_submission_with_ai_results(
+            submission["submissionId"], result, case_study.get("maxScore", 100))
         db_service.update_performance_tracker(req.studentId, req.caseStudyId, scores["totalScore"])
         db_service.log_ai_review(submission["submissionId"], ai_analysis.get("_meta"), ai_analysis)
     except Exception as db_err:
@@ -469,7 +472,10 @@ def _capstone_pipeline_response(capstone, r, word_count, start_time, student_tex
         execute(
             "UPDATE capstones SET grade = %s, feedback = %s, status = 'graded' WHERE id = %s",
             (scores["totalScore"], json.dumps({
-                "summary":          f"Scored {scores['totalScore']}/100 ({grade}).",
+                "summary":          scoring_service.build_summary(
+                                        scores["totalScore"], 100,
+                                        len(r["conceptsCovered"]),
+                                        len(r["conceptsCovered"]) + len(r["conceptsMissing"])),
                 "rubricScores":     scores["rubricBreakdown"],
                 "strengths":        r["strengths"],
                 "improvements":     r["improvements"],
@@ -496,7 +502,10 @@ def _capstone_pipeline_response(capstone, r, word_count, start_time, student_tex
         "feedback": {
             "score":            scores["totalScore"],
             "grade":            grade,
-            "summary":          f"Scored {scores['totalScore']}/100 ({grade}).",
+            "summary":          scoring_service.build_summary(
+                                    scores["totalScore"], 100,
+                                    len(r["conceptsCovered"]),
+                                    len(r["conceptsCovered"]) + len(r["conceptsMissing"])),
             "rubricScores":     scores["rubricBreakdown"],
             "strengths":        r["strengths"],
             "improvements":     r["improvements"],
@@ -559,9 +568,10 @@ def _run_pipeline_review(case_study, req, submission, cleaned, word_count,
         "case_study", req.caseStudyId, req.studentId,
         submission["submissionId"], r)
 
-    summary = (f"You scored {scores['totalScore']}/100 ({grade}). "
-               f"{len(r['conceptsCovered'])} of "
-               f"{len(r['conceptsCovered']) + len(r['conceptsMissing'])} core concepts engaged.")
+    summary = scoring_service.build_summary(
+        scores["totalScore"], 100,
+        len(r["conceptsCovered"]),
+        len(r["conceptsCovered"]) + len(r["conceptsMissing"]))
 
     result = {
         "totalScore":       scores["totalScore"],
@@ -589,7 +599,8 @@ def _run_pipeline_review(case_study, req, submission, cleaned, word_count,
     }
 
     try:
-        db_service.update_submission_with_ai_results(submission["submissionId"], result)
+        db_service.update_submission_with_ai_results(
+            submission["submissionId"], result, case_study.get("maxScore", 100))
         db_service.update_performance_tracker(req.studentId, req.caseStudyId, scores["totalScore"])
         db_service.log_ai_review(submission["submissionId"],
                                  {"pipeline": r["decisions"]}, r)

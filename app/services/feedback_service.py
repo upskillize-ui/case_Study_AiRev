@@ -11,6 +11,7 @@
 # API key for frontend compatibility but is always empty — the UI renders
 # Lucide SVG icons, never emojis.
 
+from app.services import scoring_service
 from app.services.scoring_service import get_grade_label
 
 
@@ -38,7 +39,11 @@ def generate_feedback(
     word_count: int,
     word_limit_min: int,
     word_limit_max: int,
+    max_marks: int = 100,
 ) -> dict:
+    """`max_marks` is the task's own total. Passing it wrong prints "You scored
+    37 out of 100" beside a headline of 3.7/10 — the same contradiction this
+    release exists to remove."""
 
     # ── Word count message ──
     if word_count < word_limit_min:
@@ -66,6 +71,8 @@ def generate_feedback(
     coverage_pct = round((len(covered) / total) * 100) if total > 0 else 0
 
     total_score = scores["totalScore"]
+    awarded_marks = round(max(0.0, min(100.0, float(total_score or 0)))
+                          * max(1, int(max_marks or 100)) / 100, 1)
     grade       = scores["grade"]
     grade_label = get_grade_label(total_score)
     score_emoji = _emoji_for(total_score)
@@ -89,8 +96,7 @@ def generate_feedback(
     # ── Student-facing feedback ──
     student_feedback = {
         "summary": (
-            f"You scored {total_score}/100 ({grade} — {grade_label}). "
-            f"You covered {len(covered)} out of {total} key concepts ({coverage_pct}% coverage). "
+            f"{scoring_service.build_summary(awarded_marks, max_marks, len(covered), total)} "
             f"{_get_summary_note(total_score)}"
         ),
         "scoreEmoji":             score_emoji,

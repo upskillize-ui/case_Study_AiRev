@@ -27,6 +27,7 @@
 
 import hashlib
 import json
+import re
 from typing import Optional
 
 from app.database import tquery, texecute
@@ -34,10 +35,14 @@ from app.services import ai_service
 
 _TABLE = "derived_rubrics"
 # Bump when the derivation RULES change: it is part of the cache key, so every
-# stored rubric re-derives under the new rules. (v2: criteria must be
-# verifiable from the submission — "Link shared in WhatsApp group" scored 0
-# for everyone because the agent cannot see WhatsApp.)
-RUBRIC_VERSION = 2
+# stored rubric re-derives under the new rules.
+#   v2: criteria must be verifiable from the submission — "Link shared in
+#       WhatsApp group" scored 0 for everyone because the agent cannot see
+#       WhatsApp.
+#   v3: v2 was a PROMPT rule and the model still produced "Submission uploaded
+#       to LMS" (weight 15, scored 0/15 for a student whose work the reviewer
+#       was holding). Prompts advise; strip_offplatform() enforces.
+RUBRIC_VERSION = 3
 # Per-tenant: one tenant's CREATE TABLE must never suppress another's.
 _tables_ready: set = set()
 
@@ -144,6 +149,85 @@ def _as_int(v) -> int:
         return 0
 
 
+# ---------------------------------------------------------------------------
+# Off-platform criteria — the class of rubric bug that fails honest students.
+#
+# AiRev receives exactly one thing: the text and files of the submission. It
+# cannot see the LMS, a WhatsApp group, an attendance register, or a live URL.
+# A criterion asking about any of those scores 0 for EVERY student, every time,
+# and silently lowers the ceiling of the whole cohort.
+#
+# The v2 prompt rule asks the model not to write these. It still wrote
+# "Submission uploaded to LMS" (Day 03, 12 Aug 2026). So this filter enforces
+# it deterministically.
+#
+# SCOPE: the criterion NAME only, never what_earns_it. The rationale text is
+# ordinary business prose and is full of innocent collisions — "the post opens
+# with a hook", "interprets the attendance data", "describes how the site is
+# hosted". Scanning it dropped nine legitimate criteria in review. A criterion
+# name is short and purposeful; that is the honest signal.
+#
+# Each pattern requires an ACT (upload/submit/share/attend) plus its OBJECT, so
+# "Portal design critique", "Landing page copy" and "Attendance analytics"
+# survive while "Submission uploaded to LMS" does not.
+# ---------------------------------------------------------------------------
+_OFFPLATFORM_PATTERNS = [
+    # Getting the work into a system: "Submission uploaded to LMS"
+    re.compile(r"\b(upload|uploaded|uploading|submit|submitted|submission)\b"
+               r".{0,25}\b(lms|portal|classroom|google\s+drive|google\s+form|dropbox)\b", re.I),
+    # A criterion whose entire point is that the file arrived
+    re.compile(r"^\s*(the\s+)?(submission|file|document|work|assignment|answer|deliverable)\s+"
+               r"(is\s+|was\s+|has\s+been\s+)?(uploaded|submitted|shared|attached|received)\s*$", re.I),
+    # Deadline compliance — the DB knows this, the reviewer does not
+    re.compile(r"\b(on[-\s]time|timely|punctual|late)\b.{0,15}\b(submi\w+|upload\w*|delivery)\b", re.I),
+    re.compile(r"\bsubmi\w+\b.{0,20}\b(on time|before the deadline|by the deadline|"
+               r"within the deadline|by the due date)\b", re.I),
+    re.compile(r"\bdeadline\s+(met|compliance|adherence)\b", re.I),
+    # Posting somewhere the reviewer cannot read — requires the ACT, not the noun
+    re.compile(r"\b(shared|share|posted|posting|published|circulated|forwarded)\b"
+               r".{0,25}\b(whatsapp|telegram|slack|discord|the\s+group|group\s+chat|"
+               r"community|forum|batch)\b", re.I),
+    # Attendance as a fact to be checked, not as data to be analysed
+    re.compile(r"\battendance\s+(is\s+|was\s+)?(marked|recorded|taken|maintained|met)\b", re.I),
+    re.compile(r"\battended\b.{0,20}\b(session|class|webinar|lecture|live)\b", re.I),
+    # "Link is live", "site is publicly hosted" — the reviewer cannot open it
+    re.compile(r"\b(link|url|site|page|app|artifact|deployment)\b.{0,20}"
+               r"\b(is\s+live|live\s+and|publicly\s+(accessible|hosted|available)|"
+               r"accessible\s+online|reachable)\b", re.I),
+]
+
+# Never strip a rubric to nothing. One real criterion is still a fair rubric;
+# zero is not. (An earlier guard demanded two survivors, which quietly restored
+# the exact bug on a 3-criterion rubric where two were off-platform.)
+_MIN_CRITERIA_AFTER_STRIP = 1
+
+
+def is_offplatform(criterion: dict) -> bool:
+    """True when a criterion judges something outside the submission itself.
+
+    Reads the NAME only — see the scope note above.
+    """
+    name = str((criterion or {}).get("name") or "")
+    return any(p.search(name) for p in _OFFPLATFORM_PATTERNS)
+
+
+def strip_offplatform(criteria: list) -> tuple:
+    """Drop criteria the reviewer cannot evidence. Returns (kept, dropped).
+
+    Weights are NOT rebalanced here — normalise() already stretches whatever
+    survives back to exactly 100, so a dropped criterion costs the student
+    nothing instead of costing them its full weight.
+    """
+    kept, dropped = [], []
+    for c in (criteria or []):
+        if not isinstance(c, dict):
+            continue
+        (dropped if is_offplatform(c) else kept).append(c)
+    if len(kept) < _MIN_CRITERIA_AFTER_STRIP:
+        return [c for c in (criteria or []) if isinstance(c, dict)], []
+    return kept, dropped
+
+
 def normalise(criteria: list) -> list:
     """Force criteria weights to total exactly 100 without losing proportions.
 
@@ -234,8 +318,14 @@ def derive(task: dict) -> dict:
         blocks=[{"text": prompt, "cache": False}],
         schema=RUBRIC_SCHEMA, tier="default", max_tokens=1500,
     )
+    kept, dropped = strip_offplatform(result.get("criteria"))
+    if dropped:
+        # Visible in the Space log: a silently-narrowed rubric must be auditable.
+        print("⚠️  rubric: dropped off-platform criteria "
+              f"{[c.get('name') for c in dropped]} — weights rebalanced onto "
+              "what the reviewer can actually read")
     return {
-        "criteria": normalise(result.get("criteria")),
+        "criteria": normalise(kept),
         "wordMin": max(0, min(2000, int(result.get("word_min", 30) or 0))),
         "wordMax": max(50, min(20000, int(result.get("word_max", 1500) or 1500))),
         "deliverables": [str(d)[:200] for d in (result.get("deliverables") or [])][:8],
@@ -259,6 +349,14 @@ def get_or_derive(tenant, scope_type: str, scope_id: int, task: dict) -> dict:
     try:
         cached = _load(tenant, scope_type, scope_id, fresh)
         if cached:
+            # The pattern list is NOT part of source_hash, so a rubric cached
+            # under this RUBRIC_VERSION can predate a newly-added pattern.
+            # Re-filtering on read makes the invariant hold either way.
+            kept, dropped = strip_offplatform(cached.get("criteria"))
+            if dropped:
+                print("⚠️  cached rubric contained off-platform criteria "
+                      f"{[c.get('name') for c in dropped]} — filtered on read")
+                cached["criteria"] = normalise(kept)
             return cached
     except Exception as e:
         print(f"⚠️  rubric cache read failed: {e}")
@@ -267,14 +365,6 @@ def get_or_derive(tenant, scope_type: str, scope_id: int, task: dict) -> dict:
         payload = derive(task)
     except Exception as e:
         return _fallback(str(e)[:120])
-
-    suspect = [c["name"] for c in payload["criteria"]
-               if any(w in c["name"].lower() for w in
-                      ("whatsapp group", "shared in", "posted in", "attendance",
-                       "is live", "publicly host"))]
-    if suspect:
-        print(f"⚠️  possibly UNVERIFIABLE criteria for {scope_type} {scope_id} "
-              f"(agent cannot see off-platform actions): {suspect}")
 
     names = ", ".join(c["name"] for c in payload["criteria"])
     print(f"🎯 Rubric derived for {scope_type} {scope_id} "

@@ -40,9 +40,15 @@ except ImportError:
 # Fingerprints of the length-rule auto-zero (no AI call was ever made).
 AUTO_ZERO_MARKERS = ("very short", "Not analysed (too short)", "too short to evaluate")
 
-# Only agent-written reviews carry this marker (set in
-# update_assignment_submission_with_ai_results). A grade a human typed in has
-# no such marker and is NEVER touched by this tool.
+# Only agent-written reviews carry this marker (set by review_payload.build()
+# for BOTH assignments and case studies since 12 Aug 2026). A grade a human
+# typed in has no such marker and is NEVER touched by this tool.
+#
+# BLAST RADIUS, read before running: case-study reviews written before
+# 12 Aug 2026 have no marker, so this tool skips them. Reviews written after
+# it DO carry the marker and --all-agent-reviews will clear them. That is the
+# intended behaviour, but it changed — a --type casestudy run that matched
+# nothing last week can match every recent row today. Dry-run first.
 AGENT_MARKERS = ('"reviewedBy": "ai"', '"reviewedBy":"ai"')
 
 TABLES = {

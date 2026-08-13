@@ -417,13 +417,18 @@ def submit_and_review_assignment(
         word_min, word_max,
     )
     feedback = feedback_service.generate_feedback(
-        scores, ai_analysis, word_count, word_min, word_max,
+        scores, ai_analysis, word_count, word_min, word_max, max_marks,
     )
 
     result = {
         "totalScore":             scores["totalScore"],
         "grade":                  scores["grade"],
-        "rubricScores":           scores["rubricBreakdown"],
+        # Rubric rows carry BOTH units: weights out of 100 (what the engine
+        # computed) and the same rows in the assignment's marks (what the
+        # student is owed on screen).
+        "rubricScores":           scoring_service.scale_rubric(
+                                      scores["rubricBreakdown"], max_marks),
+        "penaltyPercent":         scores.get("wordCountPenalty", 0),
         "strengths":              feedback["strengths"],
         "improvements":           feedback["improvements"],
         "missingConcepts":        ai_analysis.get("conceptsMissing", []),
@@ -533,14 +538,17 @@ def _pipeline_assignment_response(tenant, submission, r, word_count, start_time,
     scores = r["scores"]
     grade = scoring_service.get_grade(scores["totalScore"])
     awarded = assignment_db_service.scaled_marks(scores["totalScore"], max_marks)
-    summary = (f"You scored {_fmt(awarded)}/{max_marks} ({grade}). "
-               f"{len(r['conceptsCovered'])} of "
-               f"{len(r['conceptsCovered']) + len(r['conceptsMissing'])} core concepts engaged.")
+    summary = scoring_service.build_summary(
+        awarded, max_marks,
+        len(r["conceptsCovered"]),
+        len(r["conceptsCovered"]) + len(r["conceptsMissing"]))
 
     result = {
         "totalScore":       scores["totalScore"],
         "grade":            grade,
-        "rubricScores":     scores["rubricBreakdown"],
+        "rubricScores":     scoring_service.scale_rubric(
+                                scores["rubricBreakdown"], max_marks),
+        "penaltyPercent":   scores.get("wordCountPenalty", 0),
         "strengths":        r["strengths"],
         "improvements":     r["improvements"],
         "missingConcepts":  r["conceptsMissing"],
@@ -576,12 +584,6 @@ def _pipeline_assignment_response(tenant, submission, r, word_count, start_time,
     response["feedback"]["factualErrors"]  = r["factualErrors"]
     response["_meta"] = {"pipeline": r["decisions"]}
     return response
-
-
-def _fmt(v) -> str:
-    """3.0 -> "3", 3.4 -> "3.4" — marks read naturally on the card."""
-    f = float(v)
-    return str(int(f)) if f == int(f) else f"{f:.1f}"
 
 
 def _build_response(submission: dict, result: dict, summary: str, start_time: float,
