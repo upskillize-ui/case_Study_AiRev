@@ -53,7 +53,10 @@ class Tenant:
 
     @property
     def database_url(self) -> str:
-        url = os.getenv(self.database_url_env, "")
+        # .strip(): pasting into a web secrets field very easily leaves a
+        # trailing newline or space. An invisible character here becomes an
+        # unexplainable connection failure.
+        url = os.getenv(self.database_url_env, "").strip()
         if not url:
             raise RuntimeError(
                 f"Tenant '{self.id}' is configured but env var "
@@ -63,7 +66,13 @@ class Tenant:
 
     @property
     def api_key(self) -> str:
-        key = os.getenv(self.api_key_env, "")
+        # .strip() — MUST match resolve_tenant_by_key(), which strips the
+        # INCOMING header. Without it the comparison is asymmetric: a stored
+        # key with one trailing newline never equals the header the browser
+        # sends, and EVERY request 401s with no clue why. That is exactly what
+        # happened on 13 Aug after a secret was re-pasted: agent healthy,
+        # tenants "configured: true", every student locked out.
+        key = os.getenv(self.api_key_env, "").strip()
         if not key:
             raise RuntimeError(
                 f"Tenant '{self.id}' is configured but env var "
