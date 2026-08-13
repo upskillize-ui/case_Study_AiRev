@@ -66,6 +66,12 @@ class SubmitAssignmentRequest(BaseModel):
     # Used by Coursework submits so the item lands in AiRev's New Review queue
     # and is reviewed only when the student clicks it there.
     storeOnly: bool = False
+    # Which id space studentId is in. Absent/"users" = the browser default
+    # (users.id, mapped to students.id server-side). "students" = the caller
+    # already holds a students.id and it must NOT be remapped — see
+    # canonical_student_id(). tools/bulk_review.py sets this; without it a
+    # staff run grades the wrong learner on any ambiguous id.
+    idSpace: Optional[str] = None
 
 
 # ---------- GET /api/review/assignments/{student_id} -----------------------
@@ -141,7 +147,7 @@ def submit_and_review_assignment(
     if ai_service.begin_run_billing(x_admin_key):
         print("[ASSIGNMENT] staff-initiated review — student will not be billed")
     from app.database import canonical_student_id
-    req.studentId = canonical_student_id(req.studentId)
+    req.studentId = canonical_student_id(req.studentId, req.idSpace)
     start_time = time.time()
     print(f"[ASSIGNMENT][{tenant.id}] submission: student={req.studentId}, assignment={req.assignmentId}")
 

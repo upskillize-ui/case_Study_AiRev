@@ -23,6 +23,12 @@ class SubmitAnswerRequest(BaseModel):
     # Used by Coursework submits so the item lands in AiRev's New Review queue
     # and is reviewed only when the student clicks it there.
     storeOnly: bool = False
+    # Which id space studentId is in. Absent/"users" = the browser default
+    # (users.id, mapped to students.id server-side). "students" = the caller
+    # already holds a students.id and it must NOT be remapped — see
+    # canonical_student_id(). tools/bulk_review.py sets this; without it a
+    # staff run grades the wrong learner on any ambiguous id.
+    idSpace: Optional[str] = None
 
 
 class TestReviewRequest(BaseModel):

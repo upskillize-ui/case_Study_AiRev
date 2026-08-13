@@ -94,3 +94,43 @@ def test_flag_accepts_common_truthy_spellings():
         os.environ["STRICT_STUDENT_ID"] = value
         sys.modules.pop("app.database", None)
         assert importlib.import_module("app.database").STRICT_STUDENT_ID is False, value
+
+
+# ─── id-space declaration ─────────────────────────────────────────────────
+# canonical_student_id() maps users.id -> students.id with
+# `WHERE user_id = given`, which never checks whether `given` is ALREADY a
+# students.id. With overlapping ranges that silently returns another learner.
+
+def test_students_space_is_never_remapped(monkeypatch):
+    """The bulk-review case: a students.id must survive untouched."""
+    db = _load(strict=False)
+    called = {"n": 0}
+
+    def _boom(*a, **k):                      # any DB hop here is the bug
+        called["n"] += 1
+        return [{"id": 827}]                 # what production would return for 937
+    monkeypatch.setattr(db, "query", _boom)
+
+    assert db.canonical_student_id(937, "students") == 937
+    assert db.canonical_student_id(937, "STUDENTS") == 937
+    assert db.canonical_student_id(937, " students ") == 937
+    assert called["n"] == 0, "students-space id must not hit the mapping query"
+
+
+def test_users_space_still_maps(monkeypatch):
+    """Browser traffic keeps the existing behaviour."""
+    db = _load(strict=False)
+    monkeypatch.setattr(db, "query", lambda *a, **k: [{"id": 669}])
+    db._sid_cache.clear()
+    assert db.canonical_student_id(774) == 669           # default = users
+    db._sid_cache.clear()
+    assert db.canonical_student_id(774, "users") == 669  # explicit
+
+
+def test_cache_is_keyed_by_id_space(monkeypatch):
+    """A users-space answer must never be served to a students-space lookup."""
+    db = _load(strict=False)
+    db._sid_cache.clear()
+    monkeypatch.setattr(db, "query", lambda *a, **k: [{"id": 827}])
+    assert db.canonical_student_id(937, "users") == 827      # caches 937 -> 827
+    assert db.canonical_student_id(937, "students") == 937   # must NOT reuse it

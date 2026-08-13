@@ -94,23 +94,38 @@ _SID_CACHE_MAX = 5000           # hard cap — clear rather than grow unbounded
 _sid_cache: dict = {}           # (tenant_id, given) -> (resolved, expires_at)
 
 
-def canonical_student_id(given: int) -> int:
+def canonical_student_id(given: int, id_space: Optional[str] = None) -> int:
     """Normalize an incoming student identifier to students.id — the form
     the Coursework module writes and the canonical id for ALL AiRev reads
     and writes.
 
     The AiRev panel is mounted with users.id (frontend line:
-    `<AiRevPanel studentId={user.id}>`), so map users.id -> students.id via
-    the students table. If no mapping exists, the caller already sent
-    students.id (standalone UI, older integrations) — use it as-is.
-    Fail-open: on any DB error, return the given id unchanged rather than
-    blocking a review. DUAL_ID_MATCH remains on list queries so legacy rows
-    written under users.id stay visible.
+    `<AiRevPanel studentId={user.id}>`), so the default maps users.id ->
+    students.id via the students table.
 
-    Cached per (tenant, id) with a short TTL — this used to cost one full
-    DB round trip on EVERY request."""
+    id_space="students" says the caller ALREADY holds a students.id and the
+    value must be left alone. That is not a nicety — the mapping query is
+    `WHERE user_id = given`, which never checks whether `given` is itself a
+    valid students.id. Because the two id ranges overlap, feeding it a
+    students.id silently resolves to a DIFFERENT learner: 937 is student 937's
+    primary key AND student 827's user_id, so tools/bulk_review.py — which
+    reads student_id straight from the table — would have reviewed and graded
+    student 827's submission while believing it was 937's. Roughly 1,447 of
+    2,089 production rows are ambiguous this way.
+
+    The route cannot infer the id space, so the caller declares it. Anything
+    other than "students" behaves exactly as before.
+
+    Fail-open: on any DB error, return the given id unchanged rather than
+    blocking a review.
+
+    Cached per (tenant, id, id_space) — the space MUST be part of the key, or
+    a lookup from one space serves a cached answer computed for the other."""
+    if (id_space or "").strip().lower() == "students":
+        return int(given)
+
     tenant = get_current_tenant()
-    cache_key = (tenant.id if tenant else "default", given)
+    cache_key = (tenant.id if tenant else "default", given, id_space or "users")
     hit = _sid_cache.get(cache_key)
     now = time.time()
     if hit and hit[1] > now:

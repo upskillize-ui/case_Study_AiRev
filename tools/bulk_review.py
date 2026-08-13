@@ -168,7 +168,12 @@ def review_one(p: Pending, agent_url: str, api_key: str, timeout: int) -> Result
     """POST with empty answerText — the agent reads the STORED submission,
     exactly like a student clicking New Review. Retries transient failures."""
     cfg = TYPES[p.review_type]
-    body = {cfg["id_key"]: p.item_id, "studentId": p.student_id, "answerText": ""}
+    # student_id comes straight out of the submissions table, so it is a
+    # students.id. Say so: the route otherwise runs it through the users.id ->
+    # students.id mapping, which on an ambiguous value resolves to a DIFFERENT
+    # learner and grades their submission instead.
+    body = {cfg["id_key"]: p.item_id, "studentId": p.student_id,
+            "answerText": "", "idSpace": "students"}
     headers = {"Content-Type": "application/json", "x-api-key": api_key}
     # Staff-initiated: the agent skips student billing when this key is valid.
     # Without it, a faculty bulk run would debit 1400 learners' credits.

@@ -69,7 +69,7 @@ def submit_and_review(req: SubmitAnswerRequest, background_tasks: BackgroundTask
     if staff_run:
         print("ℹ️  staff-initiated review — student will not be billed")
     from app.database import canonical_student_id
-    req.studentId = canonical_student_id(req.studentId)
+    req.studentId = canonical_student_id(req.studentId, req.idSpace)
     start_time = time.time()
     print(f"ℹ️  New submission: student={req.studentId}, caseStudy={req.caseStudyId}")
 
