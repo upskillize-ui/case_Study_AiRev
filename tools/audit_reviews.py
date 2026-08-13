@@ -50,6 +50,26 @@ except ImportError:
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from clear_unfair_zeros import AGENT_MARKERS, AUTO_ZERO_MARKERS, connect  # noqa: E402
 
+# AGENT_MARKERS ('"reviewedBy": "ai"') is written ONLY by the assignment path
+# (assignment_db_service.update_assignment_submission_with_ai_results). The
+# case-study path (db_service.update_submission_with_ai_results) has never
+# written it, so marker-only detection silently classifies EVERY agent-written
+# case-study review as faculty-graded — the exact rows this audit exists to
+# count. Fall back to fields only the agent emits. Verified against the
+# deployed payload at a62157f; a human grade entered in the LMS carries none.
+#
+# Same blind spot means clear_unfair_zeros.py cannot currently clear a
+# case-study zero at all — it protects them as "human-graded".
+STRUCTURAL_AGENT_MARKERS = ('"aiLikelihoodPercent"', '"scoreEmoji"',
+                            '"plagiarismFlag"', '"rubricScores"',
+                            '"detailedFeedback"')
+
+
+def wrote_by_agent(feedback: str) -> bool:
+    """True when AiRev produced this review, by marker or by payload shape."""
+    return (any(m in feedback for m in AGENT_MARKERS)
+            or any(m in feedback for m in STRUCTURAL_AGENT_MARKERS))
+
 
 @dataclass(frozen=True)
 class TypeSpec:
@@ -174,7 +194,7 @@ def fetch(conn, spec: TypeSpec) -> list[dict]:
 def classify(row: dict, low_pct: float) -> str:
     """One bucket per submission. Pure: no I/O, trivially testable."""
     feedback = row.get("feedback") or ""
-    by_agent = any(m in feedback for m in AGENT_MARKERS)
+    by_agent = wrote_by_agent(feedback)
     grade = row.get("grade")
     has_body = bool((row.get("body") or "").strip())
 
