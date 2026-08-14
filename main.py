@@ -21,10 +21,26 @@ from app.services.capacity import CapacityFull, BUSY_MESSAGE, RETRY_AFTER_SECOND
 from app.tenants import resolve_tenant_by_key, all_tenant_ids, configured_tenant_ids, TENANTS, Tenant
 from app.database import test_all_tenants, set_current_tenant
 
+# docs_url / redoc_url / openapi_url are DISABLED by default.
+#
+# FastAPI publishes them with no auth, and this Space is on the public
+# internet. The scan in the 14 Aug log — /.env, /.env.local, /.streamlit/
+# secrets.toml, /file%3D../.env, /api/predict — also fetched /openapi.json and
+# got 200: the complete route map, every path parameter and every request
+# schema, handed to whoever asked. The routes themselves are auth-gated, so
+# this is not a breach; it is a free map of the building for anyone planning
+# one, and there is no reason to publish it.
+#
+# Set ENABLE_API_DOCS=1 temporarily when you need Swagger while developing.
+_DOCS_ON = os.getenv("ENABLE_API_DOCS", "").strip().lower() in {"1", "true", "yes", "on"}
+
 app = FastAPI(
     title="Upskillize AI Review Agent",
     description="Multi-tenant AI evaluation for case studies, assignments, capstones and industry sessions",
     version="3.1.0",
+    docs_url="/docs" if _DOCS_ON else None,
+    redoc_url="/redoc" if _DOCS_ON else None,
+    openapi_url="/openapi.json" if _DOCS_ON else None,
 )
 
 # ===== CORS =====
