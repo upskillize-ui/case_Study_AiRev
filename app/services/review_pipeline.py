@@ -21,6 +21,7 @@
 # and languageReport (grammar/spelling/redundancy/clarity — advisory).
 
 import json
+import re
 import os
 from typing import Optional
 
@@ -42,6 +43,94 @@ GATES = {
 
 # Criterion names whose score demands case-specific grounding.
 _SPECIFICITY_BOUND = ("evidence", "application", "analysis", "depth", "practical", "recommend")
+
+# ---------------------------------------------------------------------------
+# HOW FEEDBACK MUST READ
+#
+# The card students actually saw on 14 Aug opened with a 300-word unbroken
+# paragraph, scored criteria in academic register ("goal decomposition", "no
+# temporal or causal ordering"), and listed eight "concepts to revisit". A
+# 19-year-old undergraduate does not read that. Feedback nobody reads teaches
+# nobody anything — however correct the score behind it.
+#
+# So the limits below are part of the product, not stylistic preference. They
+# are enforced in the schema (so the model aims for them) AND trimmed in code
+# (so a long answer cannot arrive anyway).
+#
+# This changes WORDING only. It must never change a score.
+# ---------------------------------------------------------------------------
+
+STUDENT_VOICE = (
+    "Write to the student as a person, in plain English a first-year college "
+    "student reads without effort. Short sentences. No academic jargon "
+    "('goal decomposition', 'temporal ordering', 'artifact'), no markdown, no "
+    "asterisks for emphasis, no headings, no emoji. Say the thing directly: "
+    "'Your steps say what you want, not how you get there' beats 'the "
+    "submission lists end-state aspirations rather than sequenced milestones'."
+)
+
+# Hard ceilings, applied after the model answers.
+MAX_ITEM_CHARS = int(os.getenv("FEEDBACK_MAX_ITEM_CHARS", "180"))
+MAX_HARD_TRUTH_CHARS = int(os.getenv("FEEDBACK_MAX_HARD_TRUTH_CHARS", "220"))
+MAX_LIST_ITEMS = int(os.getenv("FEEDBACK_MAX_LIST_ITEMS", "3"))
+MAX_CONCEPTS = int(os.getenv("FEEDBACK_MAX_CONCEPTS", "4"))
+
+
+def _tidy(text: str, limit: int) -> str:
+    """Trim to a SENTENCE boundary under `limit`, and strip markdown emphasis.
+
+    Cutting mid-word looks broken and costs the student the point being made,
+    so fall back to the last sentence that fits; only hard-cut if the very
+    first sentence is already too long.
+    """
+    if not text:
+        return ""
+    clean = re.sub(r"[*_`#]+", "", str(text)).strip()
+    if len(clean) <= limit:
+        return clean
+    cut = clean[:limit]
+    for stop in (". ", "! ", "? "):
+        idx = cut.rfind(stop)
+        if idx > limit * 0.4:
+            return cut[:idx + 1].strip()
+    return cut.rsplit(" ", 1)[0].rstrip(",;:") + "."
+
+
+def _chip(text: str, limit: int = 60) -> str:
+    """A concept chip: the LABEL only, never the explanation after it."""
+    clean = re.sub(r"[*_`#]+", "", str(text or "")).strip()
+    for sep in (" — ", " – ", " - ", ": ", ";"):
+        if sep in clean:
+            clean = clean.split(sep, 1)[0].strip()
+            break
+    if len(clean) <= limit:
+        return clean.rstrip(".")
+    return clean[:limit].rsplit(" ", 1)[0].rstrip(",;:.")
+
+
+def tidy_review(review: dict) -> dict:
+    """Enforce the ceilings on whatever the model returned.
+
+    Wording only — no score, band or gate is touched here.
+    """
+    for key in ("strengths", "improvements", "feedback_points"):
+        items = [i for i in (review.get(key) or []) if str(i).strip()]
+        review[key] = [_tidy(i, MAX_ITEM_CHARS) for i in items[:MAX_LIST_ITEMS]]
+
+    for key in ("concepts_missing", "concepts_covered"):
+        items = [i for i in (review.get(key) or []) if str(i).strip()]
+        # Concept labels are CHIPS on the card — a phrase, never a sentence.
+        # The model tends to write "Label — long explanation"; keep the label,
+        # because a chip cut mid-explanation reads as a bug.
+        review[key] = [_chip(i) for i in items[:MAX_CONCEPTS]]
+
+    review["hard_truth"] = _tidy(review.get("hard_truth", ""), MAX_HARD_TRUTH_CHARS)
+
+    for c in review.get("criteria") or []:
+        if isinstance(c, dict) and c.get("judgment"):
+            c["judgment"] = _tidy(c["judgment"], 140)
+    return review
+
 
 REVIEW_SCHEMA = {
     "type": "object",
@@ -92,7 +181,13 @@ REVIEW_SCHEMA = {
             },
         },
         "concepts_covered": {"type": "array", "items": {"type": "string"}},
-        "concepts_missing": {"type": "array", "items": {"type": "string"}},
+        "concepts_missing": {
+            "type": "array", "maxItems": 4,
+            "items": {"type": "string", "maxLength": 60},
+            "description": ("At most 4, as SHORT PLAIN PHRASES for chips on a card "
+                            "— 'a clear 5-year goal', not 'goal decomposition into "
+                            "discrete sequential steps'. No explanations here."),
+        },
         "factual_errors": {
             "type": "array",
             "items": {
@@ -105,16 +200,31 @@ REVIEW_SCHEMA = {
                 "required": ["quote", "issue", "severity"],
             },
         },
-        "strengths":         {"type": "array", "items": {"type": "string"}},
-        "improvements":      {"type": "array", "items": {"type": "string"}},
+        "strengths": {
+            "type": "array", "maxItems": 3,
+            "items": {"type": "string", "maxLength": 180},
+            "description": ("At most 3. One short sentence each, naming a real "
+                            "thing the student actually did. " + STUDENT_VOICE),
+        },
+        "improvements": {
+            "type": "array", "maxItems": 3,
+            "items": {"type": "string", "maxLength": 180},
+            "description": ("At most 3, most important first. Each is ONE action "
+                            "the student can take on the next attempt, short enough "
+                            "to act on without re-reading. Stay inside the tool the "
+                            "task names. " + STUDENT_VOICE),
+        },
         "feedback_points": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "3-6 point-wise feedback items. Each ONE specific, self-contained observation or instruction — not a paragraph, not a summary. Second person, concrete, tied to the student's actual text.",
+            "maxItems": 3,
+            "description": ("At most 3 points. Each ONE specific observation tied to the student's actual text — not a paragraph, not a summary. " + STUDENT_VOICE),
         },
         "hard_truth": {
             "type": "string",
-            "description": "The blunt bottom-line verdict in 1-2 sentences — the single most important thing the student must confront. Direct, no softening, but constructive. This is the conclusion, shown highlighted at the end.",
+            "maxLength": 220,
+            "description": ("The bottom line in ONE or TWO short sentences — the "
+                            "single thing the student must fix. Direct, not harsh. " + STUDENT_VOICE),
         },
         "language_report": {
             "type": "object",
@@ -454,6 +564,8 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
             thinking_budget=int(os.getenv("THINKING_BUDGET", "2000")),
         )
         scoring_path = "strong-thinking-escalated"
+
+    review = tidy_review(review)
 
     if should_hard_zero(review, word_count):
         return _garbage_result(review, rubric_criteria, pack_version, scoring_path)
