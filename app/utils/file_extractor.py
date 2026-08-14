@@ -33,6 +33,9 @@ logger = logging.getLogger(__name__)
 # ---------- config ---------------------------------------------------------
 
 MAX_FILE_BYTES = int(os.getenv("MAX_FILE_BYTES", str(10 * 1024 * 1024)))   # 10 MB
+# Audio and video are legitimately bigger than documents. Applied only to the
+# extensions in MEDIA_EXTS, after the type is known.
+MAX_MEDIA_BYTES = int(os.getenv("MAX_MEDIA_BYTES", str(80 * 1024 * 1024)))  # 80 MB
 NO_TEXT_IN_IMAGE = "image contains no readable text"
 MAX_OCR_PAGES = int(os.getenv("MAX_OCR_PAGES", "5"))                       # OCR cap
 # Vision-capable model for OCR. Defaults to the same Haiku every other
@@ -48,8 +51,14 @@ TEXT_EXTS  = {".txt", ".md"}
 # them as UTF-8 with errors="ignore": a WhatsApp .mp4 became "272004 words" of
 # binary garbage, which then exceeded the notes column and 500'd the submit
 # (live, 13 Aug). Reject them by name, with a message the student can act on.
+# Audio/video. Routed to app/services/submission_media (ffmpeg -> Whisper for
+# speech, sampled frames -> vision for what is on screen). Named explicitly so
+# the unknown-extension fallback never decodes them as UTF-8 — that is how a
+# WhatsApp .mp4 became "272004 words" of binary garbage and 500'd a live submit
+# on 13 Aug.
 MEDIA_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".3gp", ".wmv",
-              ".flv", ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".wma"}
+              ".flv", ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".wma",
+              ".flac"}
 CODE_EXTS  = {".py", ".sql", ".js", ".ts", ".jsx", ".tsx", ".java", ".c",
               ".cpp", ".r", ".json", ".html", ".css", ".sh", ".yaml", ".yml"}
 SHEET_MAX_ROWS  = 300     # per sheet — enough for any coursework workbook
@@ -205,11 +214,18 @@ def _extract_dispatch(data: bytes, file_name: str = "") -> Tuple[str, str]:
     if not data:
         return "", "no file bytes provided"
 
-    if len(data) > MAX_FILE_BYTES:
-        return "", f"file too large ({len(data) // 1024} KB > {MAX_FILE_BYTES // 1024} KB)"
-
     name = (file_name or "").lower()
     ext = "." + name.rsplit(".", 1)[-1] if "." in name else ""
+
+    # The size ceiling is PER KIND, and the extension has to be known first.
+    # A single 10 MB limit applied before dispatch would have refused the very
+    # files this pipeline exists to read: a 10-minute NotebookLM Audio Overview
+    # is 10-15 MB, a one-minute Runway clip larger still. Documents stay at the
+    # tighter limit, because a 60 MB "PDF" is not a coursework document.
+    ceiling = MAX_MEDIA_BYTES if ext in MEDIA_EXTS else MAX_FILE_BYTES
+    if len(data) > ceiling:
+        return "", (f"file too large ({len(data) // (1024 * 1024)} MB > "
+                    f"{ceiling // (1024 * 1024)} MB)")
 
     try:
         # PDFs ------------------------------------------------------------
@@ -232,12 +248,19 @@ def _extract_dispatch(data: bytes, file_name: str = "") -> Tuple[str, str]:
             )
 
         # Audio / video ----------------------------------------------------
+        # NOT refused any more. The programme teaches tools whose output IS
+        # sound and moving pictures — NotebookLM Audio Overviews, Suno songs,
+        # ElevenLabs speech, Runway and HeyGen video — and refusing the medium
+        # marked those learners as having submitted nothing.
+        #
+        # The original guard existed because a WhatsApp .mp4 decoded as 272,000
+        # words of binary garbage and 500'd a submit. That danger is real, and
+        # the answer is to stop decoding binary AS TEXT, not to reject the
+        # format: media now goes to the transcriber, and the last-resort UTF-8
+        # decode below is still gated by _looks_like_text().
         if ext in MEDIA_EXTS:
-            return "", (
-                f"{ext} is a video or audio file, and AiRev reviews written work. "
-                "Upload your write-up as PDF, Word, an image of your notes, or "
-                "type it into the answer box."
-            )
+            from app.services.submission_media import transcribe_and_describe
+            return transcribe_and_describe(data, file_name)
 
         # Plain text ------------------------------------------------------
         if ext in TEXT_EXTS:

@@ -84,6 +84,10 @@ _KIND_BY_EXT = {
     **{e: "slide deck" for e in (".pptx", ".potx", ".ppt", ".odp")},
     **{e: "notebook" for e in (".ipynb",)},
     **{e: "archive" for e in (".zip",)},
+    **{e: "audio recording" for e in (".mp3", ".wav", ".m4a", ".aac", ".ogg",
+                                      ".opus", ".wma", ".flac")},
+    **{e: "video" for e in (".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v",
+                            ".3gp", ".wmv", ".flv")},
 }
 
 
