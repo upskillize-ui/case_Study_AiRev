@@ -352,6 +352,34 @@ def _diagnose_if_odd(tenant: Tenant, student_id: int, rows: list) -> None:
         print(f"[ASSIGNMENT] diagnostics failed: {e}")
 
 
+def get_submission_for_regrade(tenant: Tenant, submission_id: int) -> dict | None:
+    """Fetch ONE submission by id, without a student_id, for a staff regrade.
+
+    Deliberately separate from get_assignment_submission_by_id(), which pairs
+    id with student_id so a learner can only ever read their own row. That
+    guard must not be loosened for staff convenience — so staff get their own
+    function, reachable only from the admin-key-gated regrade route.
+
+    attempt_number is not a column — it is this row's ordinal among that
+    learner's submissions for the same assignment. Computed here so a regrade
+    echoes the attempt the learner actually sees, rather than defaulting to 1
+    and telling them their third attempt was their first.
+    """
+    rows = tquery(
+        tenant,
+        """SELECT s.*, a.title AS assignment_title, a.total_marks,
+                  (SELECT COUNT(*) FROM assignment_submissions p
+                    WHERE p.assignment_id = s.assignment_id
+                      AND p.student_id = s.student_id
+                      AND p.id <= s.id) AS attempt_number
+          FROM assignment_submissions s
+          JOIN assignments a ON a.id = s.assignment_id
+          WHERE s.id = %s""",
+        (submission_id,),
+    )
+    return rows[0] if rows else None
+
+
 def get_assignment_submission_by_id(tenant: Tenant, submission_id: int, student_id: int) -> dict | None:
     rows = tquery(
         tenant,

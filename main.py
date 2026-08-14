@@ -47,7 +47,14 @@ app.add_middleware(
 
 
 # ===== Auth + tenant resolution dependency =====
-def require_auth_and_tenant(x_api_key: str = Header(default="")) -> Tenant:
+# ASYNC, and it MUST stay async. FastAPI runs a SYNC dependency in a worker
+# thread via anyio, which gives it a COPY of the contextvar context — so
+# set_current_tenant() wrote the tenant into a context that was discarded the
+# moment the dependency returned, and every query()/execute() in the request
+# then fell through _resolve_url()'s "lms" default. Measured: a sync dep leaves
+# the handler's contextvar None; an async dep propagates it. Effect while it
+# was sync: an eaprep key read AND WROTE the lms production database.
+async def require_auth_and_tenant(x_api_key: str = Header(default="")) -> Tenant:
     tenant = resolve_tenant_by_key(x_api_key)
     set_current_tenant(tenant)
     return tenant

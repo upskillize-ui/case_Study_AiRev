@@ -96,18 +96,23 @@ def _looks_like_text(data: bytes, sample: int = 4096) -> bool:
 # ---------- public entry ---------------------------------------------------
 
 # LMS rows often store uploads as relative paths (e.g. /uploads/x.pdf) that
-# only resolve against the LMS backend. Centralised here so EVERY extraction
-# path benefits — case studies previously skipped this and their stored-file
-# fallback silently failed, breaking one-click review of submitted work.
-LMS_FILE_BASE_URL = os.getenv(
-    "LMS_FILE_BASE_URL", "https://upskillize-lms-backend.onrender.com")
+# only resolve against the LMS backend. Address checking and path allowlisting
+# live in app/utils/url_guard, imported by EVERY caller that fetches a
+# learner-supplied URL — see that module for why it is not defined here.
+from app.utils.url_guard import (          # noqa: E402  (kept next to its use)
+    check_public_url,
+    resolve_lms_url as _guarded_resolve,
+)
 
 
 def resolve_lms_url(file_url: str) -> str:
-    """Absolute URLs pass through; LMS-relative paths get the backend base."""
-    if file_url and file_url.startswith("/"):
-        return LMS_FILE_BASE_URL + file_url
-    return file_url
+    """Back-compat shim: returns the safe URL, or "" when it is refused.
+
+    Kept because other modules import this name. New code should call
+    url_guard.resolve_lms_url() directly and read the refusal reason.
+    """
+    url, _why = _guarded_resolve(file_url)
+    return url
 
 
 def extract_text_from_url(file_url: str, file_name: str = "") -> Tuple[str, str]:
@@ -115,12 +120,23 @@ def extract_text_from_url(file_url: str, file_name: str = "") -> Tuple[str, str]
     Returns (extracted_text, reason).
     On success: ('extracted text...', '')
     On failure: ('', 'short reason for log')
+
+    THE GUARD IS HERE, before any network call. `file_url` arrives straight
+    from a learner's request body, so this function is a server-side request
+    forgery primitive unless every URL is checked. It used to have no check at
+    all: fileUrl="http://169.254.169.254/latest/meta-data/" with
+    fileName="x.txt" fetched the cloud metadata endpoint and returned the body
+    to the student as their own submission text.
     """
     if not file_url:
         return "", "no file_url provided"
 
-    file_url = resolve_lms_url(file_url)
-    data, why = _download_file(file_url)
+    safe_url, why = _guarded_resolve(file_url)
+    if not safe_url:
+        logger.warning("refused fetch of %r: %s", file_url[:120], why)
+        return "", why
+
+    data, why = _download_file(safe_url)
     if data is None:
         return "", why
 
@@ -276,6 +292,61 @@ def _extract_dispatch(data: bytes, file_name: str = "") -> Tuple[str, str]:
 
 # ---------- download (kept compatible with original) -----------------------
 
+_MAX_REDIRECT_HOPS = 4
+
+
+class _Fetched:
+    """Just enough of a response for the caller: status, headers, capped body."""
+    __slots__ = ("status_code", "headers", "content")
+
+    def __init__(self, status_code, headers, content):
+        self.status_code, self.headers, self.content = status_code, headers, content
+
+
+def _get_following_redirects(client, url: str):
+    """Stream a GET, walking redirects by hand so every hop is address-checked
+    AND the body is bounded while it arrives.
+
+    client.stream() — NOT client.get(). A plain get() buffers the entire body
+    into memory before returning, so any size check afterwards is decorative:
+    a hostile server answering with 10 GB kills the container before the check
+    runs. Streaming lets us abandon the transfer the moment it exceeds the
+    ceiling.
+
+    Returns (_Fetched, "") or (None, reason). A refused hop is terminal — it is
+    an attack signal, not a transient failure — so the caller must not retry.
+    """
+    current = url
+    for _ in range(_MAX_REDIRECT_HOPS):
+        ok, why = check_public_url(current)
+        if not ok:
+            logger.warning("refused fetch/redirect to %r: %s", current[:120], why)
+            return None, f"download refused: {why}"
+
+        with client.stream("GET", current) as r:
+            if r.status_code in (301, 302, 303, 307, 308):
+                nxt = r.headers.get("location")
+                if not nxt:
+                    return _Fetched(r.status_code, r.headers, b""), ""
+                current = str(httpx.URL(current).join(nxt))
+                continue
+
+            declared = r.headers.get("content-length")
+            if declared and declared.isdigit() and int(declared) > MAX_FILE_BYTES:
+                return None, (f"file too large ({int(declared) // 1024} KB > "
+                              f"{MAX_FILE_BYTES // 1024} KB)")
+
+            buf = bytearray()
+            for chunk in r.iter_bytes():
+                buf.extend(chunk)
+                if len(buf) > MAX_FILE_BYTES:
+                    # Content-Length can lie; this is the check that holds.
+                    return None, f"file exceeds {MAX_FILE_BYTES // 1024} KB"
+            return _Fetched(r.status_code, r.headers, bytes(buf)), ""
+
+    return None, "download redirected too many times"
+
+
 def _download_file(file_url: str) -> Tuple[bytes, str]:
     """Returns (bytes, reason). bytes is None on failure.
 
@@ -293,15 +364,21 @@ def _download_file(file_url: str) -> Tuple[bytes, str]:
     # 404/423/425/429/5xx are "not ready yet / transient" → wait and retry.
     TRANSIENT = {404, 408, 423, 425, 429, 500, 502, 503, 504}
     last = "download failed"
-    with httpx.Client(timeout=30, follow_redirects=True) as client:
+    # follow_redirects=False, deliberately. It was True, which meant a URL that
+    # passed the address check could 302 straight to 169.254.169.254 — the
+    # standard bypass of any check-once guard. Redirects are walked by hand
+    # below and EVERY hop is re-checked.
+    with httpx.Client(timeout=30, follow_redirects=False) as client:
         for attempt in range(4):          # waits ~0 + 1.5 + 3 + 4.5s across tries
             if attempt:
                 _time.sleep(1.5 * attempt)
             try:
-                r = client.get(file_url)
+                r, hop_err = _get_following_redirects(client, file_url)
             except Exception as e:
                 last = f"download failed: {e}"
                 continue
+            if r is None:
+                return None, hop_err          # refused hop — do NOT retry
 
             if r.status_code == 200:
                 return r.content, ""
@@ -360,6 +437,25 @@ def _extract_pdf(data: bytes) -> Tuple[str, str]:
         return "", f"pdf parse error: {e}"
 
 
+# Rendered-pixel ceiling per OCR page. 4M px ~ a 2000x2000 image: ample for
+# handwriting, and ~16 MB of BGRA rather than gigabytes.
+MAX_OCR_PIXELS = int(os.getenv("MAX_OCR_PIXELS", str(4_000_000)))
+
+
+def _ocr_scale(page, preferred: float = 2.0) -> float:
+    """Render scale for one page, reduced until the bitmap fits the ceiling."""
+    try:
+        width, height = page.get_size()
+        area = float(width) * float(height)
+    except Exception:
+        return preferred                      # unknown geometry — trust default
+    if area <= 0:
+        return preferred
+    import math
+    max_scale = math.sqrt(MAX_OCR_PIXELS / area)
+    return max(0.2, min(preferred, max_scale))
+
+
 def _extract_scanned_pdf(data: bytes) -> Tuple[str, str]:
     """Rasterize first N pages and OCR via Claude vision."""
     try:
@@ -388,8 +484,13 @@ def _extract_scanned_pdf(data: bytes) -> Tuple[str, str]:
     try:
         for i in range(n):
             page = pdf[i]
-            # 144 DPI is a good handwriting/print balance
-            bitmap = page.render(scale=2.0)
+            # Scale is CLAMPED by page area. MAX_FILE_BYTES bounds the input
+            # bytes and MAX_OCR_PAGES bounds the page count, but nothing bounded
+            # the page SIZE — and a valid 328-byte PDF may declare a 14400x14400
+            # point MediaBox (pdfium's maximum). At scale 2.0 that renders a
+            # 28800x28800 BGRA bitmap: 3.3 GB, copied again by to_pil(), five
+            # times over. One request, container dead, every learner offline.
+            bitmap = page.render(scale=_ocr_scale(page))
             pil_img = bitmap.to_pil()
             buf = io.BytesIO()
             pil_img.save(buf, format="PNG", optimize=True)

@@ -18,6 +18,7 @@ import hashlib
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, Header, BackgroundTasks
 from app.services.capacity import capacity_guard
+from app.auth import require_admin
 from pydantic import BaseModel
 
 from app.services import (
@@ -47,7 +48,14 @@ from app.database import set_current_tenant
 router = APIRouter(prefix="/api/review", tags=["assignment-review"])
 
 
-def get_tenant(x_api_key: str = Header(default="")) -> Tenant:
+# ASYNC, and it MUST stay async. FastAPI runs a SYNC dependency in a worker
+# thread via anyio, which gives it a COPY of the contextvar context — so
+# set_current_tenant() wrote the tenant into a context that was discarded the
+# moment the dependency returned, and every query()/execute() in the request
+# then fell through _resolve_url()'s "lms" default. Measured: a sync dep leaves
+# the handler's contextvar None; an async dep propagates it. Effect while it
+# was sync: an eaprep key read AND WROTE the lms production database.
+async def get_tenant(x_api_key: str = Header(default="")) -> Tenant:
     """Local auth dep — resolves tenant from key for this router's handlers."""
     tenant = resolve_tenant_by_key(x_api_key)
     set_current_tenant(tenant)
@@ -115,7 +123,9 @@ def list_student_assignments(student_id: int, tenant: Tenant = Depends(get_tenan
 # Trigger-1 webhook: faculty/admin calls this after creating or editing an
 # assignment so the agent reads the questions and builds its knowledge pack
 # BEFORE any student submits — "pre-ready", not lazy.
-@router.post("/prepare/assignment/{assignment_id}")
+# STAFF ONLY — schedules an unattributed Claude knowledge build.
+@router.post("/prepare/assignment/{assignment_id}",
+             dependencies=[Depends(require_admin)])
 def prepare_assignment(assignment_id: int, background_tasks: BackgroundTasks,
                              tenant: Tenant = Depends(get_tenant)):
     from app.services import knowledge_service
@@ -512,6 +522,167 @@ def get_assignment_submission(
         },
         "feedback": feedback,
     }
+
+
+def _graded_by_human(row: dict) -> bool:
+    """True when this row's grade came from a person, not the agent.
+
+    AiRev stamps its own payloads (reviewedBy / rubricScores / authorship). A
+    graded row whose feedback carries none of those markers was almost
+    certainly typed by faculty, and the conservative reading of an ambiguous
+    row is 'human' — refusing a regrade is recoverable, destroying a marker's
+    grade is not.
+    """
+    if row.get("grade") is None:
+        return False
+    blob = row.get("feedback")
+    if not blob:
+        return True                       # a grade with no agent payload
+    try:
+        fb = json.loads(blob) if isinstance(blob, str) else blob
+    except Exception:
+        return True                       # unparseable — assume human
+    if not isinstance(fb, dict):
+        return True
+    if str(fb.get("reviewedBy", "")).lower() in ("mentor", "faculty", "human"):
+        return True
+    agent_markers = ("rubricScores", "aiLikelihoodPercent", "howYouScored",
+                     "authorship", "detailedFeedback")
+    return not any(k in fb for k in agent_markers)
+
+
+# ---------- POST /api/review/re-review/assignment/{submission_id} ----------
+# Staff-only correction path. Re-scores a submission that ALREADY has a grade
+# and writes the result back into THAT SAME ROW.
+#
+# WHY IT EXISTS. /submit-assignment INSERTs a new row for every review — right
+# for a learner, because it preserves their attempt history. It is wrong for a
+# correction run: re-running 422 rows through it would have inserted 422 extra
+# submissions, inflated every learner's attempt count, and left the wrong grade
+# sitting in history beside the right one. This route touches no other row and
+# creates none.
+#
+# SAFETY RULES, in order of importance:
+#   1. Admin key required. A learner cannot reach this route at all — a wrong
+#      or missing key is 403 before any read, not a silently cheaper review.
+#   2. Nothing readable => nothing written. A row whose file has gone missing
+#      keeps the grade it has. Blanking it would replace a wrong score with no
+#      score, which is worse for the learner.
+#   3. dryRun reports exactly what WOULD be read — artefacts, word count,
+#      current grade — and spends nothing. Run it first.
+#   4. UPDATE only, via the same persistence the normal path uses.
+
+@router.post("/re-review/assignment/{submission_id}",
+             dependencies=[Depends(capacity_guard)])
+def re_review_assignment(
+    submission_id: int,
+    dryRun: bool = False,
+    force: bool = False,
+    tenant: Tenant = Depends(get_tenant),
+    x_admin_key: str = Header(default=""),
+):
+    if not ai_service.begin_run_billing(x_admin_key):
+        raise HTTPException(
+            status_code=403,
+            detail="Re-review is staff-only. Send a valid X-Admin-Key header.")
+
+    start_time = time.time()
+    row = assignment_db_service.get_submission_for_regrade(tenant, submission_id)
+    if not row:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Submission {submission_id} not found in tenant '{tenant.id}'")
+
+    assignment = assignment_db_service.get_assignment_by_id(tenant, row["assignment_id"])
+    if not assignment:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Assignment {row['assignment_id']} not found or inactive")
+
+    max_marks = int(assignment.get("maxScore") or 100)
+    previous_grade = row.get("grade")
+
+    # A human mark is not ours to overwrite. grade/feedback are single columns
+    # shared by AiRev and faculty, so a correction run sweeping an id range
+    # would replace a hand-entered mark and the marker's comments with an AI
+    # score — silently, because dryRun reports the grade but not who set it.
+    # Refuse by default; `force=true` is a deliberate, logged override.
+    if _graded_by_human(row) and not force:
+        print(f"[REGRADE] submission {submission_id}: HUMAN-graded — refused "
+              f"(pass force=true to override)")
+        return {"success": False, "skipped": "human_graded",
+                "submissionId": submission_id,
+                "previousGrade": previous_grade,
+                "detail": ("This submission carries a faculty grade. Re-review "
+                           "would replace it. Re-run with force=true only if "
+                           "that is what you intend.")}
+
+    # Re-read the work from the row itself. The stored file is re-extracted,
+    # not assumed: the rows this route exists to fix are precisely the ones
+    # whose stored text is empty because only an image was ever attached.
+    artefacts: list[intake.Artefact] = []
+    stored_file = row.get("file_path") or row.get("file_url")
+    if stored_file:
+        artefacts.append(intake.from_stored_file(stored_file, row.get("file_name") or ""))
+    stored_notes = clean_text(row.get("notes") or "")
+    if stored_notes:
+        artefacts.append(intake.from_typed(stored_notes))
+
+    manifest, content = intake.render(artefacts)
+    word_count = count_words(content)
+    inventory = [{"kind": a.kind, "label": a.label,
+                  "words": len(a.text.split()) if a.readable else 0,
+                  "readable": a.readable, "note": a.note} for a in artefacts]
+
+    if not content:
+        # Rule 2. Report it and leave the row exactly as it is.
+        print(f"[REGRADE] submission {submission_id}: nothing readable "
+              f"({intake.first_error(artefacts) or 'no stored work'}) — row untouched")
+        return {"success": False, "skipped": "no_readable_content",
+                "submissionId": submission_id,
+                "previousGrade": previous_grade,
+                "artefacts": inventory,
+                "detail": intake.first_error(artefacts) or "no stored work found"}
+
+    if dryRun:
+        return {"success": True, "dryRun": True,
+                "submissionId": submission_id,
+                "studentId": row["student_id"],
+                "assignmentId": row["assignment_id"],
+                "previousGrade": previous_grade, "outOf": max_marks,
+                "wordCount": word_count, "artefacts": inventory,
+                "detail": "Readable. No AI call made, no row written."}
+
+    adaptive = rubric_service.get_or_derive(
+        tenant, "assignment", row["assignment_id"], assignment)
+    gate_overrides = ({} if adaptive.get("submissionKind") in ("written", "mixed")
+                      else {"generic_answer_cap": 100})
+
+    r = review_pipeline.review_with_knowledge(
+        scope_type="assignment", scope_id=row["assignment_id"],
+        raw_source=assignment, rubric={"criteria": adaptive["criteria"]},
+        student_answer=f"{manifest}\n{content}".strip(), word_count=word_count,
+        word_limit_min=adaptive["wordMin"], word_limit_max=adaptive["wordMax"],
+        gate_overrides=gate_overrides, student_id=row["student_id"],
+    )
+    if r is None:
+        raise HTTPException(status_code=503,
+                            detail="Reviewer unavailable — row left unchanged.")
+
+    # Same persistence the normal path uses, pointed at the EXISTING row.
+    # attemptNumber is echoed from the row so nothing downstream invents a
+    # new attempt.
+    submission = {"submissionId": submission_id,
+                  "attemptNumber": row.get("attempt_number") or 1}
+    response = _pipeline_assignment_response(
+        tenant, submission, r, word_count, start_time, max_marks=max_marks)
+    response["reReviewed"] = True
+    response["previousGrade"] = previous_grade
+    response["artefacts"] = inventory
+    print(f"[REGRADE] submission {submission_id}: {previous_grade} -> "
+          f"{response['feedback'].get('scoreMarks')}/{max_marks} "
+          f"({word_count} words, {len(artefacts)} artefact(s))")
+    return response
 
 
 # ---------- GET /api/review/assignment-history/{assignment_id}/{student_id} ----

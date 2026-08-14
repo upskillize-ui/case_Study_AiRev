@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("ANTHROPIC_API_KEY", "test")
 
 from app.utils import submission_intake as intake
+from app.utils import url_guard
 from app.utils.submission_intake import Artefact
 
 IMAGE = Artefact(kind="image", label="future_self.png",
@@ -145,7 +146,7 @@ def test_private_ranges_are_refused(monkeypatch):
     import socket
     for addr in ("10.0.0.5", "192.168.1.1", "172.16.0.1", "169.254.1.1", "127.0.0.1"):
         monkeypatch.setattr(
-            intake.socket, "getaddrinfo",
+            url_guard.socket, "getaddrinfo",
             lambda *a, _a=addr, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (_a, 443))])
         ok, why = intake._safe_target("https://evil.example.com/")
         assert ok is False, f"{addr} was allowed"
@@ -155,7 +156,7 @@ def test_private_ranges_are_refused(monkeypatch):
 def test_a_public_host_is_allowed(monkeypatch):
     import socket
     monkeypatch.setattr(
-        intake.socket, "getaddrinfo",
+        url_guard.socket, "getaddrinfo",
         lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))])
     ok, why = intake._safe_target("https://example.com/artifact")
     assert ok is True, why

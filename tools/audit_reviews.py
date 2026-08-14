@@ -11,6 +11,11 @@ Why it exists: bulk_review.py and clear_unfair_zeros.py each report only the
 rows THEY touched (and default to --limit 10). After a scoring regression you
 need the opposite view — the whole cohort, every type, counted once.
 
+It reports per TYPE and per ITEM. The per-item table is the one to read
+before triggering any correction run — it names each assignment (Day 01, Day
+02 ...), how many learners submitted it, and what state their reviews are in.
+Triggering a run without that count is guessing at the blast radius.
+
 It answers four questions per review type:
 
   1. AGENT ZEROS      agent-written reviews sitting at exactly 0
@@ -146,7 +151,7 @@ def _val(row: dict, key: str):
 
 # ---------- fetching -------------------------------------------------------
 
-def build_query(spec: TypeSpec, cols: set) -> str:
+def build_query(spec: TypeSpec, cols: set, item_cols: set = frozenset()) -> str:
     """SELECT only columns confirmed to exist. Read-only by construction."""
     body = [c for c in spec.body_cols if c in cols]
     body_expr = (" , ".join(f"s.{c}" for c in body)
@@ -164,9 +169,18 @@ def build_query(spec: TypeSpec, cols: set) -> str:
         select += [f"s.{spec.fk} AS item_id", "COALESCE(i.title, '') AS title"]
         select.append(f"i.{spec.marks_col} AS max_marks"
                       if spec.marks_col else "NULL AS max_marks")
+        # The cohort. Upskillize runs TWO batches (junior and senior college)
+        # that often share a task title, so two assignment rows with the same
+        # name are usually two batches, not a duplicate. Without this column
+        # the report cannot tell those apart, and a reader concludes the data
+        # is dirty when it is correct. Probed, never assumed.
+        select.append("i.course_id AS batch" if "course_id" in item_cols
+                      else "NULL AS batch")
         join = f" JOIN {spec.item_table} i ON i.id = s.{spec.fk}"
     else:
         select += ["s.id AS item_id", "COALESCE(s.title, '') AS title"]
+        select.append("s.course_id AS batch" if "course_id" in cols
+                      else "NULL AS batch")
         select.append(f"s.{spec.marks_col} AS max_marks"
                       if spec.marks_col and spec.marks_col in cols
                       else "NULL AS max_marks")
@@ -180,8 +194,11 @@ def fetch(conn, spec: TypeSpec) -> list[dict]:
         print(f"  [{spec.kind}] table '{spec.table}' not present — skipped")
         return []
     cols = existing_columns(conn, spec.table)
+    item_cols = (existing_columns(conn, spec.item_table)
+                 if spec.item_table and table_exists(conn, spec.item_table)
+                 else set())
     with conn.cursor() as cur:
-        cur.execute(build_query(spec, cols))
+        cur.execute(build_query(spec, cols, item_cols))
         rows = list(cur.fetchall() or [])
     for r in rows:
         r["kind"] = spec.kind
@@ -266,8 +283,114 @@ def print_summary(summary: dict, low_pct: float) -> None:
           f"(zeros + <={low_pct:g}% + cleared-never-rereviewed)")
 
 
+def summarise_by_item(rows: list[dict]) -> list[dict]:
+    """One line per assignment / case study / session — the view you need
+    BEFORE triggering anything.
+
+    The per-type summary answers "how bad is it"; it cannot answer "which day,
+    how many learners, in what state", which is the question that decides what
+    a correction run should target. Counting the population first is not
+    optional: a run triggered without it is a run whose blast radius nobody
+    knows.
+
+    Dicts keyed by item, one pass — no nested scan over rows per item.
+    """
+    by_item: dict = {}
+    for r in rows:
+        key = (r["kind"], r.get("item_id"))
+        e = by_item.setdefault(key, {
+            "kind": r["kind"], "item_id": r.get("item_id"),
+            "batch": r.get("batch"),
+            "title": (r.get("title") or "")[:40],
+            "max_marks": _max_marks(r),
+            "submissions": 0, "students": set(),
+            **{b: 0 for b in BUCKETS}})
+        e["submissions"] += 1
+        e["students"].add(r.get("student_id"))
+        e[r["bucket"]] += 1
+    out = sorted(by_item.values(),
+                 key=lambda e: (e["kind"], _sort_key(e["item_id"])))
+    _flag_shared_titles(out)
+    for e in out:
+        e["students"] = len(e["students"])
+    return out
+
+
+def _flag_shared_titles(items: list[dict]) -> None:
+    """Mark items whose title appears more than once in the same type.
+
+    Two rows with one title are normally the SAME task issued to the junior and
+    the senior batch — legitimate, and both need reviewing. It only becomes a
+    problem when one learner appears under both, so the flag invites the check
+    rather than declaring a duplicate.
+    """
+    seen: dict = {}
+    for e in items:
+        seen.setdefault((e["kind"], e["title"].strip().lower()), []).append(e)
+    for group in seen.values():
+        if len(group) > 1:
+            ids = ", ".join(str(g["item_id"]) for g in group)
+            for g in group:
+                g["shared_title_with"] = ids
+
+
+def _sort_key(item_id):
+    """Numeric ids sort numerically; anything else falls back to text, so a
+    non-integer id cannot crash the report."""
+    try:
+        return (0, int(item_id), "")
+    except (TypeError, ValueError):
+        return (1, 0, str(item_id))
+
+
+def print_by_item(items: list[dict], low_pct: float) -> None:
+    print(f"\n{'PER ITEM — count the population before triggering anything':<96}")
+    print(f"{'type':<11}{'id':>5}{'batch':>7}  {'title':<40}{'subs':>6}{'stud':>6}"
+          f"{'zero':>6}{'low':>6}{'ok':>5}{'human':>6}{'pend':>6}{'new':>5}")
+    print("-" * 112)
+    for e in items:
+        print(f"{e['kind']:<11}{str(e['item_id']):>5}"
+              f"{str(e['batch'] if e['batch'] is not None else '-'):>7}  {e['title']:<40}"
+              f"{e['submissions']:>6}{e['students']:>6}"
+              f"{e['agent_zero']:>6}{e['agent_low']:>6}{e['agent_ok']:>5}"
+              f"{e['human_graded']:>6}{e['cleared_pending']:>6}"
+              f"{e['unreviewed']:>5}")
+    print("-" * 112)
+    print(f"  zero = agent scored 0   low = agent scored <={low_pct:g}% of total   "
+          f"pend = grade cleared, never re-reviewed   new = never reviewed")
+    shared = [e for e in items if e.get("shared_title_with")]
+    if shared:
+        print("\n  Same title on more than one item — usually the two batches "
+              "(junior / senior), not a duplicate:")
+        for ids in sorted({e["shared_title_with"] for e in shared}):
+            match = next(e for e in shared if e["shared_title_with"] == ids)
+            print(f"    ids {ids} — {match['title']}")
+        print("    Confirm with: are any learners present under BOTH ids?")
+
+    needs = [e for e in items if e["agent_zero"] or e["agent_low"]
+             or e["cleared_pending"]]
+    if needs:
+        print("\n  Items with learners to correct, worst first:")
+        for e in sorted(needs, key=lambda e: -(e["agent_zero"] + e["agent_low"]
+                                               + e["cleared_pending"]))[:10]:
+            n = e["agent_zero"] + e["agent_low"] + e["cleared_pending"]
+            print(f"    {e['kind']} {e['item_id']}: {n} of {e['submissions']} "
+                  f"submissions — {e['title']}")
+
+
+def write_item_csv(items: list[dict], path: str) -> None:
+    fields = ("kind", "batch", "item_id", "title", "max_marks", "submissions",
+              "students") + BUCKETS
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
+        w.writeheader()
+        for e in items:
+            w.writerow(e)
+    print(f"Per-item summary written to {path}")
+
+
 def write_csv(rows: list[dict], path: str) -> None:
-    fields = ("kind", "bucket", "submission_id", "item_id", "title",
+    fields = ("kind", "bucket", "batch", "submission_id", "item_id", "title",
               "student_id", "grade", "max_marks", "auto_zero", "status",
               "submitted_at", "body_chars")
     with open(path, "w", newline="", encoding="utf-8") as fh:
@@ -284,7 +407,9 @@ def main() -> None:
     ap.add_argument("--type", choices=list(SPECS) + ["all"], default="all")
     ap.add_argument("--low-pct", type=float, default=40.0,
                     help="treat scores at or below this %% of total marks as low")
-    ap.add_argument("--out", default="review_audit.csv")
+    ap.add_argument("--out", default="review_audit.csv",
+                    help="detail CSV; a <name>_by_item.csv summary is written "
+                         "alongside it")
     args = ap.parse_args()
 
     db_url = os.getenv("AIREV_DB_URL", "")
@@ -307,8 +432,11 @@ def main() -> None:
         r["bucket"] = classify(r, args.low_pct)
         r["auto_zero"] = is_auto_zero(r)
 
+    items = summarise_by_item(rows)
     print_summary(summarise(rows), args.low_pct)
+    print_by_item(items, args.low_pct)
     write_csv(rows, args.out)
+    write_item_csv(items, args.out.replace(".csv", "") + "_by_item.csv")
     print("\nNothing was modified. This script only reads.")
 
 

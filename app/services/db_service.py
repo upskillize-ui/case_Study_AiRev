@@ -424,10 +424,34 @@ def get_mentor_dashboard(case_study_id: int) -> dict:
 
 def mentor_approve_submission(submission_id: int, mentor_id: int,
                               mentor_score: float | None, mentor_feedback: str | None):
+    # MERGE, never replace. This used to write only the three mentor fields,
+    # which DESTROYED the AiRev review stored in the same column — rubric
+    # breakdown, authorship estimate, strengths, remediation, all gone, with no
+    # backup column to restore from. A mentor confirming a score should add
+    # their judgement to the record, not erase the evidence behind it.
+    existing = {}
+    try:
+        rows = query("SELECT feedback FROM case_study_submissions WHERE id = %s",
+                     (submission_id,))
+        if rows and rows[0].get("feedback"):
+            blob = rows[0]["feedback"]
+            parsed = json.loads(blob) if isinstance(blob, str) else blob
+            if isinstance(parsed, dict):
+                existing = parsed
+    except Exception as e:
+        # Unreadable prior feedback must not block the mentor — but say so,
+        # rather than silently overwriting something we failed to parse.
+        print(f"⚠️  mentor_approve: prior feedback unreadable for {submission_id}: {e}")
+
     payload = {
+        **existing,
         "mentorId": mentor_id,
         "mentorFeedback": mentor_feedback,
         "mentorScore": mentor_score,
+        "reviewedBy": "mentor",
+        # Preserve what the agent scored, so a human override stays auditable
+        # and the original is recoverable.
+        "aiScoreBeforeMentor": existing.get("score", existing.get("aiScoreBeforeMentor")),
     }
     if mentor_score is not None:
         execute(

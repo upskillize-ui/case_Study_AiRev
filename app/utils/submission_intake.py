@@ -39,17 +39,16 @@
 
 from __future__ import annotations
 
-import ipaddress
 import logging
 import os
 import re
-import socket
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
 import httpx
 
+from app.utils.url_guard import check_public_url
 from app.utils.file_extractor import (
     MAX_TEXT_CHARS,
     extract_text_from_bytes,
@@ -221,32 +220,14 @@ def _safe_target(url: str) -> Tuple[bool, str]:
     internal network. Every hostname is resolved and EVERY resolved address
     must be public.
     """
-    try:
-        p = urlparse(url)
-    except Exception:
-        return False, "malformed URL"
-    if p.scheme not in ("http", "https"):
-        return False, f"unsupported link type ({p.scheme or 'no scheme'})"
-    if not p.hostname:
-        return False, "link has no host"
-    if p.port not in (None, 80, 443):
-        return False, f"unsupported port ({p.port})"
-
-    try:
-        infos = socket.getaddrinfo(p.hostname, p.port or (443 if p.scheme == "https" else 80),
-                                   proto=socket.IPPROTO_TCP)
-    except Exception:
-        return False, "link host could not be resolved"
-
-    for info in infos:
-        try:
-            ip = ipaddress.ip_address(info[4][0])
-        except ValueError:
-            return False, "link host resolved to an unusable address"
-        if (ip.is_private or ip.is_loopback or ip.is_link_local
-                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
-            return False, "link points to a non-public address"
-    return True, ""
+    # Delegated to url_guard so link-fetching and file-fetching cannot drift
+    # apart again — that divergence is what left `fileUrl` unguarded while this
+    # function was busy protecting URLs typed into the answer box.
+    #
+    # url_guard also wraps the .port access: urlparse raises ValueError LAZILY
+    # from that attribute, so "http://a:99999999/" pasted into an answer used
+    # to escape as an unhandled 500 and deny the whole submit flow.
+    return check_public_url(url)
 
 
 def fetch_link(url: str) -> Tuple[str, str]:

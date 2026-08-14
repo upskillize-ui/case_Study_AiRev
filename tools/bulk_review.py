@@ -22,6 +22,17 @@ Usage:
     python tools/bulk_review.py --type both           # dry run, both types
     python tools/bulk_review.py --limit 5 --run       # review 5 for real
     python tools/bulk_review.py --assignment-id 11 --run
+
+    Correction runs (assignments only) — re-score work that ALREADY has a
+    grade, rewriting each row IN PLACE. Needs AIREV_ADMIN_KEY.
+
+    python tools/bulk_review.py --redo --assignment-id 17            # list them
+    python tools/bulk_review.py --redo --assignment-id 17 --limit 1 --run
+    python tools/bulk_review.py --redo --assignment-id 17 --limit 50 --run
+
+    --redo never touches the student submit endpoint, which INSERTs a new
+    submission per call. It would otherwise leave every learner with a
+    duplicate row and an inflated attempt count.
 """
 
 from __future__ import annotations
@@ -55,6 +66,9 @@ TYPES: dict[str, dict] = {
         "item_fk": "assignment_id",
         "file_col": "file_path",
         "item_status": "active",
+        # Staff correction path — rewrites the existing row instead of
+        # inserting a new submission. Only assignments have one today.
+        "regrade_endpoint": "/api/review/re-review/assignment",
     },
     "casestudy": {
         "endpoint": "/api/review/submit",
@@ -80,6 +94,7 @@ class Pending:
     student_id: int
     title: str
     notes_len: int
+    current_grade: float | None = None
     file_name: str
     submitted_at: str
 
@@ -130,20 +145,29 @@ def connect(db_url: str):
     )
 
 
-def fetch_pending(conn, review_type: str, item_id: int | None) -> list[Pending]:
+def fetch_pending(conn, review_type: str, item_id: int | None,
+                  redo: bool = False) -> list[Pending]:
     """Submissions with content but no grade yet, newest attempt per
-    (item, student). One query + one pass — no per-row lookups."""
+    (item, student). One query + one pass — no per-row lookups.
+
+    redo=True inverts the grade filter: it selects rows that ALREADY carry a
+    grade, for a staff correction run. Those rows go to the regrade endpoint,
+    which rewrites them in place — never to the student submit endpoint, which
+    would insert a duplicate submission for every learner.
+    """
     cfg = TYPES[review_type]
+    grade_filter = "s.grade IS NOT NULL" if redo else "s.grade IS NULL"
     sql = f"""
         SELECT s.id, s.{cfg['item_fk']} AS item_id, s.student_id,
                COALESCE(i.title, '') AS title,
                CHAR_LENGTH(COALESCE(s.notes, '')) AS notes_len,
                COALESCE(s.file_name, '') AS file_name,
                COALESCE(s.{cfg['file_col']}, '') AS file_ref,
+               s.grade AS current_grade,
                s.submitted_at
         FROM {cfg['table']} s
         JOIN {cfg['item_table']} i ON i.id = s.{cfg['item_fk']}
-        WHERE s.grade IS NULL
+        WHERE {grade_filter}
     """
     params: list = []
     if item_id:
@@ -168,6 +192,7 @@ def fetch_pending(conn, review_type: str, item_id: int | None) -> list[Pending]:
             student_id=r["student_id"],
             title=(r["title"] or "")[:60],
             notes_len=int(r["notes_len"] or 0),
+            current_grade=r.get("current_grade"),
             file_name=r["file_name"] or (r["file_ref"] or "")[:40],
             submitted_at=str(r["submitted_at"] or ""),
         )
@@ -176,16 +201,31 @@ def fetch_pending(conn, review_type: str, item_id: int | None) -> list[Pending]:
 
 # ── Agent call ────────────────────────────────────────────────────────────
 
-def review_one(p: Pending, agent_url: str, api_key: str, timeout: int) -> Result:
+def review_one(p: Pending, agent_url: str, api_key: str, timeout: int,
+               redo: bool = False, dry: bool = False) -> Result:
     """POST with empty answerText — the agent reads the STORED submission,
-    exactly like a student clicking New Review. Retries transient failures."""
+    exactly like a student clicking New Review. Retries transient failures.
+
+    redo=True targets the staff regrade endpoint instead, which rewrites the
+    EXISTING row. The student submit endpoint inserts a new submission for
+    every call — correct for a learner's re-attempt, wrong for a correction
+    run, where it would leave every learner with a duplicate submission and an
+    inflated attempt count.
+    """
     cfg = TYPES[p.review_type]
     # student_id comes straight out of the submissions table, so it is a
     # students.id. Say so: the route otherwise runs it through the users.id ->
     # students.id mapping, which on an ambiguous value resolves to a DIFFERENT
     # learner and grades their submission instead.
-    body = {cfg["id_key"]: p.item_id, "studentId": p.student_id,
-            "answerText": "", "idSpace": "students"}
+    if redo:
+        endpoint = f"{cfg['regrade_endpoint']}/{p.submission_id}"
+        if dry:
+            endpoint += "?dryRun=true"
+        body = {}
+    else:
+        endpoint = cfg["endpoint"]
+        body = {cfg["id_key"]: p.item_id, "studentId": p.student_id,
+                "answerText": "", "idSpace": "students"}
     headers = {"Content-Type": "application/json", "x-api-key": api_key}
     # Staff-initiated: the agent skips student billing when this key is valid.
     # Without it, a faculty bulk run would debit 1400 learners' credits.
@@ -199,7 +239,7 @@ def review_one(p: Pending, agent_url: str, api_key: str, timeout: int) -> Result
         if attempt:
             time.sleep(min(60, 5 * (2 ** (attempt - 1))))
         try:
-            r = httpx.post(f"{agent_url}{cfg['endpoint']}", json=body,
+            r = httpx.post(f"{agent_url}{endpoint}", json=body,
                            headers=headers, timeout=timeout)
         except Exception as e:
             last = f"network: {type(e).__name__}"
@@ -217,6 +257,15 @@ def review_one(p: Pending, agent_url: str, api_key: str, timeout: int) -> Result
 
         data = r.json()
         ms = int((time.time() - started) * 1000)
+        if data.get("skipped"):
+            # Nothing readable in the row. The regrade route leaves the
+            # existing grade alone rather than blanking it — report, move on.
+            return Result(p, False, detail=f"skipped: {data['skipped']}", ms=ms)
+        if data.get("dryRun"):
+            return Result(p, True, score=None, grade="(dry)", ms=ms,
+                          extra={"words": data.get("wordCount"),
+                                 "was": data.get("previousGrade"),
+                                 "outOf": data.get("outOf")})
         if data.get("needsInput") or data.get("status") == "needs_input":
             return Result(p, False, detail="no stored content to review", ms=ms)
         if data.get("blocked"):
@@ -252,6 +301,10 @@ def main() -> None:
     ap.add_argument("--timeout", type=int, default=180, help="per-review seconds")
     ap.add_argument("--out", default="bulk_review_log.csv")
     ap.add_argument("--run", action="store_true", help="actually call the agent")
+    ap.add_argument("--redo", action="store_true",
+                    help="re-score submissions that ALREADY have a grade, "
+                         "rewriting each row in place (assignments only). "
+                         "Requires AIREV_ADMIN_KEY.")
     ap.add_argument("--bill-students", action="store_true",
                     help="charge each student's credits (default: staff run, no charge)")
     args = ap.parse_args()
@@ -268,13 +321,28 @@ def main() -> None:
                  "does NOT debit students' credits.\n"
                  "If you really intend to charge them, pass --bill-students.")
 
+    if args.redo:
+        # No regrade endpoint exists for case studies yet, and silently
+        # falling back to the submit endpoint would insert duplicate rows —
+        # the exact outcome --redo exists to avoid.
+        unsupported = [t for t in (["assignment", "casestudy"]
+                                   if args.type == "both" else [args.type])
+                       if "regrade_endpoint" not in TYPES[t]]
+        if unsupported:
+            sys.exit(f"--redo is not supported for: {', '.join(unsupported)} "
+                     f"(no in-place regrade endpoint). Run it with "
+                     f"--type assignment.")
+        if not os.getenv("AIREV_ADMIN_KEY"):
+            sys.exit("--redo requires AIREV_ADMIN_KEY — the regrade endpoint is "
+                     "staff-only and returns 403 without it.")
+
     types = ["assignment", "casestudy"] if args.type == "both" else [args.type]
     conn = connect(db_url)
     pending: list[Pending] = []
     try:
         for t in types:
             item_id = args.assignment_id if t == "assignment" else args.case_study_id
-            pending.extend(fetch_pending(conn, t, item_id))
+            pending.extend(fetch_pending(conn, t, item_id, redo=args.redo))
     finally:
         conn.close()
 
@@ -286,7 +354,8 @@ def main() -> None:
         else "students WILL be billed"
     print(f"\nAgent   : {agent_url}")
     print(f"Billing : {mode}")
-    print(f"Pending : {len(pending)} unreviewed  |  reviewable: {len(ready)}  |  "
+    label = "ALREADY GRADED (re-score in place)" if args.redo else "unreviewed"
+    print(f"Pending : {len(pending)} {label}  |  reviewable: {len(ready)}  |  "
           f"no content (skipped): {len(empty)}")
     if empty:
         print("  skipped (nothing stored to review):")
@@ -300,6 +369,8 @@ def main() -> None:
           f"of {len(ready)} (limit {args.limit}, concurrency {args.concurrency}):")
     for p in batch:
         src = f"{p.notes_len} chars" + (f" + {p.file_name}" if p.file_name else "")
+        if args.redo:
+            src += f" | now {p.current_grade}"
         print(f"  [{p.review_type}] item {p.item_id} student {p.student_id} "
               f"| {src} | {p.title}")
 
@@ -310,7 +381,8 @@ def main() -> None:
     results: list[Result] = []
     started = time.time()
     with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
-        futures = {pool.submit(review_one, p, agent_url, api_key, args.timeout): p
+        futures = {pool.submit(review_one, p, agent_url, api_key, args.timeout,
+                               args.redo, False): p
                    for p in batch}
         for i, fut in enumerate(as_completed(futures), 1):
             res = fut.result()
@@ -329,12 +401,13 @@ def main() -> None:
     with open(args.out, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["type", "item_id", "student_id", "submission_id", "title",
-                    "ok", "marks", "out_of", "percent", "grade",
+                    "ok", "grade_before", "marks", "out_of", "percent", "grade",
                     "ai_percent", "detail", "ms"])
         for r in results:
             p = r.pending
             w.writerow([p.review_type, p.item_id, p.student_id, p.submission_id,
-                        p.title, r.ok, r.extra.get("marks"), r.extra.get("outOf"),
+                        p.title, r.ok, p.current_grade,
+                        r.extra.get("marks"), r.extra.get("outOf"),
                         r.score, r.grade, r.extra.get("ai"),
                         r.detail, r.ms])
 
