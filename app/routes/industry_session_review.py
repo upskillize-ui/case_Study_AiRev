@@ -536,16 +536,22 @@ def submit_industry_session(req: IndustrySessionInsightRequest,
 
     if not insight:
         insight = _fetch_lms_insight(req.sessionId, req.studentId)
-    if req.fileData or req.fileUrl:
-        try:
-            from app.utils.file_extractor import extract_upload
-            extracted, why = extract_upload(req.fileData, req.fileUrl, req.fileName or "")
-            if extracted:
-                insight = f"{insight}\n\n{extracted}".strip()
-            elif why:
-                print(f"⚠️ File extract skipped: {why}")
-        except Exception as ex:
-            print(f"⚠️ File extract error: {ex}")
+    # An insight may arrive as a photo of handwritten notes, a PDF, a deck, or
+    # a link to something the learner published after the session. All three
+    # review types use the same intake so no format is privileged over another.
+    try:
+        from app.utils import submission_intake as intake
+        artefacts = []
+        if insight:
+            artefacts.append(intake.from_typed(insight))
+            artefacts.extend(intake.from_links_in(insight))
+        if req.fileData or req.fileUrl:
+            artefacts.append(intake.from_upload(req.fileData, req.fileUrl, req.fileName or ""))
+        if artefacts:
+            manifest, content = intake.render(artefacts)
+            insight = f"{manifest}\n{content}".strip() if content else ""
+    except Exception as ex:
+        print(f"⚠️ Intake error, using typed insight only: {ex}")
 
     if not insight:
         # Nothing to review — this is a data condition, NOT a scored outcome.

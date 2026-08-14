@@ -23,7 +23,7 @@ from app.services import knowledge_service, review_pipeline, prefilter_service
 from app.utils.text_processor import (
     count_words, clean_text, calculate_text_overlap, find_mentioned_concepts, is_likely_copy
 )
-from app.utils.file_extractor import extract_text_from_url, extract_upload
+from app.utils import submission_intake as intake
 
 router = APIRouter(prefix="/api/review", tags=["review"])
 
@@ -80,49 +80,50 @@ def submit_and_review(req: SubmitAnswerRequest, background_tasks: BackgroundTask
     # storeOnly (Coursework submits): storage is not a review attempt, so the
     # attempt policy does not apply — the policy runs when the student actually
     # reviews the stored text from the New Review queue.
-    blocked = None if req.storeOnly else _attempt_policy_block(
+    # staff_run is exempt: the limit stops a learner grinding for a better mark,
+    # and was never meant to apply to our own correction runs — which otherwise
+    # burn the learner's attempts and lock them out of the fixed review.
+    blocked = None if (req.storeOnly or staff_run) else _attempt_policy_block(
         req.caseStudyId, req.studentId, req.answerText or "")
     if blocked:
         print(f"ℹ️  Submission blocked: {blocked['blocked']} "
               f"(student={req.studentId}, caseStudy={req.caseStudyId})")
         return blocked
 
-    cleaned    = clean_text(req.answerText or "")
-    word_count = count_words(cleaned)
+    # ── Intake: read EVERY format a learner may have submitted ────────────
+    # Same module as the assignment route, so a case study submitted as a PDF,
+    # a workbook, a photographed page or a published link is read the same way.
+    #
+    # The attachment used to be DROPPED whenever the typed text was longer than
+    # it ("count_words(extracted) > word_count * 1.2"), which silently threw
+    # away the learner's own evidence file whenever they had also written an
+    # introduction. Every artefact is kept now.
+    cleaned_typed = clean_text(req.answerText or "")
+    artefacts: list[intake.Artefact] = []
 
-    file_used = None
-    parts: list[str] = []
-
-    if cleaned:
-        parts.append(cleaned)
+    if cleaned_typed:
+        artefacts.append(intake.from_typed(cleaned_typed))
+        artefacts.extend(intake.from_links_in(cleaned_typed))
 
     if req.fileData or req.fileUrl:
-        extracted, why = extract_upload(req.fileData, req.fileUrl, req.fileName or "")
-        if extracted:
-            file_used = req.fileName or req.fileUrl or "uploaded file"
-            print(f"📄 Extracted file (this submission): {file_used} "
-                  f"({count_words(extracted)} words)")
-            if not cleaned or count_words(extracted) > word_count * 1.2:
-                parts.append(extracted)
-        elif why:
-            print(f"📄 File extraction failed for {req.fileName or '?'}: {why}")
+        artefacts.append(intake.from_upload(req.fileData, req.fileUrl, req.fileName or ""))
 
-    if not parts:
+    if not any(a.readable for a in artefacts):
         prior = db_service.get_latest_submission_file(req.caseStudyId, req.studentId)
         if prior:
             if prior.get("file_url"):
-                extracted, why = extract_text_from_url(prior["file_url"], prior.get("file_name", ""))
-                if extracted:
-                    file_used = prior.get("file_name") or prior["file_url"]
-                    print(f"📄 Extracted file (prior submission): {file_used}")
-                    parts.append(extracted)
-                elif why:
-                    print(f"📄 Prior file extraction failed: {why}")
+                artefacts.append(intake.from_stored_file(
+                    prior["file_url"], prior.get("file_name", "")))
             db_notes = clean_text(prior.get("notes") or "")
             if db_notes:
-                parts.append(db_notes)
+                # No link scan: stored notes are already-assembled intake
+                # output, so their links were opened on the first pass and
+                # re-scanning would re-fetch and duplicate them.
+                artefacts.append(intake.from_typed(db_notes))
 
-    if not parts:
+    manifest, content = intake.render(artefacts)
+
+    if not content:
         total_time = int((time.time() - start_time) * 1000)
         msg = ("We couldn't find any answer text. Please write your analysis in the "
                "answer box (or upload a PDF), then click Submit again.")
@@ -153,11 +154,13 @@ def submit_and_review(req: SubmitAnswerRequest, background_tasks: BackgroundTask
             "processingTimeMs": total_time,
         }
 
-    cleaned = "\n\n".join(parts).strip()
-    word_count = count_words(cleaned)
-    print(f"📝 Final answer: {word_count} words "
-          f"(frontend={'yes' if req.answerText else 'no'}, "
-          f"file={'yes' if file_used else 'no'})")
+    # `cleaned` is what the marker reads AND what is stored — provenance first,
+    # then the content. word_count measures the learner's content only.
+    cleaned = f"{manifest}\n{content}".strip()
+    word_count = count_words(content)
+    print(f"📝 Final answer: {word_count} words of content across "
+          f"{len(artefacts)} artefact(s): "
+          + ", ".join(f"{a.kind}{'' if a.readable else '(unread)'}" for a in artefacts))
 
     # ── Reflexes: zero-token checks before any AI spend ────────────────────
     # storeOnly skips them: storage must never be withheld — the checks run
@@ -1029,57 +1032,37 @@ def submit_capstone_review(req: dict, x_admin_key: str = Header(default="")):
     print(f"[CAPSTONE] resolved: id={capstone['id']}, title={capstone.get('title')}, "
           f"status={capstone.get('status')}")
 
-    # Build the answer text from request OR existing capstone submission
-    parts = []
+    # Build the answer text from request OR existing capstone submission.
+    # Same intake as the other two routes: a capstone arrives as a zip, a
+    # notebook, a deck, a hosted demo link or a write-up, and every one of
+    # those is the deliverable. `artefacts` records what actually arrived so
+    # the marker can see it was produced instead of inferring from prose.
+    artefacts: list[intake.Artefact] = []
     if answer_text:
-        parts.append(answer_text)
-    if file_data:
-        # Storage-free path: browser sent the file's bytes inline.
-        from app.utils.file_extractor import extract_text_from_base64
-        extracted, why = extract_text_from_base64(file_data, file_name or "")
-        if extracted:
-            print(f"📄 Extracted capstone file (inline): {file_name} ({len(extracted.split())} words)")
-            parts.append(extracted)
-        elif why:
-            print(f"📄 Capstone inline file extraction failed: {why}")
-    elif file_url:
-        # Relative LMS paths resolve inside extract_text_from_url (resolve_lms_url).
-        from app.utils.file_extractor import extract_text_from_url
-        extracted, why = extract_text_from_url(file_url, file_name or "")
-        if extracted:
-            print(f"📄 Extracted capstone file: {file_name} ({len(extracted.split())} words)")
-            parts.append(extracted)
-        elif why:
-            print(f"📄 Capstone file extraction failed: {why}")
+        artefacts.append(intake.from_typed(answer_text))
+        artefacts.extend(intake.from_links_in(answer_text))
+    if file_data or file_url:
+        artefacts.append(intake.from_upload(file_data, file_url, file_name or ""))
+
+    def _readable() -> bool:
+        return any(a.readable for a in artefacts)
 
     # Fallback 2: the capstones row can lack file_url — some LMS versions
     # store uploads in a separate table. Probe candidates dynamically
     # (playbook: interrogate the data before suspecting the code).
-    if not parts and not answer_text and not file_url and not capstone.get("file_url"):
+    if not _readable() and not answer_text and not file_url and not capstone.get("file_url"):
         found_url, found_name = _find_capstone_deliverable(capstone_id, student_id)
         if found_url:
-            from app.utils.file_extractor import extract_text_from_url
-            extracted, why = extract_text_from_url(found_url, found_name or "")
-            if extracted:
-                print(f"📄 Extracted deliverable found by table probe: {found_url[:100]}")
-                parts.append(extracted)
-            elif why:
-                print(f"📄 Probed deliverable extraction failed: {why}")
+            artefacts.append(intake.from_stored_file(found_url, found_name or ""))
 
     # Fallback: read previously-saved capstone file
-    if not parts and capstone.get("file_url"):
-        from app.utils.file_extractor import extract_text_from_url
-        extracted, why = extract_text_from_url(capstone["file_url"], "")
-        if extracted:
-            print(f"📄 Extracted prior capstone file: {prior_url}")
-            parts.append(extracted)
-        elif why:
-            print(f"📄 Prior capstone file extraction failed: {why}")
+    if not _readable() and capstone.get("file_url"):
+        artefacts.append(intake.from_stored_file(capstone["file_url"], ""))
 
     # Fallback 3: a prior review stashed the extracted submission text in the
     # capstones.feedback JSON. This is what makes Re-analyze work storage-free —
     # the file was parsed once at first submit and its text lives in the DB.
-    if not parts:
+    if not _readable():
         try:
             prev = query("SELECT feedback FROM capstones WHERE id = %s LIMIT 1", (capstone["id"],))
             if prev and prev[0].get("feedback"):
@@ -1087,11 +1070,13 @@ def submit_capstone_review(req: dict, x_admin_key: str = Header(default="")):
                 prior_text = (stored.get("submissionText") or "").strip()
                 if prior_text:
                     print(f"📄 Reusing stored capstone text ({len(prior_text.split())} words) for re-analyze")
-                    parts.append(prior_text)
+                    artefacts.append(intake.from_typed(prior_text))
         except Exception as ex:
             print(f"[CAPSTONE] stored-text fallback failed: {ex}")
 
-    if not parts:
+    manifest, content = intake.render(artefacts)
+
+    if not content:
         # State exactly which sources were empty — a "no content" mystery
         # costs an hour; this line costs nothing. (Live finding 19 Jul:
         # capstone 39 row had no file_url despite an LMS submission.)
@@ -1130,9 +1115,11 @@ def submit_capstone_review(req: dict, x_admin_key: str = Header(default="")):
         }
 
     from app.utils.text_processor import clean_text, count_words
-    cleaned = clean_text("\n\n".join(parts))
-    word_count = count_words(cleaned)
-    print(f"📝 Capstone answer: {word_count} words")
+    content = clean_text(content)
+    cleaned = f"{manifest}\n{content}".strip()
+    word_count = count_words(content)
+    print(f"📝 Capstone answer: {word_count} words of content across "
+          f"{len(artefacts)} artefact(s)")
 
     # Capstones have lighter rubrics by default — synthesize one if the table
     # doesn't carry one, so the AI still has dimensions to score against.

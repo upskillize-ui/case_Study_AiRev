@@ -39,7 +39,7 @@ MIN_REVIEWABLE_WORDS = int(os.getenv("MIN_REVIEWABLE_WORDS", "30"))
 from app.utils.text_processor import (
     count_words, clean_text, find_mentioned_concepts
 )
-from app.utils.file_extractor import extract_text_from_url, extract_upload
+from app.utils import submission_intake as intake
 from app.tenants import resolve_tenant_by_key, Tenant
 from app.database import set_current_tenant
 
@@ -144,7 +144,8 @@ def submit_and_review_assignment(
     x_admin_key: str = Header(default=""),
 ):
     # Who pays for this run — header-only authority, set before any AI spend.
-    if ai_service.begin_run_billing(x_admin_key):
+    staff_run = ai_service.begin_run_billing(x_admin_key)
+    if staff_run:
         print("[ASSIGNMENT] staff-initiated review — student will not be billed")
     from app.database import canonical_student_id
     req.studentId = canonical_student_id(req.studentId, req.idSpace)
@@ -171,7 +172,14 @@ def submit_and_review_assignment(
     # ── Re-review policy: max 2 reviewed attempts, revised text required ───
     # storeOnly (Coursework submits): storage is not a review attempt, so the
     # policy does not apply — it runs when the stored text is actually reviewed.
-    if not req.storeOnly:
+    #
+    # staff_run is exempt. The limit exists to stop a learner grinding the same
+    # answer for a better mark; it was never meant to apply to US. Without this
+    # exemption our own correction runs consumed the learner's attempts and
+    # then locked them out: in the 13 Aug batch, students 336 and 109 came back
+    # "blocked: attempt_limit" on a re-review THEY never requested, leaving a
+    # wrong score standing with no way to replace it.
+    if not req.storeOnly and not staff_run:
         state = assignment_db_service.get_attempt_state(tenant, req.assignmentId, req.studentId)
         if state["reviewedAttempts"] >= MAX_REVIEWED_ATTEMPTS:
             return {"success": False, "blocked": "attempt_limit",
@@ -189,25 +197,22 @@ def submit_and_review_assignment(
     # scores in percent; grades are persisted in THIS scale.
     max_marks = int(assignment.get("maxScore") or 100)
 
+    # ── Intake: read EVERY format a learner may have submitted ────────────
+    # Typed text, an attached file of any supported type, and any link pasted
+    # into the answer box (a published artifact, a hosted page, a shared doc)
+    # are each recorded as an artefact — what arrived, what was read from it,
+    # and, when nothing could be read, why. See app/utils/submission_intake.
     cleaned_typed = clean_text(req.answerText or "")
-    parts: list[str] = []
-    file_used = None
-    file_error = None
+    artefacts: list[intake.Artefact] = []
 
     if req.fileData or req.fileUrl:
-        extracted, why = extract_upload(req.fileData, req.fileUrl, req.fileName or "")
-        if extracted:
-            file_used = req.fileName or req.fileUrl or "uploaded file"
-            parts.append(extracted)
-            print(f"[ASSIGNMENT] Extracted file: {file_used} ({count_words(extracted)} words)")
-        elif why:
-            file_error = why
-            print(f"[ASSIGNMENT] Upload extraction failed: {why}")
+        artefacts.append(intake.from_upload(req.fileData, req.fileUrl, req.fileName or ""))
 
     if cleaned_typed:
-        parts.append(cleaned_typed)
+        artefacts.append(intake.from_typed(cleaned_typed))
+        artefacts.extend(intake.from_links_in(cleaned_typed))
 
-    if not parts:
+    if not any(a.readable for a in artefacts):
         prior = assignment_db_service.get_latest_assignment_submission(
             tenant, req.assignmentId, req.studentId
         )
@@ -216,22 +221,21 @@ def submit_and_review_assignment(
             # LMS paths resolve inside extract_text_from_url (resolve_lms_url).
             prior_url = prior.get("file_url") or prior.get("file_path")
             if prior_url:
-                extracted, why = extract_text_from_url(
-                    prior_url, prior.get("file_name", "")
-                )
-                if extracted:
-                    file_used = prior.get("file_name") or prior_url
-                    parts.append(extracted)
-                elif why:
-                    # Record it, don't just print it: the student is then told
-                    # WHICH file failed and why, not "no file was attached".
-                    file_error = f"{prior.get('file_name') or 'your file'}: {why}"
-                    print(f"[ASSIGNMENT] prior file extraction failed: {why}")
+                artefacts.append(intake.from_stored_file(
+                    prior_url, prior.get("file_name", "")))
             db_notes = clean_text(prior.get("notes") or "")
             if db_notes:
-                parts.append(db_notes)
+                # No link scan here. Stored notes are ALREADY-ASSEMBLED intake
+                # output from an earlier run — any link in them was opened then
+                # and its content is already in the text. Re-scanning would
+                # re-fetch every link on every re-review and duplicate it.
+                artefacts.append(intake.from_typed(db_notes))
 
-    if not parts:
+    file_error = intake.first_error(artefacts)
+    manifest, content = intake.render(artefacts)
+    deliverable = intake.has_deliverable(artefacts)
+
+    if not content:
         total_time = int((time.time() - start_time) * 1000)
         if file_error:
             msg = (f"We received your file but couldn't read any text from it "
@@ -252,10 +256,16 @@ def submit_and_review_assignment(
             "processingTimeMs": total_time,
         }
 
-    combined = "\n\n".join(parts).strip()
-    word_count = count_words(combined)
-    print(f"[ASSIGNMENT] {word_count} words combined "
-          f"(file={'yes' if file_used else 'no'}, typed={'yes' if cleaned_typed else 'no'})")
+    # The manifest travels WITH the answer to the marker, so a produced
+    # deliverable is visible as evidence instead of being inferred from a
+    # caption. word_count stays on the learner's own content — counting the
+    # manifest would let provenance text push a thin answer past the length
+    # gates, which is the inverse of the bug this fixes.
+    combined = f"{manifest}\n{content}".strip()
+    word_count = count_words(content)
+    print(f"[ASSIGNMENT] {word_count} words of content across "
+          f"{len(artefacts)} artefact(s): "
+          + ", ".join(f"{a.kind}{'' if a.readable else '(unread)'}" for a in artefacts))
 
     # A SHORT answer is not automatically a FAILING answer. Many tasks here are
     # image- or artifact-first (create an image, publish an artifact, share a
@@ -268,7 +278,7 @@ def submit_and_review_assignment(
     # stored, nothing is graded, and the item stays cleanly re-reviewable.
     # storeOnly is exempt: storage must accept short work — the gate applies
     # when the stored work is actually reviewed.
-    if not req.storeOnly and word_count < MIN_REVIEWABLE_WORDS and not file_used:
+    if not req.storeOnly and word_count < MIN_REVIEWABLE_WORDS and not deliverable:
         found = f"{word_count} word{'' if word_count == 1 else 's'} of text"
         if file_error:
             found += f", and your attachment could not be read ({file_error})"
