@@ -254,3 +254,69 @@ def test_links_beyond_the_budget_are_recorded_not_dropped(monkeypatch):
     assert called == [], "no link should have been fetched"
     assert len(arts) == 2, "both links must still appear on the record"
     assert all("budget" in a.note for a in arts)
+
+
+# ── client-rendered pages still carry publishable evidence ────────────────
+# Live on 14 Aug: Day 06 (Suno) submissions logged
+# "11 words of content across 2 artefact(s): typed text, link(unread)".
+# The learner had published exactly what the task asked for; the marker was
+# told nothing was there.
+
+SUNO = ('<!doctype html><html><head>'
+        '<meta property="og:site_name" content="Suno"/>'
+        '<meta property="og:type" content="music.song"/>'
+        '<meta property="og:title" content="Ledger of Dreams"/>'
+        '<meta content="A lo-fi track about a bank clerk." property="og:description"/>'
+        '<meta name="twitter:title" content="Ledger of Dreams | Suno"/>'
+        '<title>Ledger of Dreams | Suno</title>'
+        '</head><body><div id="root"></div></body></html>')
+
+
+def test_a_published_spa_yields_its_own_metadata():
+    text, why = intake._read_response(SUNO.encode(), "text/html", "https://suno.com/song/a")
+    assert text, why
+    assert "Ledger of Dreams" in text
+    assert "bank clerk" in text
+    assert "Suno" in text
+
+
+def test_metadata_is_labelled_as_the_page_describing_itself():
+    """It must never read as if we verified the content — the marker has to
+    know this is the page's own claim about itself, not our reading of it."""
+    text, _ = intake._read_response(SUNO.encode(), "text/html", "https://suno.com/song/a")
+    assert "could not be read from the server" in text
+    assert "states about itself" in text
+
+
+def test_attribute_order_does_not_matter():
+    """content-before-property is just as valid HTML and appears in the wild."""
+    html = '<meta content="Reverse Order" property="og:title"><body></body>'
+    assert "Reverse Order" in intake.describe_from_metadata(html)
+
+
+def test_one_line_per_label_not_one_per_tag():
+    """og:title and twitter:title both exist; print the first, not both."""
+    text = intake.describe_from_metadata(SUNO)
+    assert text.count("Title:") == 1
+
+
+def test_the_page_title_is_the_last_resort():
+    html = "<html><head><title>My Claude Artifact</title></head><body></body></html>"
+    assert "My Claude Artifact" in intake.describe_from_metadata(html)
+
+
+def test_a_page_with_nothing_to_say_is_still_reported_as_unread():
+    """No metadata, no title — do NOT invent evidence."""
+    shell = b'<html><head></head><body><div id="root"></div></body></html>'
+    text, why = intake._read_response(shell, "text/html", "https://x.com/y")
+    assert text == ""
+    assert "browser" in why
+
+
+def test_real_body_text_still_wins_over_metadata():
+    """Metadata is the FALLBACK. A server-rendered page must return its body."""
+    html = ("<html><head><meta property='og:title' content='Short'></head><body>"
+            + "<p>" + " ".join(["substantive"] * 60) + "</p></body></html>")
+    text, _ = intake._read_response(html.encode(), "text/html", "https://example.com/a")
+    assert "substantive" in text
+    assert "states about itself" not in text

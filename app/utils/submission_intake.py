@@ -265,20 +265,95 @@ def fetch_link(url: str) -> Tuple[str, str]:
     return "", "link redirected too many times"
 
 
+_META_RE = re.compile(
+    r"<meta\s+[^>]*?(?:property|name)\s*=\s*[\"\']([^\"\']+)[\"\'][^>]*?"
+    r"content\s*=\s*[\"\']([^\"\']*)[\"\']", re.I | re.S)
+_META_RE_REVERSED = re.compile(
+    r"<meta\s+[^>]*?content\s*=\s*[\"\']([^\"\']*)[\"\'][^>]*?"
+    r"(?:property|name)\s*=\s*[\"\']([^\"\']+)[\"\']", re.I | re.S)
+_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
+
+# Which tags carry the substance, and what to call them for the marker.
+_META_FIELDS = [
+    ("og:title", "Title"), ("twitter:title", "Title"),
+    ("og:description", "Description"), ("twitter:description", "Description"),
+    ("description", "Description"),
+    ("og:site_name", "Published on"), ("og:type", "Kind"),
+    ("music:musician", "Credited artist"), ("author", "Author"),
+    ("og:audio", "Audio"), ("og:video", "Video"),
+]
+
+
+def describe_from_metadata(html: str) -> str:
+    """What a link preview would show — title, description, platform, author.
+
+    Server-rendered by every platform that wants its links to preview nicely,
+    which is exactly the client-rendered platforms whose body text we cannot
+    read. Returns "" when there is nothing worth reporting.
+
+    This is DESCRIPTION, not judgement: it states what the published artefact
+    says about itself. The marker still decides whether that meets the task.
+    """
+    import html as _html
+
+    found = {}
+    for pattern, key_first in ((_META_RE, True), (_META_RE_REVERSED, False)):
+        for a, b in pattern.findall(html or ""):
+            key, value = (a, b) if key_first else (b, a)
+            key = key.strip().lower()
+            value = _html.unescape(value or "").strip()
+            if value and key not in found:
+                found[key] = value
+
+    lines, seen_labels = [], set()
+    for key, label in _META_FIELDS:
+        value = found.get(key)
+        # First tag wins per label, so og:title beats twitter:title without
+        # printing both.
+        if value and label not in seen_labels:
+            seen_labels.add(label)
+            lines.append(f"{label}: {value}")
+
+    if not lines:
+        m = _TITLE_RE.search(html or "")
+        if m:
+            title = _html.unescape(re.sub(r"\s+", " ", m.group(1))).strip()
+            if title:
+                lines.append(f"Title: {title}")
+
+    if not lines:
+        return ""
+    return ("[This link is a published page whose content is rendered in the "
+            "browser, so its body text could not be read from the server. What "
+            "the page states about itself:]\n" + "\n".join(lines))
+
+
 def _read_response(content: bytes, ctype: str, url: str) -> Tuple[str, str]:
     """Turn a fetched body into reviewable text, whatever it turned out to be."""
     if not content:
         return "", "the link returned an empty page"
 
     if ctype in ("text/html", "application/xhtml+xml") or not ctype:
-        text = html_to_text(content.decode("utf-8", errors="ignore"))
-        if len(text.split()) < LINK_MIN_WORDS:
-            # Single-page apps (claude.ai artifacts, Canva, most dashboards)
-            # render client-side: the HTML is a loader, not the work. Saying so
-            # is honest; passing the loader off as the submission is not.
-            return "", ("the page loads its content in the browser, so its text "
-                        "could not be read server-side")
-        return text[:LINK_MAX_CHARS], ""
+        html = content.decode("utf-8", errors="ignore")
+        text = html_to_text(html)
+        if len(text.split()) >= LINK_MIN_WORDS:
+            return text[:LINK_MAX_CHARS], ""
+
+        # Single-page apps — Suno, Claude artifacts, Canva, Gamma, most hosted
+        # dashboards — render client-side, so the body is a loader, not the
+        # work. Passing that loader off as the submission would be dishonest.
+        #
+        # But the page is not empty: link previews exist, so these platforms
+        # server-render Open Graph tags with the real title, description and
+        # author. That IS publishable evidence of what the learner made, and
+        # discarding it told the marker "nothing here" about a learner who had
+        # published exactly what the task asked for. Observed live 14 Aug on
+        # Day 06 (Suno): "11 words of content, link(unread)".
+        meta = describe_from_metadata(html)
+        if meta:
+            return meta, ""
+        return "", ("the page loads its content in the browser, so its text "
+                    "could not be read server-side")
 
     # Anything else — a PDF, an image, a deck behind a direct link — goes
     # through the same extractor every upload uses. One code path, one set of
