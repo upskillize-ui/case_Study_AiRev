@@ -261,3 +261,115 @@ def test_genuinely_negligible_content_still_zeroes(captured):
     out = run(captured, model_answer([0, 0, 0], [], ["a"], garbage=True), "x",
               word_count=1)
     assert score_of(out) == 0
+
+
+# ── DEFECT 4: re-review must not nest one manifest inside another ─────────
+# Live, 14 Aug: re-running assignment 14 moved student 1126 from 6.8/10 to
+# 1.2/10 on IDENTICAL input, and took every other learner down with them.
+# The regrade route read the stored row — whose notes are already assembled
+# intake output — and ALSO re-extracted the attachment, so the marker received
+# a manifest wrapping a manifest, with the image OCR appearing twice, the
+# second time labelled as words the learner typed.
+
+ASSEMBLED = (
+    intake.MANIFEST_HEADER + "\n"
+    "The learner submitted 2 item(s):\n"
+    "  1. IMAGE — future.png — read (43 words of content, item 1 below)\n"
+    "  2. TYPED TEXT — answer box — read (9 words of content, item 2 below)\n\n"
+    "=== ITEM 1: IMAGE (future.png) ===\n"
+    "TEXT:\nNEXT 5 YEARS\n\nVISUAL:\nA woman at a desk.\n\n"
+    "=== ITEM 2: TYPED TEXT (answer box) ===\n"
+    "This is my five year vision."
+)
+
+
+def test_an_assembled_row_is_reused_not_rewrapped():
+    out = intake.from_stored_submission(ASSEMBLED)
+    assert out is not None, "assembled notes must be recognised"
+    manifest, content = out
+    assert manifest.startswith(intake.MANIFEST_HEADER)
+    assert "NEXT 5 YEARS" in content
+    assert intake.MANIFEST_HEADER not in content, "the manifest must not sit inside the content"
+
+
+def test_raw_learner_text_is_not_mistaken_for_assembled_output():
+    """A typed-only answer has no manifest and must still be assembled."""
+    assert intake.from_stored_submission("I want to be a data analyst.") is None
+    assert intake.from_stored_submission("") is None
+
+
+def test_reusing_an_assembled_row_yields_exactly_one_manifest(captured):
+    """End to end: whatever reaches the marker carries the header ONCE."""
+    manifest, content = intake.from_stored_submission(ASSEMBLED)
+    run(captured, model_answer([70, 70, 70], ["a"], []), f"{manifest}\n{content}")
+    whole = sent_text(captured)
+    assert whole.count(intake.MANIFEST_HEADER) == 1, (
+        f"manifest appears {whole.count(intake.MANIFEST_HEADER)} times — nested")
+
+
+def test_the_ocr_is_not_duplicated_when_a_row_is_reused(captured):
+    manifest, content = intake.from_stored_submission(ASSEMBLED)
+    run(captured, model_answer([70, 70, 70], ["a"], []), f"{manifest}\n{content}")
+    assert sent_text(captured).count("NEXT 5 YEARS") == 1
+
+
+def _call_regrade(monkeypatch, notes, file_path="/uploads/future.png"):
+    """Drive the real regrade route with dryRun=True, which exercises the whole
+    intake path and returns before any AI call. Records whether the attachment
+    was re-extracted.
+
+    Behavioural, not source-inspecting: an earlier version of this test read the
+    function's source and a mutation run walked straight through it, because
+    `if False:` leaves the text unchanged.
+    """
+    from app.routes import assignment_review as ar
+
+    calls = []
+    monkeypatch.setattr(ar.intake, "from_stored_file",
+                        lambda url, name="": calls.append(url) or
+                        intake.Artefact(kind="image", label=name or url, text="RE-EXTRACTED OCR"))
+    monkeypatch.setattr(ar.ai_service, "begin_run_billing", lambda k="": True)
+    monkeypatch.setattr(ar.assignment_db_service, "get_submission_for_regrade",
+                        lambda tenant, sid: {"id": sid, "student_id": 9,
+                                             "assignment_id": 14, "grade": None,
+                                             "feedback": None, "notes": notes,
+                                             "file_path": file_path,
+                                             "file_name": "future.png",
+                                             "attempt_number": 1})
+    monkeypatch.setattr(ar.assignment_db_service, "get_assignment_by_id",
+                        lambda tenant, aid: {"id": aid, "title": "Day 01", "maxScore": 10})
+
+    result = ar.re_review_assignment(submission_id=1, dryRun=True, force=False,
+                                     tenant=object(), x_admin_key="k")
+    return result, calls
+
+
+def test_the_regrade_route_reuses_an_assembled_row_without_re_extracting(monkeypatch):
+    """THE nesting defect. An assembled row is complete; touching the file again
+    is what produced a manifest inside a manifest and halved every mark."""
+    result, calls = _call_regrade(monkeypatch, ASSEMBLED)
+    assert calls == [], f"the attachment was re-extracted: {calls}"
+    assert result["success"] is True
+    assert result["artefacts"][0]["kind"] == "stored"
+
+
+def test_the_regrade_route_STILL_extracts_a_row_that_was_never_assembled(monkeypatch):
+    """The rows this route mainly exists for: an image was attached and nothing
+    was ever read from it. Those must still be extracted."""
+    result, calls = _call_regrade(monkeypatch, "")
+    assert calls == ["/uploads/future.png"], "a raw row must be extracted"
+    assert result["success"] is True
+
+
+def test_an_assembled_row_survives_whitespace_normalisation():
+    """Routes run clean_text() on stored notes before splitting, and that
+    collapses newline runs to spaces. Matching a literal "\\n=== ITEM " meant
+    the split silently returned EMPTY content, so a row with plenty of work in
+    it was reported as having none."""
+    from app.utils.text_processor import clean_text
+    out = intake.from_stored_submission(clean_text(ASSEMBLED))
+    assert out is not None
+    manifest, content = out
+    assert content, "content was lost to whitespace normalisation"
+    assert "NEXT 5 YEARS" in content
+    assert intake.MANIFEST_HEADER not in content

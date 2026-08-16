@@ -404,7 +404,12 @@ _MANIFEST_RULE = (
 
 
 MANIFEST_HEADER = "=== SUBMISSION MANIFEST ==="
-_ITEM_MARKER = "\n=== ITEM "
+# Whitespace-TOLERANT. The literal "\n=== ITEM " failed the moment a stored row
+# went through clean_text(), which collapses newline runs to spaces — the
+# marker stopped matching, split_manifest returned the whole blob as manifest
+# with EMPTY content, and the route then reported "no readable content" for a
+# row that plainly had some. Match the text, not the surrounding whitespace.
+_ITEM_RE = re.compile(r"===\s*ITEM\s+\d+\s*:", re.IGNORECASE)
 
 
 def split_manifest(text: str) -> Tuple[str, str]:
@@ -421,10 +426,38 @@ def split_manifest(text: str) -> Tuple[str, str]:
     body = text or ""
     if not body.lstrip().startswith(MANIFEST_HEADER):
         return "", body
-    idx = body.find(_ITEM_MARKER)
-    if idx == -1:
+    match = _ITEM_RE.search(body)
+    if not match:
         return body.strip(), ""
-    return body[:idx].strip(), body[idx:].strip()
+    return body[:match.start()].strip(), body[match.start():].strip()
+
+
+def from_stored_submission(notes: str):
+    """Reuse a row whose notes are ALREADY assembled intake output.
+
+    Returns (manifest, content), or None when these notes are raw learner text
+    that still needs assembling.
+
+    WHY. Routes store `manifest + content` in `notes`. A re-review that reads
+    that row back and ALSO re-extracts the attachment produces:
+
+        new manifest  ("2 items: an IMAGE and TYPED TEXT")
+          ITEM 1 IMAGE       <- the OCR, extracted a second time
+          ITEM 2 TYPED TEXT  <- the ENTIRE previous assembly, old manifest and
+                                old ITEM headers included, presented as words
+                                the learner typed
+
+    The marker then reads our own provenance instructions as the submission,
+    and the same image twice. Observed live on 14 Aug: re-running assignment 14
+    moved student 1126 from 6.8/10 to 1.2/10 on identical input, and every
+    other learner down with them.
+
+    Already-assembled notes are complete. Reuse them; extract nothing.
+    """
+    manifest, content = split_manifest(notes or "")
+    if not manifest:
+        return None
+    return manifest, content
 
 
 def render(artefacts: List[Artefact]) -> Tuple[str, str]:

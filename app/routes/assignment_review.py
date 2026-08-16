@@ -617,22 +617,39 @@ def re_review_assignment(
                            "would replace it. Re-run with force=true only if "
                            "that is what you intend.")}
 
-    # Re-read the work from the row itself. The stored file is re-extracted,
-    # not assumed: the rows this route exists to fix are precisely the ones
-    # whose stored text is empty because only an image was ever attached.
+    # Re-read the work from the row itself.
+    #
+    # If a previous review already assembled this row, its notes ARE the
+    # finished intake output — manifest plus labelled item blocks. Reuse them
+    # whole. Re-extracting the attachment as well nests one manifest inside
+    # another and hands the marker a second copy of the OCR dressed up as the
+    # learner's own typing, which is what dropped student 1126 from 6.8/10 to
+    # 1.2/10 on identical input.
+    #
+    # Rows that have NOT been assembled — the ones this route mainly exists for,
+    # where an image was attached and nothing was ever read from it — still go
+    # through full extraction.
     artefacts: list[intake.Artefact] = []
-    stored_file = row.get("file_path") or row.get("file_url")
-    if stored_file:
-        artefacts.append(intake.from_stored_file(stored_file, row.get("file_name") or ""))
     stored_notes = clean_text(row.get("notes") or "")
-    if stored_notes:
-        artefacts.append(intake.from_typed(stored_notes))
+    already_assembled = intake.from_stored_submission(stored_notes)
 
-    manifest, content = intake.render(artefacts)
+    if already_assembled:
+        manifest, content = already_assembled
+    else:
+        stored_file = row.get("file_path") or row.get("file_url")
+        if stored_file:
+            artefacts.append(intake.from_stored_file(stored_file, row.get("file_name") or ""))
+        if stored_notes:
+            artefacts.append(intake.from_typed(stored_notes))
+        manifest, content = intake.render(artefacts)
     word_count = count_words(content)
-    inventory = [{"kind": a.kind, "label": a.label,
-                  "words": len(a.text.split()) if a.readable else 0,
-                  "readable": a.readable, "note": a.note} for a in artefacts]
+    inventory = ([{"kind": "stored", "label": "previously assembled submission",
+                   "words": len(content.split()), "readable": bool(content),
+                   "note": "reused; not re-extracted"}]
+                 if already_assembled else
+                 [{"kind": a.kind, "label": a.label,
+                   "words": len(a.text.split()) if a.readable else 0,
+                   "readable": a.readable, "note": a.note} for a in artefacts])
 
     if not content:
         # Rule 2. Report it and leave the row exactly as it is.
