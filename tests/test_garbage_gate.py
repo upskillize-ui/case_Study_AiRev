@@ -80,3 +80,37 @@ def test_schema_defines_what_garbage_means():
     assert desc, "is_garbage must tell the model what garbage is"
     assert "not an attempt" in desc.lower() or "not a genuine" in desc.lower()
     assert "however short" in desc.lower()
+
+
+# ── tidy_review must never reach into scoring ─────────────────────────────
+
+def test_trimming_concepts_does_not_move_the_coverage_ratio():
+    """concepts_missing / concepts_covered feed apply_gates, which divides one
+    by their sum and caps the TOTAL at 69 below half. Trimming both to four for
+    the card pulled every ratio towards 0.5 and changed marks.
+
+    Pinned because the change that did it was committed as 'wording only'.
+    """
+    import importlib
+    rp = importlib.import_module("app.services.review_pipeline")
+
+    covered = [f"concept {i}" for i in range(12)]
+    missing = [f"gap {i}" for i in range(3)]
+    real_ratio = len(covered) / (len(covered) + len(missing))          # 0.80
+
+    review = {"concepts_covered": list(covered), "concepts_missing": list(missing),
+              "strengths": [], "improvements": [], "feedback_points": [],
+              "hard_truth": "", "criteria": []}
+    tidied = rp.tidy_review(review)
+    shown = len(tidied["concepts_covered"]) / (len(tidied["concepts_covered"])
+                                               + len(tidied["concepts_missing"]))
+
+    assert shown != real_ratio, "guard is meaningless if trimming changes nothing"
+    assert real_ratio >= rp.GATES["concept_min_ratio"]
+    # The display copy may differ; what must NOT happen is gating on it.
+    # review_with_knowledge calls apply_gates BEFORE tidy_review for this reason.
+    import inspect
+    src = inspect.getsource(rp.run_review)      # where both calls actually live
+    assert "apply_gates(" in src and "tidy_review(review)" in src
+    assert src.index("apply_gates(") < src.index("tidy_review(review)"), \
+        "tidy_review must run AFTER apply_gates, or trimming changes the score"

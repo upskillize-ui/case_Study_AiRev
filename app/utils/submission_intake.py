@@ -403,6 +403,30 @@ _MANIFEST_RULE = (
 )
 
 
+MANIFEST_HEADER = "=== SUBMISSION MANIFEST ==="
+_ITEM_MARKER = "\n=== ITEM "
+
+
+def split_manifest(text: str) -> Tuple[str, str]:
+    """Separate the provenance manifest from the learner's actual content.
+
+    Needed because the two must be delivered to the marker DIFFERENTLY. The
+    manifest is OUR statement about what arrived; the content is untrusted
+    learner text. Routes join them for storage, and stored rows are re-read on
+    re-review, so the split has to work on text that came back out of the
+    database as well as text we just built.
+
+    Returns ("", text) when there is no manifest — a typed-only submission.
+    """
+    body = text or ""
+    if not body.lstrip().startswith(MANIFEST_HEADER):
+        return "", body
+    idx = body.find(_ITEM_MARKER)
+    if idx == -1:
+        return body.strip(), ""
+    return body[:idx].strip(), body[idx:].strip()
+
+
 def render(artefacts: List[Artefact]) -> Tuple[str, str]:
     """Return (manifest, content).
 
@@ -434,7 +458,7 @@ def render(artefacts: List[Artefact]) -> Tuple[str, str]:
                          f"that anything was submitted.")
 
     manifest = (
-        "=== SUBMISSION MANIFEST ===\n"
+        MANIFEST_HEADER + "\n"
         f"The learner submitted {len(artefacts)} item(s):\n"
         + "\n".join(lines)
         + "\n\n" + _MANIFEST_RULE + "\n"

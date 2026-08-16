@@ -94,9 +94,12 @@ class Pending:
     student_id: int
     title: str
     notes_len: int
-    current_grade: float | None = None
     file_name: str
     submitted_at: str
+    # Defaulted fields MUST come last — a dataclass field with a default
+    # cannot precede one without, and putting this in the middle made the
+    # module fail to import at all.
+    current_grade: float | None = None
 
     @property
     def has_content(self) -> bool:
@@ -150,13 +153,19 @@ def fetch_pending(conn, review_type: str, item_id: int | None,
     """Submissions with content but no grade yet, newest attempt per
     (item, student). One query + one pass — no per-row lookups.
 
-    redo=True inverts the grade filter: it selects rows that ALREADY carry a
-    grade, for a staff correction run. Those rows go to the regrade endpoint,
-    which rewrites them in place — never to the student submit endpoint, which
-    would insert a duplicate submission for every learner.
+    redo=True selects EVERY row with content — graded or not — and routes it to
+    the regrade endpoint, which rewrites the row in place.
+
+    It used to select only already-graded rows, which quietly forced the far
+    larger cleared-grade population down the student submit path instead. That
+    path INSERTs a new submission per call: assignment 14 went from 49 rows to
+    95 in one run on 14 Aug. Re-scoring existing work is never a new
+    submission, so this is the mode that should be used for all of it.
     """
     cfg = TYPES[review_type]
-    grade_filter = "s.grade IS NOT NULL" if redo else "s.grade IS NULL"
+    # redo re-scores in place, so a grade being present or absent is
+    # irrelevant — what matters is that there is something to re-score.
+    grade_filter = "1 = 1" if redo else "s.grade IS NULL"
     sql = f"""
         SELECT s.id, s.{cfg['item_fk']} AS item_id, s.student_id,
                COALESCE(i.title, '') AS title,
@@ -352,9 +361,13 @@ def main() -> None:
 
     mode = "STAFF RUN — students NOT billed" if os.getenv("AIREV_ADMIN_KEY") \
         else "students WILL be billed"
+    if not args.redo and args.run:
+        print("\n  !! Each review on this path INSERTS a new submission row. For\n"
+              "     work that already exists, use --redo, which rewrites the row\n"
+              "     in place. Assignment 14 went 49 -> 95 rows without it.\n")
     print(f"\nAgent   : {agent_url}")
     print(f"Billing : {mode}")
-    label = "ALREADY GRADED (re-score in place)" if args.redo else "unreviewed"
+    label = "to re-score IN PLACE (no new rows)" if args.redo else "unreviewed"
     print(f"Pending : {len(pending)} {label}  |  reviewable: {len(ready)}  |  "
           f"no content (skipped): {len(empty)}")
     if empty:
