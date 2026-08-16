@@ -102,6 +102,46 @@ def _looks_like_text(data: bytes, sample: int = 4096) -> bool:
     return printable / len(chunk) >= 0.85
 
 
+# ---------------------------------------------------------------------------
+# A WEB PAGE IS NOT A SUBMISSION.
+#
+# Live, 16 Aug 2026. Dozens of Day 06 rows came back "1917 words", "1921
+# words", "1925 words" — near-identical counts across unrelated learners — and
+# every one scored 0.0/10. The log said why on the line above each: 
+#
+#     invalid pdf header: b'<!DOC'
+#
+# The download returned HTTP 200 carrying an HTML page: a Cloudinary
+# not-found, a login wall, a link-shortener interstitial, or the JS shell of a
+# client-rendered site. PDF parsing failed, DOCX failed, it was not an image —
+# and the last-resort branch decoded it as text, because markup IS text. So
+# ~1900 words of boilerplate went to the marker as the learner's coursework and
+# was graded as such. The clustered word counts are the same page each time,
+# varying only by the URL embedded in it.
+#
+# Grading that page is not strictness, it is a false statement about a student.
+# Refuse it, and let the unassessable path report the row instead of scoring it.
+# ---------------------------------------------------------------------------
+
+_HTML_SIGNATURES = (b"<!doctype html", b"<html", b"<head", b"<body",
+                    b"<script", b"<meta ")
+
+
+def looks_like_web_page(data: bytes, sample: int = 2048) -> bool:
+    """True when these bytes are a web page rather than a submitted document.
+
+    Deliberately checks only the HEAD of the payload. A legitimate .html
+    upload hits the TEXT_EXTS branch by extension long before the sniff path,
+    so this cannot swallow work a learner meant to submit as HTML.
+    """
+    head = (data or b"")[:sample].lstrip().lower()
+    return any(sig in head for sig in _HTML_SIGNATURES)
+
+
+NOT_A_FILE = ("the link returned a web page, not the file itself — the page "
+              "may need a login, or the file may have been removed")
+
+
 # ---------- public entry ---------------------------------------------------
 
 # LMS rows often store uploads as relative paths (e.g. /uploads/x.pdf) that
@@ -227,6 +267,12 @@ def _extract_dispatch(data: bytes, file_name: str = "") -> Tuple[str, str]:
         return "", (f"file too large ({len(data) // (1024 * 1024)} MB > "
                     f"{ceiling // (1024 * 1024)} MB)")
 
+    # A document extension proves nothing about what the server actually sent.
+    # These rows arrived as ".pdf" and were HTML; without this the PDF branch
+    # fails, OCR fails, and some paths still fall through to a text decode.
+    if ext not in TEXT_EXTS and ext != ".html" and looks_like_web_page(data):
+        return "", NOT_A_FILE
+
     try:
         # PDFs ------------------------------------------------------------
         if ext == ".pdf":
@@ -295,6 +341,10 @@ def _extract_dispatch(data: bytes, file_name: str = "") -> Tuple[str, str]:
             return _extract_image(data, ext)
 
         # Unknown ext -> sniff. Try PDF, DOCX, then image, then bytes-as-text.
+        # HTML first: it is text, so the last-resort decode below would happily
+        # hand a login page to the marker as the learner's essay.
+        if looks_like_web_page(data):
+            return "", NOT_A_FILE
         for fn in (_extract_pdf, _extract_docx):
             text, _ = fn(data)
             if text:

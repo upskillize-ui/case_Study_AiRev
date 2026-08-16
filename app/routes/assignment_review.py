@@ -641,6 +641,13 @@ def re_review_assignment(
             artefacts.append(intake.from_stored_file(stored_file, row.get("file_name") or ""))
         if stored_notes:
             artefacts.append(intake.from_typed(stored_notes))
+            # Open what the learner linked to. The submit path has always done
+            # this; the regrade path did not, so a Day 06 row whose whole
+            # submission is a suno.com link had that URL marked as if it were
+            # the learner's prose — nothing to quote, every criterion pinned at
+            # the no-evidence cap, a cohort that did the work told it scored
+            # 2/10. Same call, same guards (url_guard, link budget) as submit.
+            artefacts.extend(intake.from_links_in(stored_notes))
         manifest, content = intake.render(artefacts)
     word_count = count_words(content)
     inventory = ([{"kind": "stored", "label": "previously assembled submission",
@@ -660,6 +667,23 @@ def re_review_assignment(
                 "previousGrade": previous_grade,
                 "artefacts": inventory,
                 "detail": intake.first_error(artefacts) or "no stored work found"}
+
+    if intake.is_unassessable(manifest, content):
+        # The deliverable exists; we could not open it. Scoring it anyway is an
+        # assertion about work nobody read — the fabrication rule, pointed the
+        # other way. Leave the row untouched and say so plainly, so the learner
+        # is asked for a description rather than handed a mark they didn't earn.
+        print(f"[REGRADE] submission {submission_id}: deliverable present but "
+              f"unreadable ({intake.substantive_words(content)} words of answer) "
+              f"— row untouched")
+        return {"success": False, "skipped": "unassessable_deliverable",
+                "submissionId": submission_id,
+                "previousGrade": previous_grade,
+                "artefacts": inventory,
+                "detail": ("The work was submitted as a link or file we could not "
+                           "open, and there is no written answer to judge. Ask the "
+                           "learner to add a few lines describing what they made "
+                           "and how, then re-review.")}
 
     if dryRun:
         return {"success": True, "dryRun": True,

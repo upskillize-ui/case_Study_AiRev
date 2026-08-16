@@ -45,6 +45,39 @@ GATES = {
 # Criterion names whose score demands case-specific grounding.
 _SPECIFICITY_BOUND = ("evidence", "application", "analysis", "depth", "practical", "recommend")
 
+
+# Review types where every learner answers the SAME source material, so
+# "did this engage the material's own facts?" is a fair question. An
+# assignment is the learner's own project — there is no shared case for the
+# answer to be specific about, and asking costs every learner the same marks.
+_CASE_MATERIAL_SCOPES = ("casestudy", "case_study", "capstone", "industry_session")
+
+
+def case_specificity_applies(pack: dict, scope_type: str = "") -> bool:
+    """Is there any case material for an answer to BE specific about?
+
+    The generic_answer gate was written for case studies, where the material
+    supplies facts, figures and named constraints and an answer that ignores
+    them is genuinely worse. It caps any criterion whose name contains
+    'application', 'practical', 'depth', 'analysis' at 40% when the marker says
+    case_specific=false.
+
+    On "build an agent and describe it" there IS no case. The learner's own
+    project is the subject, so the marker honestly answers false every time and
+    the gate fires on every learner — a hard 4/10 ceiling on the two or three
+    heaviest criteria of a task nobody could pass. Observed across assignments
+    14 and 23: strong, specific work capped at 6.2/10 before any other penalty.
+
+    So the gate runs only where both conditions hold: the review type has
+    shared source material at all, AND the knowledge pack actually carries the
+    specificity markers it is supposed to be checking against. No case, no cap.
+
+    Pure — decided from the pack and the scope type, nothing else.
+    """
+    if scope_type and scope_type not in _CASE_MATERIAL_SCOPES:
+        return False
+    return bool((pack or {}).get("specificity_markers"))
+
 # ---------------------------------------------------------------------------
 # HOW FEEDBACK MUST READ
 #
@@ -399,6 +432,62 @@ def should_hard_zero(review: dict, word_count: int) -> bool:
         return True          # unknown length — trust the verdict
 
 
+# ---------------------------------------------------------------------------
+# THE MODEL'S OUTPUT IS UNTRUSTED TOO.
+#
+# Three 500s in one batch, all from assuming the schema was honoured:
+#
+#   KeyError: 'criteria'                          — the key was simply absent
+#   AttributeError: 'str' object has no attribute 'get'
+#                                                 — criteria came back as a
+#                                                   list of strings
+#
+# A schema makes a shape overwhelmingly likely, not certain. Every one of these
+# returned HTTP 500 to bulk_review, which logged it as a failure and moved on —
+# so a learner's row was silently skipped because of a malformed response they
+# had nothing to do with. Normalise once, at the boundary, and the rest of the
+# pipeline can rely on the shape.
+# ---------------------------------------------------------------------------
+
+_LIST_FIELDS = ("criteria", "concepts_covered", "concepts_missing",
+                "factual_errors", "strengths", "improvements", "feedback_points")
+
+
+def normalise_review(review) -> dict:
+    """Coerce a model response into the shape the pipeline requires.
+
+    Never invents judgement: a criterion that arrives unusable becomes an
+    explicit zero with no evidence, which the gates then treat exactly as they
+    treat an unanswered criterion. Pure.
+    """
+    if not isinstance(review, dict):
+        review = {}
+    for key in _LIST_FIELDS:
+        value = review.get(key)
+        review[key] = list(value) if isinstance(value, list) else []
+
+    clean = []
+    for c in review["criteria"]:
+        if isinstance(c, dict):
+            clean.append(c)
+        elif isinstance(c, str) and c.strip():
+            # A bare name with no evidence and no score. Scored as unaddressed,
+            # not silently dropped — dropping it would quietly shrink the rubric.
+            clean.append({"name": c.strip(), "evidence_quotes": [],
+                          "case_specific": False, "score_pct": 0,
+                          "judgment": "No assessment available.",
+                          "confidence": "low"})
+    review["criteria"] = clean
+
+    if not isinstance(review.get("authorship"), dict):
+        review["authorship"] = {}
+    if not isinstance(review.get("language_report"), dict):
+        review["language_report"] = {}
+    review["is_garbage"] = bool(review.get("is_garbage"))
+    review["hard_truth"] = str(review.get("hard_truth") or "")
+    return review
+
+
 def needs_escalation(review: dict) -> bool:
     """Low-confidence criteria or garbage suspicion warrant the strong model."""
     if not GATES["low_confidence_escalate"]:
@@ -524,6 +613,12 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
         except Exception as ce:
             print(f"⚠️ sleep context unavailable: {ce}")
 
+    # No case material means nothing to be case-specific ABOUT, so the
+    # specificity cap would fire on every learner regardless of quality.
+    if not case_specificity_applies(pack, scope_type):
+        gate_overrides["generic_answer_cap"] = 100
+        print("ℹ️  no specificity markers in pack — case-specificity gate off")
+
     # Caller overrides win: the review route knows things the nightly tuner
     # cannot, e.g. that this task has no case material for a "case specificity"
     # gate to be meaningful about.
@@ -569,21 +664,21 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
         + ((provenance + "\n\n") if provenance else "") \
         + ai_service.frame_student_text(learner_text)
 
-    review = ai_service.call_structured(
+    review = normalise_review(ai_service.call_structured(
         blocks=[{"text": static_block, "cache": True},
                 {"text": student_block, "cache": False}],
         schema=REVIEW_SCHEMA, tier="default", max_tokens=3500,
-    )
+    ))
     scoring_path = "haiku-single"
 
     if needs_escalation(review):
         print("ℹ️  Escalating to strong model (low confidence / garbage suspicion)")
-        review = ai_service.call_structured(
+        review = normalise_review(ai_service.call_structured(
             blocks=[{"text": static_block, "cache": True},
                     {"text": student_block, "cache": False}],
             schema=REVIEW_SCHEMA, tier="strong", max_tokens=3500,
             thinking_budget=int(os.getenv("THINKING_BUDGET", "2000")),
-        )
+        ))
         scoring_path = "strong-thinking-escalated"
 
     if should_hard_zero(review, word_count):

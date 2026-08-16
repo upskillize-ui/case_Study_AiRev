@@ -544,3 +544,51 @@ def has_deliverable(artefacts: List[Artefact]) -> bool:
     failing the learner for following the instructions.
     """
     return any(a.is_deliverable for a in artefacts)
+
+
+# ---------------------------------------------------------------------------
+# Is there anything here a marker could honestly judge?
+#
+# Day 06 of "30 Days 30 AI Tools" asks for a song made in Suno. Most learners
+# submitted exactly what was asked: a suno.com link and nothing else. The
+# regrade path handed that URL to the marker as if it were the learner's prose,
+# so there was nothing to quote, the no-evidence cap pinned every criterion at
+# 20%, and a cohort that DID the work was told it scored 2/10.
+#
+# A URL is not an answer and it is not a failure either. It is a deliverable we
+# have not opened. Grading it as prose asserts something we did not check —
+# which is the fabrication this project forbids, pointed the other way.
+# ---------------------------------------------------------------------------
+
+# Below this, the text is a caption or a bare link, not an answer.
+MIN_GRADABLE_WORDS = 12
+
+
+def substantive_words(content: str) -> int:
+    """Word count with URLs and bare filenames removed.
+
+    'https://suno.com/song/6f2a-91bb my song' is two words of answer, not six.
+    """
+    text = re.sub(r"https?://\S+|www\.\S+", " ", content or "")
+    text = re.sub(r"\b\S+\.(?:mp3|mp4|wav|m4a|png|jpe?g|pdf|docx?|pptx?|xlsx?)\b",
+                  " ", text, flags=re.I)
+    text = _ITEM_RE.sub(" ", text)
+    return len([w for w in text.split() if any(ch.isalnum() for ch in w)])
+
+
+def unreadable_deliverable(manifest: str) -> bool:
+    """Does the manifest record an artefact that exists but could not be read?"""
+    return "could not be read" in (manifest or "")
+
+
+def is_unassessable(manifest: str, content: str) -> bool:
+    """True when the only thing submitted is a deliverable we could not read.
+
+    Deliberately narrow. A thin TYPED answer is assessable and scores what it
+    earns — that judgement is the marker's job. This catches only the case
+    where the substance sits inside a file or behind a link that never opened,
+    so any score would be about our reach, not the learner's work.
+    """
+    if substantive_words(content) >= MIN_GRADABLE_WORDS:
+        return False
+    return unreadable_deliverable(manifest) or bool(find_urls(content))

@@ -127,6 +127,12 @@ class Result:
     detail: str = ""
     ms: int = 0
     extra: dict = field(default_factory=dict)
+    # A SKIP is not a FAILURE. The route deliberately declined to write a mark
+    # — the row is untouched and the learner keeps whatever they had. Reporting
+    # those as "FAIL" produced a screen of red for a batch where nothing broke,
+    # and buried the one thing that needed acting on: which learners have to be
+    # asked for a written description.
+    skipped: str = ""
 
 
 # ── DB ────────────────────────────────────────────────────────────────────
@@ -269,7 +275,8 @@ def review_one(p: Pending, agent_url: str, api_key: str, timeout: int,
         if data.get("skipped"):
             # Nothing readable in the row. The regrade route leaves the
             # existing grade alone rather than blanking it — report, move on.
-            return Result(p, False, detail=f"skipped: {data['skipped']}", ms=ms)
+            return Result(p, False, detail=data.get("detail") or "", ms=ms,
+                          skipped=str(data["skipped"]))
         if data.get("dryRun"):
             return Result(p, True, score=None, grade="(dry)", ms=ms,
                           extra={"words": data.get("wordCount"),
@@ -407,6 +414,9 @@ def main() -> None:
                       f"-> {_fmt_score(res)} {res.grade}"
                       + (f" (est. {ai}% AI)" if ai is not None else "")
                       + f"  {res.ms}ms")
+            elif res.skipped:
+                print(f"  [{i}/{len(batch)}] SKIP item {p.item_id} student {p.student_id} "
+                      f"-> {res.skipped} (mark unchanged)")
             else:
                 print(f"  [{i}/{len(batch)}] FAIL item {p.item_id} student {p.student_id} "
                       f"-> {res.detail}")
@@ -414,19 +424,36 @@ def main() -> None:
     with open(args.out, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["type", "item_id", "student_id", "submission_id", "title",
-                    "ok", "grade_before", "marks", "out_of", "percent", "grade",
-                    "ai_percent", "detail", "ms"])
+                    "ok", "skipped", "grade_before", "marks", "out_of", "percent",
+                    "grade", "ai_percent", "detail", "ms"])
         for r in results:
             p = r.pending
             w.writerow([p.review_type, p.item_id, p.student_id, p.submission_id,
-                        p.title, r.ok, p.current_grade,
+                        p.title, r.ok, r.skipped, p.current_grade,
                         r.extra.get("marks"), r.extra.get("outOf"),
                         r.score, r.grade, r.extra.get("ai"),
                         r.detail, r.ms])
 
     ok = sum(1 for r in results if r.ok)
-    print(f"\nDone: {ok} reviewed, {len(results) - ok} failed, "
+    skipped = [r for r in results if r.skipped]
+    failed = len(results) - ok - len(skipped)
+    print(f"\nDone: {ok} reviewed, {len(skipped)} skipped, {failed} failed, "
           f"{int(time.time() - started)}s total. Log: {args.out}")
+
+    unreadable = [r for r in skipped if r.skipped == "unassessable_deliverable"]
+    if unreadable:
+        # These learners DID the task. Their work is behind a link or inside a
+        # file we could not open, so no mark was written — the honest outcome,
+        # and one a human has to close out.
+        print(f"\n  {len(unreadable)} submission(s) could not be opened, so no mark "
+              f"was written. Ask these learners to add a few lines describing "
+              f"what they made:")
+        for r in unreadable[:15]:
+            print(f"    - student {r.pending.student_id} "
+                  f"(item {r.pending.item_id}) {r.pending.title}")
+        if len(unreadable) > 15:
+            print(f"    ... and {len(unreadable) - 15} more — full list in {args.out}")
+
     print(f"Remaining unreviewed after this run: {len(ready) - ok}\n")
 
 

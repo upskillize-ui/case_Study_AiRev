@@ -88,3 +88,35 @@ def test_the_normal_path_still_targets_unreviewed_rows_only():
 def test_both_modes_scope_to_the_requested_assignment():
     for redo in (True, False):
         assert "assignment_id = %s" in _sql(redo)
+
+
+# ── a skip must never be reported as a failure ────────────────────────────
+#
+# The route declines to write a mark for work it could not open. That row is
+# untouched and the learner keeps their grade. Counting it as FAIL turned a
+# clean batch into a screen of red and hid the only actionable item: which
+# learners have to be asked for a written description.
+
+def test_a_skip_is_reported_separately_from_a_failure():
+    import bulk_review as b
+
+    p = b.Pending(review_type="assignment", submission_id=1, item_id=23,
+                  student_id=345, title="Day 06", notes_len=40,
+                  file_name="", submitted_at="2026-08-16")
+    skip = b.Result(p, False, skipped="unassessable_deliverable")
+    fail = b.Result(p, False, detail="HTTP 500")
+
+    assert skip.skipped and not fail.skipped
+    assert skip.ok is False and fail.ok is False
+
+
+def test_the_csv_header_carries_the_skip_reason():
+    """The console truncates the list; the log is what gets worked through."""
+    import inspect
+    import bulk_review as b
+
+    src = inspect.getsource(b.main)
+    header = src.split('w.writerow([', 1)[1].split('])', 1)[0]
+    assert '"skipped"' in header, (
+        "the skip reason is not in the CSV, so the learners who need chasing "
+        "cannot be found from the log")
