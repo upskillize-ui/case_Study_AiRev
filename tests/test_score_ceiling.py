@@ -510,3 +510,88 @@ def test_a_corrupt_image_reports_a_reason_a_learner_can_act_on():
     out, _, why = fx._to_readable_image(b"not an image at all", ".bmp")
     assert out == b"" and why, "a broken image must explain itself"
     assert "bmp" in why.lower()
+
+
+# ── FAULT 11: a picture inside a PDF was never looked at ──────────────────
+#
+# The old rule was: extract text; if there is NONE, OCR. So a PDF holding only
+# an image was read, and a PDF holding "My 5 Year Plan" plus the image returned
+# six words and the picture was never opened. On Day 01 the picture IS the
+# submission — the image criterion scores zero for a learner whose work is
+# sitting on page one.
+
+def test_a_pdf_with_a_heading_and_a_picture_is_ocred():
+    assert fx.pdf_needs_ocr("My 5 Year Plan", has_images=True) is True
+
+
+def test_a_pdf_that_is_only_a_picture_is_still_ocred():
+    assert fx.pdf_needs_ocr("", has_images=True) is True
+    assert fx.pdf_needs_ocr("", has_images=False) is True
+
+
+def test_a_real_write_up_is_not_rasterized_for_nothing():
+    """OCR costs a vision call per page. A PDF carrying an actual write-up is
+    returned as text however many decorative images it holds."""
+    assert fx.pdf_needs_ocr("word " * 400, has_images=True) is False
+    assert fx.pdf_needs_ocr("word " * 400, has_images=False) is False
+
+
+def test_a_short_text_only_pdf_is_not_ocred():
+    """No pictures means nothing for OCR to find — do not pay for the call."""
+    assert fx.pdf_needs_ocr("My 5 Year Plan", has_images=False) is False
+
+
+def test_an_unreadable_page_assumes_there_is_something_to_see():
+    """page.images raises on some producers. Absence of evidence is not
+    evidence of absence, and the cost of guessing wrong is one OCR call versus
+    a learner's deliverable going unseen."""
+    assert fx._pdf_has_images(b"%PDF-1.4 not really a pdf") is False
+
+
+# ── FAULT 12: formats the cohort has but AiRev refused ────────────────────
+
+def test_opendocument_files_are_read():
+    """LibreOffice is what a lot of students have. .odt was refused outright."""
+    import io as _io
+    import zipfile
+    content = ('<?xml version="1.0"?><office:document-content><office:body>'
+               '<office:text><text:h>My 5 Year Plan</text:h>'
+               '<text:p>I want to become a data analyst at a bank.</text:p>'
+               '</office:text></office:body></office:document-content>')
+    buf = _io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("content.xml", content)
+    text, why = fx.extract_text_from_bytes(buf.getvalue(), "plan.odt")
+    assert why == "" and "data analyst" in text, (text, why)
+    assert "My 5 Year Plan\n" in text, "block boundaries must survive as newlines"
+
+
+def test_a_spreadsheet_does_not_collapse_into_one_run_of_words():
+    """Strip tags before inserting boundaries and every cell runs together."""
+    import io as _io
+    import zipfile
+    rows = ("<table:table-row><table:table-cell>Year</table:table-cell>"
+            "<table:table-cell>Goal</table:table-cell></table:table-row>"
+            "<table:table-row><table:table-cell>2027</table:table-cell>"
+            "<table:table-cell>Analyst</table:table-cell></table:table-row>")
+    buf = _io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("content.xml", f"<x>{rows}</x>")
+    text, _ = fx.extract_text_from_bytes(buf.getvalue(), "plan.ods")
+    assert "YearGoal" not in text, f"cells collapsed together: {text!r}"
+
+
+def test_legacy_office_says_what_to_do_instead():
+    """'This file type could not be read' helps nobody. Name the app, the
+    menu, and the format to pick."""
+    for name, app, modern in (("essay.doc", "Word", ".docx"),
+                              ("deck.ppt", "PowerPoint", ".pptx"),
+                              ("sheet.xls", "Excel", ".xlsx")):
+        _, why = fx.extract_text_from_bytes(b"\xd0\xcf\x11\xe0junk", name)
+        assert app in why and modern in why, (name, why)
+
+
+def test_plain_text_variants_are_read():
+    for name in ("notes.txt", "notes.md", "notes.log", "notes.rst"):
+        text, why = fx.extract_text_from_bytes(b"I want to be an analyst", name)
+        assert "analyst" in text, (name, why)

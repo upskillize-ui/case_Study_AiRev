@@ -54,7 +54,20 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif",
 
 # Sent to the vision API untouched. Everything else in IMAGE_EXTS is converted.
 NATIVE_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
-TEXT_EXTS  = {".txt", ".md"}
+TEXT_EXTS  = {".txt", ".md", ".rst", ".log", ".text"}
+
+# OpenDocument — LibreOffice and OpenOffice are what a lot of students have,
+# and .odt/.ods/.odp were refused outright as "could not be read as text".
+# They are ZIP containers holding content.xml, so they need no new dependency.
+ODF_EXTS = {".odt", ".ods", ".odp", ".odg", ".otp", ".ott"}
+
+# Legacy binary Office. Genuinely unreadable without a converter, so say so in
+# words a student can act on rather than "this file type could not be read".
+LEGACY_OFFICE = {
+    ".doc":  "Word",
+    ".ppt":  "PowerPoint",
+    ".xls":  "Excel",
+}
 # Audio/video. AiRev reviews WRITTEN work; there is nothing to extract from a
 # video. Named explicitly because the unknown-extension fallback used to decode
 # them as UTF-8 with errors="ignore": a WhatsApp .mp4 became "272004 words" of
@@ -286,21 +299,34 @@ def _extract_dispatch(data: bytes, file_name: str = "") -> Tuple[str, str]:
         # PDFs ------------------------------------------------------------
         if ext == ".pdf":
             text, why = _extract_pdf(data)
-            if text:
+            if not pdf_needs_ocr(text, _pdf_has_images(data)):
                 return text, ""
-            # Empty -> probably scanned. Try OCR.
-            logger.info("PDF text empty (%s) -> falling back to vision OCR", why)
-            return _extract_scanned_pdf(data)
+            logger.info("PDF has pictures and %d words of text -> OCR as well",
+                        len((text or "").split()))
+            ocr, ocr_why = _extract_scanned_pdf(data)
+            if ocr and text:
+                # Both, labelled. The marker needs to know which words the
+                # learner typed and which came off the picture.
+                return (f"{text}\n\n=== PICTURES IN THIS PDF ===\n{ocr}"), ""
+            if ocr:
+                return ocr, ""
+            return (text, "") if text else ("", ocr_why or why)
 
         # Word ------------------------------------------------------------
         if ext == ".docx":
             return _extract_docx(data)
-        if ext == ".doc":
+        if ext in LEGACY_OFFICE:
+            app = LEGACY_OFFICE[ext]
+            modern = {"Word": ".docx", "PowerPoint": ".pptx", "Excel": ".xlsx"}[app]
             return "", (
-                "Legacy .doc format isn't supported. "
-                "Please open the file in Word, choose 'Save As', "
-                "select 'Word Document (.docx)', and re-upload."
+                f"The old {ext} format can't be read. Open the file in {app} "
+                f"(or Google Docs), choose 'Save As' or 'Download as', pick "
+                f"{modern}, and upload that instead."
             )
+
+        # OpenDocument -------------------------------------------------------
+        if ext in ODF_EXTS:
+            return _extract_odf(data, ext)
 
         # Audio / video ----------------------------------------------------
         # NOT refused any more. The programme teaches tools whose output IS
@@ -498,6 +524,59 @@ def _download_file(file_url: str) -> Tuple[bytes, str]:
 
 # ---------- PDF ------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# A PDF WITH A PICTURE IN IT.
+#
+# Learners put the deliverable inside a PDF constantly — the AI image with a
+# heading above it, a screenshot pasted into Word and exported, a scan of
+# handwritten notes with a typed title.
+#
+# The old rule was: extract text; if there is NONE, OCR it. So a PDF holding
+# ONLY an image was read correctly, and a PDF holding "My 5 Year Plan" plus the
+# image returned six words and the picture was never looked at. On Day 01 that
+# is the whole submission — the image criterion scores zero for a learner whose
+# work is sitting right there on page one.
+#
+# Now: thin text plus embedded images means OCR as well, and BOTH are sent. The
+# threshold is words, not bytes, because a title page is short by nature and a
+# real write-up is not.
+# ---------------------------------------------------------------------------
+
+PDF_THIN_TEXT_WORDS = int(os.getenv("PDF_THIN_TEXT_WORDS", "150"))
+
+
+def pdf_needs_ocr(text: str, has_images: bool,
+                  thin_words: int = PDF_THIN_TEXT_WORDS) -> bool:
+    """Should this PDF be OCR'd as well as read? Pure, so it is testable.
+
+    Conservative on cost: a PDF carrying a real write-up is returned as text
+    and never rasterized, however many decorative images it contains.
+    """
+    if not has_images:
+        return not (text or "").strip()
+    return len((text or "").split()) < thin_words
+
+
+def _pdf_has_images(data: bytes) -> bool:
+    """Does any of the first few pages embed an image? Never raises."""
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(data))
+        for page in reader.pages[:MAX_OCR_PAGES]:
+            try:
+                if len(page.images) > 0:
+                    return True
+            except Exception:
+                # Some producers make page.images raise. An unreadable page is
+                # not evidence of absence, so assume there IS something to look
+                # at — the cost of being wrong is one OCR call, and the cost of
+                # the opposite is a learner's deliverable going unseen.
+                return True
+    except Exception:
+        return False
+    return False
+
+
 def _extract_pdf(data: bytes) -> Tuple[str, str]:
     try:
         from pypdf import PdfReader
@@ -621,6 +700,37 @@ def _extract_docx(data: bytes) -> Tuple[str, str]:
 
 
 # ---------- RTF ------------------------------------------------------------
+
+def _extract_odf(data: bytes, ext: str) -> Tuple[str, str]:
+    """Text from an OpenDocument file (.odt / .ods / .odp).
+
+    An ODF file is a ZIP whose content.xml holds the document body, so this
+    needs no converter and no new dependency. Paragraph and cell boundaries
+    become newlines first, THEN tags are stripped — strip them in the other
+    order and a spreadsheet collapses into one unreadable run of words.
+    """
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            if "content.xml" not in z.namelist():
+                return "", f"{ext} file has no content.xml — it may be corrupt"
+            xml = z.read("content.xml").decode("utf-8", errors="ignore")
+    except Exception as e:
+        return "", f"could not open this {ext} file: {type(e).__name__}"
+
+    # Block boundaries -> newlines, before any tag stripping.
+    xml = re.sub(r"</(text:p|text:h|table:table-row|draw:frame)>", "\n", xml)
+    xml = re.sub(r"</table:table-cell>", "\t", xml)
+    text = re.sub(r"<[^>]+>", "", xml)
+    text = (text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+                .replace("&quot;", '"').replace("&apos;", "'"))
+    text = _clean(text)
+    if not text:
+        return "", (f"this {ext} file has no readable text — if the work is a "
+                    f"picture inside it, export it as a PDF or image and re-upload")
+    return text, ""
+
 
 def _extract_rtf(data: bytes) -> Tuple[str, str]:
     """Strip RTF control words. Good enough for plain answer text."""
