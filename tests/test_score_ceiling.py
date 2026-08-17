@@ -375,3 +375,61 @@ def test_the_rubric_version_forces_cached_rubrics_to_rebuild():
     assert rs.RUBRIC_VERSION >= 4
     a = rs.source_hash({"title": "Day 06", "description": "Create a song"})
     assert a != "", "source_hash must fold RUBRIC_VERSION into the cache key"
+
+
+# ── FAULT 8: the same submission scored differently on identical text ─────
+#
+# Submission 4804, byte-identical input, no code change between runs 2 and 3:
+#
+#     run 1  0.9/10      run 2  1.2/10      run 3  0.0/10
+#
+# and across the batch 4758 went 1.8 -> 5.6, 4064 went 4.4 -> 0.1. call_structured
+# set no temperature, so every review ran at the API default of 1.0 — full
+# sampling on a task whose whole purpose is a defensible number.
+
+from app.services import ai_service as ais
+
+
+def _kwargs_from_a_scoring_call(monkeypatch, thinking_budget=0):
+    seen = {}
+
+    class _Block:
+        type, name, input = "tool_use", "emit_result", {"ok": True}
+
+    class _Resp:
+        content = [_Block()]
+        usage = None
+
+    def fake_create_message(**kw):
+        seen.update(kw)
+        return _Resp(), "anthropic"
+
+    monkeypatch.setattr(ais, "create_message", fake_create_message)
+    monkeypatch.setattr(ais, "_report_usage", lambda *a, **k: None)
+    ais.call_structured(blocks=[{"text": "x", "cache": False}], schema={},
+                        thinking_budget=thinking_budget)
+    return seen
+
+
+def test_scoring_is_deterministic(monkeypatch):
+    kw = _kwargs_from_a_scoring_call(monkeypatch)
+    assert kw.get("temperature") == 0, (
+        "no temperature set — reviews run at the API default of 1.0, and the "
+        "same submission scores differently on identical text")
+
+
+def test_the_thinking_path_does_not_send_an_illegal_temperature(monkeypatch):
+    """Extended thinking requires temperature 1; sending 0 is an API error, so
+    the determinism fix must not break the escalation path."""
+    kw = _kwargs_from_a_scoring_call(monkeypatch, thinking_budget=2000)
+    assert "temperature" not in kw, kw.get("temperature")
+    assert kw["thinking"]["budget_tokens"] == 2000
+
+
+def test_the_marker_is_told_not_to_score_provenance():
+    """The rubric no longer NAMES a provenance criterion, but the marker still
+    wrote 'no evidence that ChatGPT was used' inside a legitimate one and gave
+    it 15%. Same invariant as the authorship estimate: provenance is advisory."""
+    rule = rp._JUDGE_INSTRUCTIONS.lower()
+    assert "provenance is advisory, never scored" in rule
+    assert "never lower a criterion" in rule

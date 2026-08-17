@@ -445,9 +445,28 @@ def call_structured(blocks: list, schema: dict, tier: str = "default",
         }],
         "tool_choice": {"type": "auto"},
     }
+
+    # DETERMINISM. No temperature was set here, so every review ran at the API
+    # default of 1.0 — full sampling on a task whose whole purpose is a
+    # defensible number. Submission 4804 was re-scored three times on byte-
+    # identical input, with no code change between the second and third:
+    #
+    #     run 1  0.9/10      run 2  1.2/10      run 3  0.0/10
+    #
+    # and across the wider batch 4758 went 1.8 -> 5.6, 4064 went 4.4 -> 0.1.
+    # A learner asking "why did I get this?" deserves an answer that does not
+    # depend on which afternoon the batch ran. Marking is a judgement to be
+    # made once and defended, not a sample from a distribution.
+    #
+    # Extended thinking requires temperature 1 (the API rejects anything else),
+    # so the escalation path keeps its variance — that path exists precisely
+    # for the hard cases where deliberation is worth more than repeatability,
+    # and it is the minority of reviews.
     if thinking_budget > 0:
         kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
         kwargs["max_tokens"] = max_tokens + thinking_budget
+    else:
+        kwargs["temperature"] = 0
 
     response, _provider = create_message(**kwargs)
     _report_usage(model, getattr(response, "usage", None))

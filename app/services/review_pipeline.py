@@ -303,7 +303,8 @@ NON-NEGOTIABLE METHOD:
 6. feedback_points: write 3-6 SEPARATE point-wise items — NOT one paragraph. Each point is one specific observation or instruction, second person, tied to the student's actual text (name the paragraph/line/figure). Coaching wording; the scores carry the severity.
 7. hard_truth: end with the single blunt bottom-line the student must confront — one or two sentences, direct and unsoftened but constructive. This is the conclusion, shown highlighted.
 8. language_report: up to 5 grammar issues with fixes, up to 5 misspellings, one redundancy note, one clarity note. Indian English is standard usage, never an error.
-9. Authorship: estimate per the calibration. Advisory only — it must not influence any score."""
+9. Authorship: estimate per the calibration. Advisory only — it must not influence any score.
+10. HOW THE WORK WAS MADE IS NOT A SCORING FACT. Never lower a criterion because you cannot tell which AI drafted it, which settings were toggled, or in what order the steps were taken. A finished artifact carries no record of its own making, so "no evidence ChatGPT was used" is a statement about your visibility, not about the learner's work — and deducting for it fails every learner equally, including the ones who followed the method exactly. Judge the OUTPUT the method was meant to produce. This is the same rule as the authorship estimate above: provenance is advisory, never scored."""
 
 
 # ─── Pure functions: gates + aggregation (unit-tested, no I/O) ───────────────
