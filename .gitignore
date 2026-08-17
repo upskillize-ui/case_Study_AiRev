@@ -8,3 +8,4 @@ __pycache__
 bulk_review_log.csv
 cleared_zeros.csv
 *.csv
+run_all_state.json 
