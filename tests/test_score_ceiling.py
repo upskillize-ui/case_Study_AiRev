@@ -322,3 +322,56 @@ def test_normalise_never_invents_a_score():
     r = rp.normalise_review({"criteria": ["Agent built and demonstrated"]})
     assert r["criteria"][0]["score_pct"] == 0
     assert r["criteria"][0]["evidence_quotes"] == []
+
+
+# ── FAULT 7: marks allocated to things the work cannot show ───────────────
+#
+# Day 06's derived rubric, read off the live agent on 16 Aug:
+#
+#     Song file or link submitted            35
+#     Patriotic India theme                  30
+#     ChatGPT lyrics with music style line   20   <- a song carries no
+#     Suno Custom mode used                  15   <- authorship signature;
+#                                                    a toggle leaves no trace
+#
+# 35 of 100 marks for facts a finished song cannot carry. Student 312 scored
+# 0/20 and 2.25/15 on those two — and so would anyone, however well they did
+# the task. The cohort ceiling was 6.5/10 before the song was judged at all.
+
+from app.services import rubric_service as rs
+
+
+def test_a_tool_setting_is_not_a_criterion():
+    for name in ("Suno Custom mode used", "Custom mode was enabled",
+                 "Used Custom mode", "Advanced setting was turned on"):
+        assert rs.is_offplatform({"name": name}) is True, name
+
+
+def test_the_setting_filter_does_not_eat_real_criteria():
+    """The scope note in rubric_service is emphatic: an earlier over-broad
+    pattern dropped nine legitimate criteria. These must all survive."""
+    for name in ("Song file or link submitted", "Patriotic India theme",
+                 "Mode of address", "Setting and atmosphere",
+                 "Creative use of the prompt", "Lyrics are original and on theme",
+                 "Custom illustration quality", "Feature comparison table"):
+        assert rs.is_offplatform({"name": name}) is False, name
+
+
+def test_dropping_a_criterion_does_not_cost_the_learner_its_weight():
+    """The whole point. Stripping must hand the weight to what remains, or the
+    fix would simply move the same 15 marks out of reach."""
+    kept, dropped = rs.strip_offplatform([
+        {"name": "Song file or link submitted", "maxScore": 35},
+        {"name": "Patriotic India theme", "maxScore": 30},
+        {"name": "Suno Custom mode used", "maxScore": 15},
+    ])
+    assert [c["name"] for c in dropped] == ["Suno Custom mode used"]
+    assert sum(c["maxScore"] for c in rs.normalise(kept)) == 100
+
+
+def test_the_rubric_version_forces_cached_rubrics_to_rebuild():
+    """Day 06's bad rubric is CACHED in derived_rubrics. Without a version bump
+    the fix ships and every assignment keeps grading against the old criteria."""
+    assert rs.RUBRIC_VERSION >= 4
+    a = rs.source_hash({"title": "Day 06", "description": "Create a song"})
+    assert a != "", "source_hash must fold RUBRIC_VERSION into the cache key"

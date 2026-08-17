@@ -42,7 +42,13 @@ _TABLE = "derived_rubrics"
 #   v3: v2 was a PROMPT rule and the model still produced "Submission uploaded
 #       to LMS" (weight 15, scored 0/15 for a student whose work the reviewer
 #       was holding). Prompts advise; strip_offplatform() enforces.
-RUBRIC_VERSION = 3
+#   v4: HOW the work was made is not visible in the work. Day 06 (Suno) derived
+#       "ChatGPT lyrics with music style line" (20) and "Suno Custom mode used"
+#       (15) — 35 of 100 marks for facts a finished song cannot carry. Every
+#       learner scored 0 and 15% on those, so the cohort ceiling was 6.5/10
+#       before anyone was judged on the song itself. The task does name those
+#       steps; the rubric's job is to measure what the SUBMISSION can show.
+RUBRIC_VERSION = 4
 # Per-tenant: one tenant's CREATE TABLE must never suppress another's.
 _tables_ready: set = set()
 
@@ -109,7 +115,14 @@ RULES:
    - "Artifact is live and publicly hosted" -> NOT allowed (you cannot open the link)
    - "A published link is provided"          -> allowed (visible in the submission)
    - "The write-up explains what was built"  -> allowed (visible in the submission)
-   Where the task requires off-platform actions, judge the evidence of them that appears IN the submission, and weight the rest onto what you can actually read."""
+   Where the task requires off-platform actions, judge the evidence of them that appears IN the submission, and weight the rest onto what you can actually read.
+8. HOW THE WORK WAS MADE IS NOT VISIBLE IN THE WORK. A finished artifact does not record which AI wrote its first draft, which settings were toggled, or which steps came in which order. Tasks routinely PRESCRIBE a method ("use ChatGPT for the lyrics, turn on Custom mode, then generate") — that is instruction to the learner, not something the deliverable can evidence. Never make a criterion out of it.
+   - "ChatGPT was used to write the lyrics" -> NOT allowed (a song carries no authorship signature)
+   - "Custom mode was enabled in the tool"  -> NOT allowed (a setting leaves no trace in the output)
+   - "The workflow steps were followed in order" -> NOT allowed (unless the learner submits the record of them)
+   - "The lyrics are original and on the assigned theme" -> allowed (readable in the submission)
+   - "A style/genre direction is stated"     -> allowed IF the submission is asked to contain it
+   Judge the OUTPUT the method was supposed to produce, and put the method's weight there. A rubric where the cohort cannot reach full marks however well they did the task is a broken rubric."""
 
 
 def _ensure_table(tenant) -> None:
@@ -194,6 +207,16 @@ _OFFPLATFORM_PATTERNS = [
     re.compile(r"\b(link|url|site|page|app|artifact|deployment)\b.{0,20}"
                r"\b(is\s+live|live\s+and|publicly\s+(accessible|hosted|available)|"
                r"accessible\s+online|reachable)\b", re.I),
+    # A SETTING INSIDE THE TOOL. "Suno Custom mode used" (Day 06, 16 Aug) —
+    # a toggle leaves no trace in the finished song, so it scored 15% for the
+    # entire cohort. Requires the word "mode"/"setting" AND a state word, so
+    # "Mode of address", "Setting and atmosphere" and "Custom illustration"
+    # all survive.
+    re.compile(r"\b(mode|setting|toggle|option|feature)\b\s*"
+               r"(was\s+|is\s+|been\s+)?(used|enabled|activated|turned\s+on|"
+               r"switched\s+on|selected)\b", re.I),
+    re.compile(r"\b(used|enabled|activated|turned\s+on|selected)\s+"
+               r"(the\s+)?\S*\s*\b(mode|setting|toggle)\b", re.I),
 ]
 
 # Never strip a rubric to nothing. One real criterion is still a fair rubric;
