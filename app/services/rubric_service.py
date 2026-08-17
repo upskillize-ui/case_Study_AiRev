@@ -62,6 +62,34 @@ FALLBACK_CRITERIA = [
 ]
 FALLBACK_WORDS = (30, 1500)
 
+# ---------------------------------------------------------------------------
+# THE LENGTH TRAP.
+#
+# aggregate() takes up to 20 marks off an answer shorter than wordMin. Rule 2
+# of the derivation prompt tells the model to set word_min to 0-40 when the
+# deliverable is an image, a link or a file, because the written part is a
+# caption.
+#
+# Day 06 came back submission_kind="artifact_or_link" with word_min=100 anyway.
+# A learner who submitted the song and a 40-word caption — exactly what was
+# asked — lost 18 marks for it, on top of the 35 that were already unreachable.
+#
+# Prompts advise; code enforces. Same lesson as strip_offplatform.
+# ---------------------------------------------------------------------------
+CAPTION_WORD_MIN = 40
+CAPTION_KINDS = {"image", "artifact_or_link", "file_or_workbook"}
+
+
+def cap_word_min(word_min: int, submission_kind: str) -> int:
+    """Clamp the length minimum when the deliverable is not prose. Pure.
+
+    Leaves written and mixed tasks alone: an essay may fairly demand length.
+    """
+    value = max(0, min(2000, int(word_min or 0)))
+    if submission_kind in CAPTION_KINDS:
+        return min(value, CAPTION_WORD_MIN)
+    return value
+
 RUBRIC_SCHEMA = {
     "type": "object",
     "properties": {
@@ -347,12 +375,19 @@ def derive(task: dict) -> dict:
         print("⚠️  rubric: dropped off-platform criteria "
               f"{[c.get('name') for c in dropped]} — weights rebalanced onto "
               "what the reviewer can actually read")
+    kind = result.get("submission_kind", "mixed")
+    asked_word_min = int(result.get("word_min", 30) or 0)
+    word_min = cap_word_min(asked_word_min, kind)
+    if word_min != asked_word_min:
+        print(f"⚠️  rubric: wordMin {asked_word_min} -> {word_min} for a {kind} "
+              f"deliverable — the written part is a caption, and the length "
+              f"penalty would have cost marks for doing as asked")
     return {
         "criteria": normalise(kept),
-        "wordMin": max(0, min(2000, int(result.get("word_min", 30) or 0))),
+        "wordMin": word_min,
         "wordMax": max(50, min(20000, int(result.get("word_max", 1500) or 1500))),
         "deliverables": [str(d)[:200] for d in (result.get("deliverables") or [])][:8],
-        "submissionKind": result.get("submission_kind", "mixed"),
+        "submissionKind": kind,
         "derived": True,
     }
 

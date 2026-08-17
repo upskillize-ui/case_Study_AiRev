@@ -27,6 +27,7 @@ past however good the work was:
 Each test below fails if its fault is reintroduced. That was checked by
 reintroducing each one.
 """
+import io
 import os
 import sys
 
@@ -433,3 +434,79 @@ def test_the_marker_is_told_not_to_score_provenance():
     rule = rp._JUDGE_INSTRUCTIONS.lower()
     assert "provenance is advisory, never scored" in rule
     assert "never lower a criterion" in rule
+
+
+# ── FAULT 9: the length trap, enforced instead of advised ─────────────────
+#
+# aggregate() takes up to 20 marks off an answer shorter than wordMin.
+# Derivation rule 2 tells the model to set word_min 0-40 when the deliverable
+# is an image, a link or a file. Day 06 came back submission_kind
+# "artifact_or_link" with word_min=100 anyway, so a learner who submitted the
+# song and a 40-word caption - exactly what was asked - lost 18 more marks.
+
+from app.services import rubric_service as rs2
+
+
+def test_a_caption_task_cannot_demand_an_essay():
+    assert rs2.cap_word_min(100, "artifact_or_link") == 40
+    assert rs2.cap_word_min(100, "image") == 40
+    assert rs2.cap_word_min(100, "file_or_workbook") == 40
+
+
+def test_an_essay_may_still_demand_length():
+    """The clamp must be narrow. A written task's minimum is legitimate."""
+    assert rs2.cap_word_min(300, "written") == 300
+    assert rs2.cap_word_min(100, "mixed") == 100
+
+
+def test_a_low_minimum_is_left_alone():
+    assert rs2.cap_word_min(30, "image") == 30
+    assert rs2.cap_word_min(0, "image") == 0
+
+
+def test_the_clamp_actually_removes_the_penalty():
+    """End to end through the real arithmetic: a 40-word caption on an image
+    task must take no length penalty at all."""
+    gated = {"breakdown": [{"criteria": "Image present", "maxScore": 100,
+                            "percentage": 80, "score": 80.0, "status": "good",
+                            "evidence": ["x"], "judgment": ""}],
+             "total_cap": 100, "error_deduction": 0, "gates_hit": []}
+    before = rp.aggregate(gated, 40, 100, 1500)
+    after = rp.aggregate(gated, 40, rs2.cap_word_min(100, "image"), 1500)
+    assert before["wordCountPenalty"] == 18, before
+    assert after["wordCountPenalty"] == 0, after
+
+
+# ── FAULT 10: images the cohort actually sends were refused ───────────────
+
+def test_every_image_format_a_learner_might_send_is_accepted():
+    """Day 01 is an AI-generated image. The course teaches a different image
+    tool most weeks and learners screenshot on whatever device is to hand, so
+    six formats was too narrow - a GIF or an AVIF was reported unreadable."""
+    for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif",
+                ".bmp", ".tif", ".tiff", ".heic", ".heif"):
+        assert ext in fx.IMAGE_EXTS, ext
+
+
+def test_native_formats_are_not_needlessly_converted():
+    """Re-encoding a PNG costs time and quality for nothing."""
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 40
+    out, media_type, why = fx._to_readable_image(png, ".png")
+    assert out is png and media_type == "image/png" and why == ""
+    _, gif_type, _ = fx._to_readable_image(b"GIF89a", ".gif")
+    assert gif_type == "image/gif", "GIF is readable natively; do not convert it"
+
+
+def test_a_non_native_format_is_converted_to_png():
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), (200, 30, 30)).save(buf, format="BMP")
+    out, media_type, why = fx._to_readable_image(buf.getvalue(), ".bmp")
+    assert why == "" and media_type == "image/png", why
+    assert out[:8] == b"\x89PNG\r\n\x1a\n", "conversion did not produce a PNG"
+
+
+def test_a_corrupt_image_reports_a_reason_a_learner_can_act_on():
+    out, _, why = fx._to_readable_image(b"not an image at all", ".bmp")
+    assert out == b"" and why, "a broken image must explain itself"
+    assert "bmp" in why.lower()

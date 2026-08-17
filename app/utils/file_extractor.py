@@ -44,7 +44,16 @@ MAX_OCR_PAGES = int(os.getenv("MAX_OCR_PAGES", "5"))                       # OCR
 from app.services.ai_service import HAIKU as _HAIKU
 OCR_MODEL = os.getenv("OCR_MODEL", _HAIKU)
 
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
+# What learners actually send. The cohort submits AI-generated images from a
+# different tool every day and screenshots from whatever device is to hand, so
+# the list is deliberately wider than "what the vision API accepts natively":
+# anything Pillow can open is converted to PNG on the way in (see
+# _to_readable_image), which is the same path HEIC has always used.
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif",
+              ".gif", ".bmp", ".tif", ".tiff", ".avif"}
+
+# Sent to the vision API untouched. Everything else in IMAGE_EXTS is converted.
+NATIVE_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 TEXT_EXTS  = {".txt", ".md"}
 # Audio/video. AiRev reviews WRITTEN work; there is nothing to extract from a
 # video. Named explicitly because the unknown-extension fallback used to decode
@@ -634,28 +643,38 @@ def _extract_rtf(data: bytes) -> Tuple[str, str]:
 
 # ---------- Image OCR ------------------------------------------------------
 
-def _extract_image(data: bytes, ext: str) -> Tuple[str, str]:
-    """OCR a single image (handwritten or printed)."""
-    media_type = _media_type_for_ext(ext)
+def _to_readable_image(data: bytes, ext: str) -> Tuple[bytes, str, str]:
+    """(bytes, media_type, error) — convert anything the vision API cannot read.
 
-    # Convert HEIC/HEIF -> PNG so Claude can read it
-    if ext in {".heic", ".heif"}:
-        try:
+    ONE conversion path for every non-native format instead of a special case
+    per extension. HEIC was handled and the rest were not, so a learner who
+    submitted a GIF or an AVIF — both ordinary outputs of the tools this course
+    teaches — was told their image could not be read.
+    """
+    if ext in NATIVE_IMAGE_EXTS:
+        return data, _media_type_for_ext(ext), ""
+    try:
+        from PIL import Image
+        if ext in {".heic", ".heif"}:
             import pillow_heif
-            from PIL import Image
             pillow_heif.register_heif_opener()
-            img = Image.open(io.BytesIO(data))
-            buf = io.BytesIO()
-            img.convert("RGB").save(buf, format="PNG", optimize=True)
-            data = buf.getvalue()
-            media_type = "image/png"
-        except ImportError:
-            return "", (
-                "HEIC images need pillow-heif. Either install it, "
-                "or convert the photo to JPG/PNG and re-upload."
-            )
-        except Exception as e:
-            return "", f"heic conversion failed: {e}"
+        img = Image.open(io.BytesIO(data))
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="PNG", optimize=True)
+        return buf.getvalue(), "image/png", ""
+    except ImportError as e:
+        return b"", "", (f"{ext} images need an extra package ({e.name}). Either "
+                         f"install it, or convert the picture to JPG or PNG and "
+                         f"re-upload.")
+    except Exception as e:
+        return b"", "", f"could not open this {ext} image: {type(e).__name__}"
+
+
+def _extract_image(data: bytes, ext: str) -> Tuple[str, str]:
+    """OCR a single image (handwritten, printed, or AI-generated)."""
+    data, media_type, why = _to_readable_image(data, ext)
+    if why:
+        return "", why
 
     b64 = base64.b64encode(data).decode()
     return _ocr_with_claude([(media_type, b64)], kind="photographed notes")
@@ -898,8 +917,7 @@ def _media_type_for_ext(ext: str) -> str:
         ".jpeg": "image/jpeg",
         ".png":  "image/png",
         ".webp": "image/webp",
-        ".heic": "image/heic",
-        ".heif": "image/heif",
+        ".gif":  "image/gif",
     }.get(ext, "image/png")
 
 
