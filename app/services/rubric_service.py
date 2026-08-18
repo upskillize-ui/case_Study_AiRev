@@ -150,7 +150,11 @@ RULES:
    - "The workflow steps were followed in order" -> NOT allowed (unless the learner submits the record of them)
    - "The lyrics are original and on the assigned theme" -> allowed (readable in the submission)
    - "A style/genre direction is stated"     -> allowed IF the submission is asked to contain it
-   Judge the OUTPUT the method was supposed to produce, and put the method's weight there. A rubric where the cohort cannot reach full marks however well they did the task is a broken rubric."""
+   Judge the OUTPUT the method was supposed to produce, and put the method's weight there. A rubric where the cohort cannot reach full marks however well they did the task is a broken rubric.
+9. CRITERIA MUST BE INDEPENDENT. Each one measures a DIFFERENT property of the submission. Never split a single property across two criteria, and never let one weakness be chargeable twice — a learner who did part of the task well must be able to earn those marks even where another part is weak.
+   - "5 concrete steps listed" (40) + "steps are specific and credible" (20) -> WRONG. Vague steps lose 60 marks for one flaw; the first criterion is about whether five steps EXIST.
+   - "Five steps are listed" (40) + "Steps are specific to the learner" (20) -> RIGHT. The first asks IF, the second asks HOW WELL, and each can be earned on its own.
+   Before you finish, read your criteria back and ask: could one shortcoming in the submission lower two of these? If so, merge them or rename the first so it measures only presence."""
 
 
 def _ensure_table(tenant) -> None:

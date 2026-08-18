@@ -115,6 +115,77 @@ def suspect_reason(name: str) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# OVERLAPPING CRITERIA — one weakness billed twice.
+#
+# Day 01's derived rubric, 17 Aug:
+#
+#     5 concrete steps to achieve the future self listed        40
+#     Steps are specific and credible to the student's context  20
+#
+# Student 1021 listed five numbered steps and named a real qualification, but
+# the steps were generic — so the marker deducted for genericness on BOTH, and
+# one flaw cost 60 of 100 marks. The first criterion asks whether five steps
+# EXIST; they did.
+#
+# Reported, never acted on automatically. Two criteria sharing a subject is
+# often perfectly correct ("image is present" / "steps are listed" both concern
+# the future self), and only a person can say whether the split is fair.
+# ---------------------------------------------------------------------------
+
+_QUALITY_WORDS = {
+    "specific", "credible", "concrete", "detailed", "clear", "quality",
+    "effective", "thorough", "relevant", "accurate", "depth", "strong",
+    "realistic", "actionable", "coherent", "compelling", "well",
+}
+_STOP = {
+    "the", "and", "are", "for", "with", "that", "this", "from", "into", "its",
+    "their", "student", "students", "learner", "submission", "answer", "work",
+    "context", "own", "year", "years", "five", "listed", "list",
+}
+
+
+def _subject_words(name: str) -> set:
+    return {w for w in re.findall(r"[a-z]+", (name or "").lower())
+            if len(w) >= 4 and w not in _STOP and w not in _QUALITY_WORDS}
+
+
+def overlapping_pairs(criteria: list) -> list:
+    """Pairs where one criterion grades the QUALITY of what another grades the
+    PRESENCE of. Returns [(name_a, name_b, shared_word)]. Pure.
+
+    BOTH sides must carry a quality word. That is the whole discriminator, and
+    it separates the two cases exactly:
+
+        "5 CONCRETE steps listed" + "steps are SPECIFIC and CREDIBLE"
+            -> both grade quality. Vague steps lose marks twice. FLAG.
+
+        "Five steps are listed" + "steps are SPECIFIC to the learner"
+            -> the first grades presence, the second quality. Correct split,
+               and each is earnable on its own. NOT flagged.
+
+    A shared word running through most criteria is the assignment's topic
+    rather than a duplicated measure, so it is ignored.
+    """
+    items = [c for c in (criteria or []) if (c or {}).get("name")]
+    words = [_subject_words(c["name"]) for c in items]
+    everywhere = {w for w in set().union(*words) if sum(w in s for s in words) > 2} \
+        if words else set()
+
+    out = []
+    for i in range(len(items)):
+        for j in range(i + 1, len(items)):
+            shared = (words[i] & words[j]) - everywhere
+            if not shared:
+                continue
+            both_grade_quality = all(
+                set(re.findall(r"[a-z]+", items[k]["name"].lower())) & _QUALITY_WORDS
+                for k in (i, j))
+            if both_grade_quality:
+                out.append((items[i]["name"], items[j]["name"], sorted(shared)[0]))
+    return out
+
+
 def classify(criterion: dict) -> tuple:
     """(verdict, reason) for one criterion. Pure — no I/O, so it is testable.
 
@@ -222,6 +293,13 @@ def report(scope_id: int, title: str, payload: dict, created_at=None) -> int:
         earns = str(c.get("whatEarnsIt") or "")[:150]
         if earns:
             print(f"      earns it: {earns}")
+
+    for a, b, word in overlapping_pairs(criteria):
+        print(f"\n  !! OVERLAP — both of these turn on '{word}':")
+        print(f"       {a}")
+        print(f"       {b}")
+        print(f"     One shortcoming can be charged against both, so a learner "
+              f"loses\n     twice for it. Check the first measures PRESENCE only.")
 
     trap = length_trap(word_min, kind)
     if trap:

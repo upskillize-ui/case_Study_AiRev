@@ -317,6 +317,9 @@ def main() -> None:
     ap.add_argument("--timeout", type=int, default=180, help="per-review seconds")
     ap.add_argument("--out", default="bulk_review_log.csv")
     ap.add_argument("--run", action="store_true", help="actually call the agent")
+    ap.add_argument("--offset", type=int, default=0,
+                    help="skip this many before taking --limit; walk a cohort "
+                         "in small batches without re-reviewing the same rows")
     ap.add_argument("--redo", action="store_true",
                     help="re-score submissions that ALREADY have a grade, "
                          "rewriting each row in place (assignments only). "
@@ -384,9 +387,21 @@ def main() -> None:
         if len(empty) > 10:
             print(f"    ... and {len(empty) - 10} more")
 
-    batch = ready[:args.limit]
-    print(f"\n{'WOULD REVIEW' if not args.run else 'REVIEWING'} {len(batch)} "
-          f"of {len(ready)} (limit {args.limit}, concurrency {args.concurrency}):")
+    # SMALL BATCHES. --limit alone re-reviews the same rows every run, because
+    # --redo deliberately ignores whether a row is already graded. --offset
+    # walks through the cohort in chunks you can watch:
+    #
+    #     --limit 25 --offset 0     first 25
+    #     --limit 25 --offset 25    next 25
+    #
+    # The order is stable (newest submission first), so the windows do not
+    # overlap and nothing is missed between runs.
+    batch = ready[args.offset:args.offset + args.limit]
+    window = (f"rows {args.offset + 1}-{args.offset + len(batch)} of {len(ready)}"
+              if args.offset else f"{len(batch)} of {len(ready)}")
+    print(f"\n{'WOULD REVIEW' if not args.run else 'REVIEWING'} {window} "
+          f"(limit {args.limit}, offset {args.offset}, "
+          f"concurrency {args.concurrency}):")
     for p in batch:
         src = f"{p.notes_len} chars" + (f" + {p.file_name}" if p.file_name else "")
         if args.redo:

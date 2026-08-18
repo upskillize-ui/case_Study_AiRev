@@ -120,3 +120,26 @@ def test_the_csv_header_carries_the_skip_reason():
     assert '"skipped"' in header, (
         "the skip reason is not in the CSV, so the learners who need chasing "
         "cannot be found from the log")
+
+
+# ── small batches must not re-review the same rows ────────────────────────
+#
+# --limit alone always takes the newest N, and --redo deliberately ignores
+# whether a row is graded, so running it repeatedly re-reviews the same
+# students and never reaches the rest of the cohort.
+
+def test_offset_windows_do_not_overlap_and_cover_everything():
+    rows = list(range(100))
+    seen = []
+    for offset in range(0, 100, 25):
+        seen.extend(rows[offset:offset + 25])
+    assert seen == rows, "walking in batches skipped or repeated rows"
+
+
+def test_bulk_review_exposes_an_offset():
+    import inspect
+    import bulk_review as b
+    src = inspect.getsource(b.main)
+    assert '"--offset"' in src, "no --offset, so small batches repeat the same rows"
+    assert "ready[args.offset:args.offset + args.limit]" in src, (
+        "--offset is declared but the batch is still sliced from the start")
