@@ -48,6 +48,27 @@ from app.database import set_current_tenant
 router = APIRouter(prefix="/api/review", tags=["assignment-review"])
 
 
+def scoring_knobs(adaptive: dict) -> tuple[dict, int, int]:
+    """(gate_overrides, word_min, word_max) for this task's submission kind.
+
+    Written/mixed tasks keep their derived word limits and every gate — an
+    essay may fairly be told it is too short or too long.
+
+    Non-written tasks (image, deliverable, link) get the limits WAIVED
+    (0 / 999999, the capstone idiom), not just lowered. The derived limits
+    describe a typed caption, but word_count counts everything readable —
+    including OCR text extracted from the learner's file. Student 405's
+    image carried a complete 494-word plan and was fined 5 marks for
+    'exceeding' a 150-word caption guide: the learner never wrote past any
+    limit, we read a thorough deliverable and then charged her for its
+    thoroughness. The generic-answer gate stays off for the same reason it
+    always was (criterion-name matching misfires on non-written work).
+    """
+    if adaptive.get("submissionKind") in ("written", "mixed"):
+        return {}, adaptive["wordMin"], adaptive["wordMax"]
+    return {"generic_answer_cap": 100}, 0, 999999
+
+
 # ASYNC, and it MUST stay async. FastAPI runs a SYNC dependency in a worker
 # thread via anyio, which gives it a COPY of the contextvar context — so
 # set_current_tenant() wrote the tenant into a context that was discarded the
@@ -359,19 +380,13 @@ def submit_and_review_assignment(
     adaptive = rubric_service.get_or_derive(
         tenant, "assignment", req.assignmentId, assignment)
     adaptive_rubric = {"criteria": adaptive["criteria"]}
-    word_min, word_max = adaptive["wordMin"], adaptive["wordMax"]
     # AUDIT: `assignment` is ALSO the knowledge-pack source. Mutating it here
     # changed the pack's content hash and staled every pack, so the derived
     # rubric travels separately and the task text stays untouched.
-
-    # AUDIT: apply_gates decides "case specificity" by substring-matching
-    # criterion NAMES ("evidence", "application", "practical" ...). With
-    # free-text derived names that fired by accident, capping a criterion at
-    # 40% and telling the student they "never engaged this case's facts" — on
-    # tasks that have no case at all. Disable that gate for non-written
-    # deliverables, where there is no source material to be specific about.
-    gate_overrides = ({} if adaptive.get("submissionKind") in ("written", "mixed")
-                      else {"generic_answer_cap": 100})
+    #
+    # Gates + word limits both depend on the task's submission kind — one
+    # decision, made once, in scoring_knobs() (shared with the regrade route).
+    gate_overrides, word_min, word_max = scoring_knobs(adaptive)
 
     # ── Evidence-gated pipeline (primary path) ─────────────────────────────
     if _PIPELINE_ON:
@@ -696,14 +711,13 @@ def re_review_assignment(
 
     adaptive = rubric_service.get_or_derive(
         tenant, "assignment", row["assignment_id"], assignment)
-    gate_overrides = ({} if adaptive.get("submissionKind") in ("written", "mixed")
-                      else {"generic_answer_cap": 100})
+    gate_overrides, word_min, word_max = scoring_knobs(adaptive)
 
     r = review_pipeline.review_with_knowledge(
         scope_type="assignment", scope_id=row["assignment_id"],
         raw_source=assignment, rubric={"criteria": adaptive["criteria"]},
         student_answer=f"{manifest}\n{content}".strip(), word_count=word_count,
-        word_limit_min=adaptive["wordMin"], word_limit_max=adaptive["wordMax"],
+        word_limit_min=word_min, word_limit_max=word_max,
         gate_overrides=gate_overrides, student_id=row["student_id"],
     )
     if r is None:
