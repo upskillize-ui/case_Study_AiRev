@@ -36,7 +36,14 @@ def build(result: dict, max_marks: int = 100, score_marks: Optional[float] = Non
 
         # ── The review body ──
         "summary":          result.get("summary", ""),
-        "rubricScores":     result.get("rubricScores", []),
+        # Rubric framework is FACULTY-facing (policy, 18 Aug 2026): students
+        # see total marks + pointwise feedback; the per-criterion table and
+        # scoring narrative are stored under facultyView for staff surfaces.
+        # A result that still carries top-level rubricScores (legacy writers)
+        # is folded in rather than dropped — the data is kept, just re-homed.
+        "facultyView":      result.get("facultyView")
+                            or ({"rubricScores": result["rubricScores"]}
+                                if result.get("rubricScores") else {}),
         "strengths":        result.get("strengths", []),
         "improvements":     result.get("improvements", []),
         "feedbackPoints":   result.get("feedbackPoints", []),

@@ -468,21 +468,35 @@ def call_structured(blocks: list, schema: dict, tier: str = "default",
     else:
         kwargs["temperature"] = 0
 
-    response, _provider = create_message(**kwargs)
-    _report_usage(model, getattr(response, "usage", None))
-    for block in response.content:
-        if getattr(block, "type", None) == "tool_use" and block.name == "emit_result":
-            return block.input
-    # No tool call (rare) — try to parse a JSON object from any text block.
-    text = _first_text(response)
-    if text:
-        import json as _json, re as _re
-        m = _re.search(r"\{[\s\S]*\}", text)
-        if m:
-            try:
-                return _json.loads(m.group(0))
-            except Exception:
-                pass
+    # ONE retry on an empty result. Live on 19 Aug this raised three times in
+    # a morning — the model occasionally answers with neither a tool call nor
+    # parseable text, the exception rode up to the route as a bare 500, and a
+    # staff regrade or a student's submit simply failed. The failure is
+    # stochastic (an immediate identical re-send succeeded), so a single
+    # retry converts it from a user-visible 500 into a log line. On the
+    # deterministic path the retry also FORCES the tool call — forcing is
+    # only incompatible with thinking, which that path does not use.
+    for attempt in (1, 2):
+        response, _provider = create_message(**kwargs)
+        _report_usage(model, getattr(response, "usage", None))
+        for block in response.content:
+            if getattr(block, "type", None) == "tool_use" and block.name == "emit_result":
+                return block.input
+        # No tool call (rare) — try to parse a JSON object from any text block.
+        text = _first_text(response)
+        if text:
+            import json as _json, re as _re
+            m = _re.search(r"\{[\s\S]*\}", text)
+            if m:
+                try:
+                    return _json.loads(m.group(0))
+                except Exception:
+                    pass
+        if attempt == 1:
+            print(f"[AI] no structured result from {model} — retrying once"
+                  + ("" if thinking_budget else " with forced tool choice"))
+            if not thinking_budget:
+                kwargs["tool_choice"] = {"type": "tool", "name": "emit_result"}
     raise Exception(f"Model returned no structured result (model={model})")
 
 

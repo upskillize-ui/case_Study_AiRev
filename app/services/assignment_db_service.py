@@ -234,6 +234,31 @@ def update_assignment_submission_with_ai_results(tenant: Tenant, submission_id: 
     )
 
 
+def mark_not_graded(tenant: Tenant, submission_id: int, message: str) -> None:
+    """Record that this submission is deliberately NOT graded (wrong-task
+    policy): the attached work belongs to a different task, so it carries no
+    score — including any wrong low score written before the rule existed.
+
+    grade=NULL + status='submitted' keeps the row out of _graded_by_human's
+    protection (nothing human here) and back in the reviewable queue, so the
+    learner's corrected resubmission flows through the normal upsert path.
+    """
+    payload = {
+        "notGraded": True,
+        "reviewedBy": "airev",
+        "message": message,
+    }
+    texecute(
+        tenant,
+        """UPDATE assignment_submissions SET
+            grade    = NULL,
+            feedback = %s,
+            status   = 'submitted'
+          WHERE id = %s""",
+        (json.dumps(payload, ensure_ascii=False), submission_id),
+    )
+
+
 def scaled_marks(percent, max_marks: int) -> float:
     """0-100 rubric percentage -> the assignment's own marks scale.
 

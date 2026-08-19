@@ -400,6 +400,27 @@ def submit_and_review_assignment(
                 gate_overrides=gate_overrides,
                 student_id=req.studentId,
             )
+            if r is not None and r.get("wrongTask", {}).get("declared"):
+                # Policy: wrong work is NOT graded — no score, low or
+                # otherwise. The row stays status='submitted' with no grade
+                # (the upsert already cleared any old one), so the learner can
+                # attach the right work and the item remains reviewable.
+                what = r["wrongTask"]["whatItIs"] or "work for a different task"
+                print(f"[ASSIGNMENT] NOT GRADED (wrong task): {what} — "
+                      f"no mark written")
+                return {
+                    "success": True,
+                    "status": "wrong_task",
+                    "needsInput": True,
+                    "submission": submission,
+                    "feedback": _empty_feedback(
+                        (f"We haven't scored this. What you attached looks like "
+                         f"{what} — not this assignment's task "
+                         f"(“{assignment['title']}”). Attach the right "
+                         f"work for this assignment and submit again; no score "
+                         f"has been recorded."), helpful=True),
+                    "processingTimeMs": int((time.time() - start_time) * 1000),
+                }
             if r is not None:
                 prefilter_service.flag_review_outcomes(
                     "assignment", req.assignmentId, req.studentId,
@@ -561,9 +582,41 @@ def _graded_by_human(row: dict) -> bool:
         return True
     if str(fb.get("reviewedBy", "")).lower() in ("mentor", "faculty", "human"):
         return True
-    agent_markers = ("rubricScores", "aiLikelihoodPercent", "howYouScored",
-                     "authorship", "detailedFeedback")
+    agent_markers = ("rubricScores", "facultyView", "aiLikelihoodPercent",
+                     "howYouScored", "authorship", "detailedFeedback")
     return not any(k in fb for k in agent_markers)
+
+
+def _prior_word_count(row: dict) -> int:
+    """How many words the row's LAST stored review actually read (0 if none).
+
+    review_payload.build records wordCount in every feedback blob, so a graded
+    row carries a receipt of how much content its review was based on.
+    """
+    blob = row.get("feedback")
+    if not blob:
+        return 0
+    try:
+        fb = json.loads(blob) if isinstance(blob, str) else blob
+        return int(fb.get("wordCount") or 0) if isinstance(fb, dict) else 0
+    except (ValueError, TypeError):
+        return 0
+
+
+def content_shrunk(prior_words: int, current_words: int) -> bool:
+    """True when this regrade read materially less than the stored review saw.
+
+    Live case, 19 Aug: student 1233 held a 7.1/10 from a run that read her
+    image in full; a batch regrade re-fetched the image, got much less back
+    (intermittent CDN/OCR), scored the remnant 2.7 and OVERWROTE the honest
+    mark. Reading less than half of what a prior review read is not a changed
+    judgement — it is a degraded copy of the input, and a degraded copy must
+    never replace a mark earned on the full one.
+
+    prior >= 60 keeps the guard off caption-sized rows, where a few words of
+    natural OCR variance would trip a ratio test.
+    """
+    return prior_words >= 60 and current_words < prior_words * 0.5
 
 
 # ---------- POST /api/review/re-review/assignment/{submission_id} ----------
@@ -700,6 +753,24 @@ def re_review_assignment(
                            "learner to add a few lines describing what they made "
                            "and how, then re-review.")}
 
+    # Rule 2, extended: reading LESS than the stored review saw is a fetch
+    # problem, not a performance change — refuse to replace a mark earned on
+    # the full input with one scored on a degraded copy. See content_shrunk.
+    prior_words = _prior_word_count(row)
+    if content_shrunk(prior_words, word_count) and not force:
+        print(f"[REGRADE] submission {submission_id}: content shrank "
+              f"{prior_words} -> {word_count} words — row untouched "
+              f"(pass force=true to override)")
+        return {"success": False, "skipped": "content_shrunk",
+                "submissionId": submission_id,
+                "previousGrade": previous_grade,
+                "artefacts": inventory,
+                "detail": (f"The stored review was based on {prior_words} words of "
+                           f"readable content; this attempt could only read "
+                           f"{word_count}. The file likely failed to fetch in "
+                           f"full — the existing grade stands. Re-run later, or "
+                           f"force=true to overwrite anyway.")}
+
     if dryRun:
         return {"success": True, "dryRun": True,
                 "submissionId": submission_id,
@@ -723,6 +794,29 @@ def re_review_assignment(
     if r is None:
         raise HTTPException(status_code=503,
                             detail="Reviewer unavailable — row left unchanged.")
+
+    if r.get("wrongTask", {}).get("declared"):
+        # Wrong work carries NO grade — including the wrong low one it may
+        # hold from before this rule existed (student 1151's investment deck
+        # was scored 1.2/10 on the 5-year-plan task; policy says it should
+        # never have been scored at all). Clear the mark, tell the learner
+        # what arrived, leave the row 'submitted' so the right work can come.
+        what = r["wrongTask"]["whatItIs"] or "work for a different task"
+        assignment_db_service.mark_not_graded(
+            tenant, submission_id,
+            (f"Not graded: what you attached looks like {what} — not this "
+             f"assignment's task (“{assignment.get('title', '')}”). Attach "
+             f"the right work for this assignment and submit again."))
+        print(f"[REGRADE] submission {submission_id}: NOT GRADED (wrong task: "
+              f"{what}) — grade cleared, was {previous_grade}")
+        return {"success": False, "skipped": "wrong_task",
+                "submissionId": submission_id,
+                "previousGrade": previous_grade,
+                "artefacts": inventory,
+                "detail": (f"Recognized as {what}, not this assignment's task. "
+                           f"Grade cleared per policy — wrong work is not "
+                           f"graded. The learner should resubmit the correct "
+                           f"deliverable.")}
 
     # Same persistence the normal path uses, pointed at the EXISTING row.
     # attemptNumber is echoed from the row so nothing downstream invents a
@@ -788,8 +882,14 @@ def _pipeline_assignment_response(tenant, submission, r, word_count, start_time,
     result = {
         "totalScore":       scores["totalScore"],
         "grade":            grade,
-        "rubricScores":     scoring_service.scale_rubric(
-                                scores["rubricBreakdown"], max_marks),
+        # Rubric framework is FACULTY-facing (policy, 18 Aug): the student
+        # card shows total marks + pointwise feedback only; the per-criterion
+        # table and scoring narrative live under facultyView, where the mentor
+        # dashboard and any human re-review can still read them. Internal
+        # scoring is unchanged — this moves presentation, not judgement.
+        "facultyView":      {"rubricScores": scoring_service.scale_rubric(
+                                 scores["rubricBreakdown"], max_marks),
+                             "howYouScored": r["howYouScored"]},
         "penaltyPercent":   scores.get("wordCountPenalty", 0),
         "strengths":        r["strengths"],
         "improvements":     r["improvements"],
@@ -821,7 +921,9 @@ def _pipeline_assignment_response(tenant, submission, r, word_count, start_time,
           f"path={r['decisions']['scoringPath']} gates={len(scores['gatesHit'])}")
 
     response = _build_response(submission, result, summary, start_time, max_marks)
-    response["feedback"]["howYouScored"]   = r["howYouScored"]
+    # languageReport and factualErrors stay student-facing: grammar fixes and
+    # factual corrections are feedback the learner can act on. The scoring
+    # narrative (howYouScored) moved to facultyView with the rubric table.
     response["feedback"]["languageReport"] = r["languageReport"]
     response["feedback"]["factualErrors"]  = r["factualErrors"]
     response["_meta"] = {"pipeline": r["decisions"]}
@@ -846,7 +948,12 @@ def _build_response(submission: dict, result: dict, summary: str, start_time: fl
             "grade":                  result["grade"],
             "scoreEmoji":             result.get("scoreEmoji", "—"),
             "summary":                summary,
-            "rubricScores":           result.get("rubricScores", []),
+            # No rubricScores here: the student card is total marks +
+            # pointwise feedback (policy, 18 Aug). Rubric detail, if any,
+            # travels under facultyView for staff surfaces only.
+            "facultyView":            result.get("facultyView")
+                                      or ({"rubricScores": result["rubricScores"]}
+                                          if result.get("rubricScores") else {}),
             "strengths":              result.get("strengths", []),
             "improvements":           result.get("improvements", []),
             "missingConcepts":        result.get("missingConcepts", []),

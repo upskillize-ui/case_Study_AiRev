@@ -212,8 +212,12 @@ def test_stored_payload_carries_every_rendered_field():
     p = review_payload.build(result, max_marks=10, score_marks=3.7)
     for field in ("feedbackPoints", "hardTruth", "detailedFeedback", "summary",
                   "strengths", "improvements", "missingConcepts",
-                  "encouragement", "nextAction", "rubricScores"):
+                  "encouragement", "nextAction"):
         assert p[field], f"{field} missing from stored review"
+    # Policy change 18 Aug: the rubric table is FACULTY-facing now — re-homed
+    # under facultyView, never shown on the student card, never dropped.
+    assert "rubricScores" not in p
+    assert p["facultyView"]["rubricScores"], "rubric detail lost, not re-homed"
     assert p["outOf"] == 10 and p["scoreMarks"] == 3.7
     assert p["scorePercent"] == 37
     assert p["reviewedBy"] == "ai"

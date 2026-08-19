@@ -286,10 +286,40 @@ REVIEW_SCHEMA = {
             },
             "required": ["ai_likelihood_percent", "reason"],
         },
+        # Distinct from is_garbage: garbage is not work at all; wrong_task is
+        # REAL work that belongs to a DIFFERENT task — an investment-analysis
+        # deck submitted where a 5-year-plan image was asked for. Policy: such
+        # work is NOT graded (no score, low or otherwise) — the learner is told
+        # what arrived and asked to attach the right work. Declaring it here is
+        # advisory; Python only acts on it when the rubric total independently
+        # corroborates (a genuinely on-task answer cannot be un-graded by a
+        # stray declaration).
+        "wrong_task": {
+            "type": "object",
+            "properties": {
+                "is_wrong_task": {
+                    "type": "boolean",
+                    "description": (
+                        "TRUE only when the submission is recognizably a "
+                        "different task's work: a document, deck, image or "
+                        "link whose subject matter does not attempt THIS "
+                        "task at all. FALSE for every attempt at this task, "
+                        "however weak, partial or off-format."),
+                },
+                "what_it_is": {
+                    "type": "string",
+                    "description": ("Only when is_wrong_task is true: one plain "
+                                    "sentence naming what the submitted work "
+                                    "actually appears to be."),
+                },
+            },
+            "required": ["is_wrong_task", "what_it_is"],
+        },
     },
     "required": ["is_garbage", "garbage_reason", "criteria", "concepts_covered",
                  "concepts_missing", "factual_errors", "strengths", "improvements",
-                 "feedback_points", "hard_truth", "language_report", "authorship"],
+                 "feedback_points", "hard_truth", "language_report", "authorship",
+                 "wrong_task"],
 }
 
 _JUDGE_INSTRUCTIONS = """You are AiRev's examiner. Judge the student's answer against the AGENT KNOWLEDGE above — it is your only ground truth. Be exacting in judgement, constructive in wording.
@@ -308,7 +338,8 @@ NON-NEGOTIABLE METHOD:
 9b. THE SCORE MUST MATCH YOUR OWN JUDGMENT. If your judgment for a criterion states the requirement is met, score_pct must say the same (70+). If it states the requirement is partly met, score in the middle. A judgment that praises while the score punishes is a contradiction the learner will read side by side.
 9c. NEVER DEDUCT FOR UNPROVABLE PROVENANCE. "No evidence the image was AI-generated", "cannot confirm which tool made this" — a finished artifact carries no record of its maker, so these statements are about YOUR visibility, not the learner's work. If the task asked for an AI-generated artifact and a plausible artifact is present, the generation requirement is satisfied.
 10. ONE WEAKNESS, ONE DEDUCTION. Judge each criterion strictly on what ITS OWN name asks and nothing else. If a rubric has "five steps are listed" and "the steps are specific", vague steps cost marks on the SECOND only — the first asks whether five steps exist, and they do. Charging one shortcoming against two criteria takes 60 marks for a single flaw and buries the part the learner actually did. Where two criteria overlap, credit the narrower reading of each.
-11. HOW THE WORK WAS MADE IS NOT A SCORING FACT. Never lower a criterion because you cannot tell which AI drafted it, which settings were toggled, or in what order the steps were taken. A finished artifact carries no record of its own making, so "no evidence ChatGPT was used" is a statement about your visibility, not about the learner's work — and deducting for it fails every learner equally, including the ones who followed the method exactly. Judge the OUTPUT the method was meant to produce. This is the same rule as the authorship estimate above: provenance is advisory, never scored."""
+11. HOW THE WORK WAS MADE IS NOT A SCORING FACT. Never lower a criterion because you cannot tell which AI drafted it, which settings were toggled, or in what order the steps were taken. A finished artifact carries no record of its own making, so "no evidence ChatGPT was used" is a statement about your visibility, not about the learner's work — and deducting for it fails every learner equally, including the ones who followed the method exactly. Judge the OUTPUT the method was meant to produce. This is the same rule as the authorship estimate above: provenance is advisory, never scored.
+12. WRONG WORK IS NOT LOW-QUALITY WORK. If the submission is recognizably a DIFFERENT task's deliverable — a slide deck of investment analysis where a 5-year career-plan image was asked for, a link to an unrelated artifact — set wrong_task.is_wrong_task=true and name what it is in what_it_is. Do not stretch the rubric over it and do not score it as a weak attempt: the policy for wrong work is NO grade, not a low grade. A weak, partial or badly formatted attempt AT THIS TASK is never wrong_task — that is a low score with reasons."""
 
 
 # ─── Pure functions: gates + aggregation (unit-tested, no I/O) ───────────────
@@ -702,6 +733,19 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
     review = tidy_review(review)
     scores = aggregate(gated, word_count, word_limit_min, word_limit_max)
 
+    # Wrong-task: the model DECLARES, the arithmetic CORROBORATES, Python
+    # decides. Policy (Ranjana, 18 Aug): work that belongs to a different task
+    # is not graded at all — "do not grade or give score" — the learner is
+    # asked to attach the right work. The declaration alone is not enough: a
+    # rubric total ≥ 40 means the answer earned real marks against THIS task's
+    # criteria, so the declaration is wrong and is ignored. Routes act on
+    # wrongTask["declared"]; the score object still travels for logging.
+    wrong = review.get("wrong_task") or {}
+    wrong_task = {
+        "declared": bool(wrong.get("is_wrong_task")) and scores["totalScore"] < 40,
+        "whatItIs": (wrong.get("what_it_is") or "").strip(),
+    }
+
     # Authorship is ADVISORY — a missing or malformed field must never crash
     # the scoring pipeline (live 22 Jul: KeyError 'authorship' dropped a review
     # to the legacy path). Default to an honest "uncertain" estimate instead.
@@ -745,6 +789,7 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
         },
         "isGarbage": False,
         "garbageWarning": "",
+        "wrongTask": wrong_task,
         "decisions": {"packVersion": pack_version, "scoringPath": scoring_path,
                       "gatesHit": scores["gatesHit"]},
     }
