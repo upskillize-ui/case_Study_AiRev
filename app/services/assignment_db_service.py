@@ -234,16 +234,27 @@ def update_assignment_submission_with_ai_results(tenant: Tenant, submission_id: 
     )
 
 
-def mark_not_graded(tenant: Tenant, submission_id: int, message: str) -> None:
-    """Record that this submission is deliberately NOT graded (wrong-task
-    policy): the attached work belongs to a different task, so it carries no
-    score — including any wrong low score written before the rule existed.
+def mark_not_graded(tenant: Tenant, submission_id: int, message: str,
+                    card: dict | None = None) -> None:
+    """Record that this submission is deliberately NOT graded, and tell the
+    LEARNER why on their own review card.
+
+    Used for every student-side blocker — wrong-task work, an unreadable
+    file, a submission with nothing to read. Policy (19 Aug): "if it student
+    side fault show them what is the issue so they can re-submit or next time
+    don't repeat same issue." A skip that lives only in a staff CSV teaches
+    nobody; the row must carry the explanation the student will actually see.
+
+    `card` is an optional renderable feedback shape (the route's
+    _empty_feedback) so existing review components display the message
+    without special-casing; notGraded/reviewedBy/message are stamped on top.
 
     grade=NULL + status='submitted' keeps the row out of _graded_by_human's
     protection (nothing human here) and back in the reviewable queue, so the
     learner's corrected resubmission flows through the normal upsert path.
     """
     payload = {
+        **(card or {}),
         "notGraded": True,
         "reviewedBy": "airev",
         "message": message,

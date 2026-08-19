@@ -414,11 +414,10 @@ def submit_and_review_assignment(
                     "needsInput": True,
                     "submission": submission,
                     "feedback": _empty_feedback(
-                        (f"We haven't scored this. What you attached looks like "
-                         f"{what} — not this assignment's task "
-                         f"(“{assignment['title']}”). Attach the right "
-                         f"work for this assignment and submit again; no score "
-                         f"has been recorded."), helpful=True),
+                        (f"Not graded: your file looks like {what}, not the "
+                         f"work this assignment asked for "
+                         f"(“{assignment['title']}”). Please attach the "
+                         f"correct work and submit again."), helpful=True),
                     "processingTimeMs": int((time.time() - start_time) * 1000),
                 }
             if r is not None:
@@ -587,6 +586,23 @@ def _graded_by_human(row: dict) -> bool:
     return not any(k in fb for k in agent_markers)
 
 
+def _tell_student_why(tenant, submission_id: int, message: str) -> None:
+    """Write a student-side blocker onto the student's own review card.
+
+    Policy (Ranjana, 19 Aug): "if it student side fault show them what is the
+    issue so they can re-submit or next time don't repeat same issue." Only
+    ever called for rows with NO grade — a row holding a real review must
+    never have it replaced by an explanation of a later failed read. Failure
+    to write the note must never break the skip response it accompanies.
+    """
+    try:
+        assignment_db_service.mark_not_graded(
+            tenant, submission_id, message,
+            card=_empty_feedback(message, helpful=False))
+    except Exception as e:
+        print(f"[REGRADE] could not write student note on {submission_id}: {e}")
+
+
 def _prior_word_count(row: dict) -> int:
     """How many words the row's LAST stored review actually read (0 if none).
 
@@ -727,9 +743,18 @@ def re_review_assignment(
                    "readable": a.readable, "note": a.note} for a in artefacts])
 
     if not content:
-        # Rule 2. Report it and leave the row exactly as it is.
+        # Rule 2. The grade (if any) stays; but a NEVER-graded row is a
+        # student-side blocker the student cannot see from a staff CSV —
+        # write the reason onto their card so they know to resubmit.
         print(f"[REGRADE] submission {submission_id}: nothing readable "
               f"({intake.first_error(artefacts) or 'no stored work'}) — row untouched")
+        if previous_grade is None:
+            # Simple English by policy: short words, one problem, one fix.
+            _tell_student_why(tenant, submission_id, (
+                "We could not open your file, and there was no written "
+                "answer. No marks given yet. Please upload your work again "
+                "(image, PDF or Word), or type your answer in the box, then "
+                "click Submit."))
         return {"success": False, "skipped": "no_readable_content",
                 "submissionId": submission_id,
                 "previousGrade": previous_grade,
@@ -744,6 +769,12 @@ def re_review_assignment(
         print(f"[REGRADE] submission {submission_id}: deliverable present but "
               f"unreadable ({intake.substantive_words(content)} words of answer) "
               f"— row untouched")
+        if previous_grade is None:
+            _tell_student_why(tenant, submission_id, (
+                "You submitted a file or link, but we could not open it. "
+                "No marks given yet. Please upload the file again (image, "
+                "PDF or Word) — or write a few lines about your work in the "
+                "answer box — then click Submit."))
         return {"success": False, "skipped": "unassessable_deliverable",
                 "submissionId": submission_id,
                 "previousGrade": previous_grade,
@@ -802,11 +833,13 @@ def re_review_assignment(
         # never have been scored at all). Clear the mark, tell the learner
         # what arrived, leave the row 'submitted' so the right work can come.
         what = r["wrongTask"]["whatItIs"] or "work for a different task"
+        wrong_msg = (f"Not graded: your file looks like {what}, not the work "
+                     f"this assignment asked for "
+                     f"(“{assignment.get('title', '')}”). Please attach the "
+                     f"correct work and submit again.")
         assignment_db_service.mark_not_graded(
-            tenant, submission_id,
-            (f"Not graded: what you attached looks like {what} — not this "
-             f"assignment's task (“{assignment.get('title', '')}”). Attach "
-             f"the right work for this assignment and submit again."))
+            tenant, submission_id, wrong_msg,
+            card=_empty_feedback(wrong_msg, helpful=False))
         print(f"[REGRADE] submission {submission_id}: NOT GRADED (wrong task: "
               f"{what}) — grade cleared, was {previous_grade}")
         return {"success": False, "skipped": "wrong_task",
