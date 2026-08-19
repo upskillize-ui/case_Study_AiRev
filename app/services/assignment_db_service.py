@@ -2,14 +2,19 @@
 # ---------------------------------------------------------------------------
 # DB queries for assignments (separate table from case studies).
 #
-# CHANGED:
-#   - save_assignment_submission: INSERTs a new row for every attempt.
-#     The old version UPDATEd an existing row, which overwrote prior
-#     attempts and made history impossible. Logs were showing
-#     "saved submission id=10, attempt=1" repeatedly because of this.
-#   - get_assignment_history: NEW. Returns all attempts by a student
-#     on an assignment, newest first. Used by the frontend to show the
-#     previous review on reopen with a Re-analyze button.
+# CHANGED (18 Aug 2026):
+#   - save_assignment_submission: atomic upsert, ONE row per
+#     (assignment_id, student_id). The production DB now carries
+#     UNIQUE KEY uq_submission (assignment_id, student_id) — added to
+#     close the LMS duplicate-row race — so the previous
+#     INSERT-per-attempt design threw 1062 on every resubmission made
+#     through AiRev's own UI (live log: "Duplicate entry '17-731' for
+#     key 'assignment_submissions.uq_submission'"). Latest-only is now
+#     the policy AND the schema: a resubmit replaces the row in place,
+#     exactly like the LMS Coursework handler.
+#   - get_assignment_history: still returns rows newest first; with the
+#     unique key there is at most one row per student, so "history" is
+#     the latest attempt. Kept for the frontend contract.
 #
 # Multi-tenant: every function takes an explicit `tenant` argument and uses
 # tquery/texecute, NOT query/execute. Tenant is passed through the call chain
@@ -162,30 +167,41 @@ def save_assignment_submission(
     file_name: str | None,
 ) -> dict:
     """
-    INSERTs a NEW row for every attempt. Never overwrites prior submissions.
+    Atomic upsert: ONE row per (assignment_id, student_id), enforced by the
+    DB's UNIQUE KEY uq_submission. A resubmit replaces the row's content and
+    clears the stale grade/feedback so the new review can't sit beside an old
+    score. Mirrors the LMS Coursework handler — the two writers now share one
+    shape, so neither can 1062 the other.
 
-    The old code UPDATEd the existing row, which erased history and made
-    'attempt #1' show forever no matter how many times the student resubmitted.
+    `id = LAST_INSERT_ID(id)` is load-bearing: on the UPDATE branch of an
+    upsert, cursor.lastrowid is otherwise meaningless — this trick makes
+    texecute() return the EXISTING row's id, which the pipeline then writes
+    the AI results into. Without it, a resubmit would grade the wrong row.
+
+    attemptNumber: with one row per pair, row-counting can no longer number
+    attempts. The value is display-only (log line + response echo); the
+    re-review policy in the route reads status/notes BEFORE this write and is
+    unaffected. Reported as 1 — the row IS the current attempt.
     """
     submission_id = texecute(
         tenant,
         """INSERT INTO assignment_submissions
            (assignment_id, student_id, notes, file_path, file_name,
             status, submitted_at)
-           VALUES (%s, %s, %s, %s, %s, 'submitted', NOW())""",
+           VALUES (%s, %s, %s, %s, %s, 'submitted', NOW())
+           ON DUPLICATE KEY UPDATE
+             id           = LAST_INSERT_ID(id),
+             notes        = VALUES(notes),
+             file_path    = VALUES(file_path),
+             file_name    = VALUES(file_name),
+             status       = 'submitted',
+             submitted_at = NOW(),
+             grade        = NULL,
+             feedback     = NULL""",
         (assignment_id, student_id, answer_text or "", file_url, file_name),
     )
 
-    # Real attempt number = how many submissions this student now has.
-    attempts = tquery(
-        tenant,
-        "SELECT COUNT(*) AS n FROM assignment_submissions "
-        "WHERE assignment_id = %s AND student_id = %s",
-        (assignment_id, student_id),
-    )
-    attempt_number = attempts[0]["n"] if attempts else 1
-
-    return {"submissionId": submission_id, "attemptNumber": attempt_number}
+    return {"submissionId": submission_id, "attemptNumber": 1}
 
 
 def update_assignment_submission_with_ai_results(tenant: Tenant, submission_id: int,

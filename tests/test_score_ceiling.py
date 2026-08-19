@@ -600,3 +600,31 @@ def test_plain_text_variants_are_read():
     for name in ("notes.txt", "notes.md", "notes.log", "notes.rst"):
         text, why = fx.extract_text_from_bytes(b"I want to be an analyst", name)
         assert "analyst" in text, (name, why)
+
+
+# ── FAULT 13: the marker praised the work and punished the score ──────────
+#
+# Student 405, live 19 Aug. Their image contained the full structured plan.
+# The marker's own judgments: "Five distinct steps clearly articulated,
+# labeled Year 1-5" (scored 35%), "specific, actionable tasks - 'Start a
+# blog', 'Publish first eBook'" (scored 22%), and the image criterion was
+# shaved to 25% for "no evidence of AI [generation]". 2.3/10 for a completed
+# assignment. Three prompt rules close it: file content IS the submission,
+# the score must match the judgment, and unprovable provenance never deducts.
+
+def test_the_judge_is_told_file_content_is_the_submission():
+    j = rp._JUDGE_INSTRUCTIONS
+    assert "FILE CONTENT IS THE SUBMISSION" in j
+    assert "exactly as if it were typed" in j
+
+
+def test_the_judge_is_told_scores_must_match_judgments():
+    j = rp._JUDGE_INSTRUCTIONS
+    assert "SCORE MUST MATCH" in j
+    assert "score_pct must say the same" in j
+
+
+def test_the_judge_is_told_ai_generation_cannot_be_demanded():
+    j = rp._JUDGE_INSTRUCTIONS
+    assert "UNPROVABLE PROVENANCE" in j
+    assert "AI-generated" in j
