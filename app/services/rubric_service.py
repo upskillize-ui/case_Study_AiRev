@@ -48,7 +48,13 @@ _TABLE = "derived_rubrics"
 #       learner scored 0 and 15% on those, so the cohort ceiling was 6.5/10
 #       before anyone was judged on the song itself. The task does name those
 #       steps; the rubric's job is to measure what the SUBMISSION can show.
-RUBRIC_VERSION = 4
+#   v5: rule 9 (criteria must be INDEPENDENT). Assignments 17 and 23 had
+#       already re-derived under v4, so without this bump they would keep the
+#       overlapping criteria that cost student 1021 sixty marks for one flaw —
+#       the fix would ship and change nothing for the two assignments it was
+#       written for. The version is part of the cache key: change the RULES,
+#       change the number, or the rules do not reach the cohort.
+RUBRIC_VERSION = 5
 # Per-tenant: one tenant's CREATE TABLE must never suppress another's.
 _tables_ready: set = set()
 

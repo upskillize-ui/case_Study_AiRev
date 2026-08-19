@@ -373,7 +373,12 @@ def test_dropping_a_criterion_does_not_cost_the_learner_its_weight():
 def test_the_rubric_version_forces_cached_rubrics_to_rebuild():
     """Day 06's bad rubric is CACHED in derived_rubrics. Without a version bump
     the fix ships and every assignment keeps grading against the old criteria."""
-    assert rs.RUBRIC_VERSION >= 4
+    # Bumped to 5 when rule 9 (criteria must be INDEPENDENT) landed. 17 and 23
+    # had already re-derived under v4, so without the bump that fix would have
+    # shipped and changed nothing for the two assignments it was written for.
+    # The version is part of the cache key; the derivation INSTRUCTIONS are not.
+    # Change the rules, change this number.
+    assert rs.RUBRIC_VERSION >= 5
     a = rs.source_hash({"title": "Day 06", "description": "Create a song"})
     assert a != "", "source_hash must fold RUBRIC_VERSION into the cache key"
 
