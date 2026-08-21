@@ -305,6 +305,26 @@ def review_one(p: Pending, agent_url: str, api_key: str, timeout: int,
                   ms=int((time.time() - started) * 1000))
 
 
+def keep_below(pending: list, threshold: float) -> list:
+    """Rows whose current grade is missing or below `threshold`.
+
+    The targeted final pass: after a scoring-rule fix, marks earned at or
+    above the bar are already fair and re-buying them wastes the budget —
+    only the low and ungraded rows are suspect. Unparseable grades count as
+    missing (suspect), never as safe.
+    """
+    kept = []
+    for p in pending:
+        g = getattr(p, "current_grade", None)
+        try:
+            ok = g is not None and float(g) >= threshold
+        except (TypeError, ValueError):
+            ok = False
+        if not ok:
+            kept.append(p)
+    return kept
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -324,6 +344,12 @@ def main() -> None:
                     help="re-score submissions that ALREADY have a grade, "
                          "rewriting each row in place (assignments only). "
                          "Requires AIREV_ADMIN_KEY.")
+    ap.add_argument("--redo-below", type=float, metavar="MARKS",
+                    help="with --redo: only touch rows whose current grade is "
+                         "BELOW this (or missing). Rows at/above it keep their "
+                         "mark and cost nothing — the targeted final pass after "
+                         "a rule fix, when high scores are already fair and "
+                         "only the low/ungraded rows are suspect.")
     ap.add_argument("--bill-students", action="store_true",
                     help="charge each student's credits (default: staff run, no charge)")
     args = ap.parse_args()
@@ -365,6 +391,9 @@ def main() -> None:
     finally:
         conn.close()
 
+    if args.redo_below is not None and not args.redo:
+        sys.exit("--redo-below only makes sense with --redo.")
+
     empty = [p for p in pending if not p.has_content]
     ready = sorted((p for p in pending if p.has_content),
                    key=lambda p: p.submitted_at, reverse=True)
@@ -397,6 +426,16 @@ def main() -> None:
     # The order is stable (newest submission first), so the windows do not
     # overlap and nothing is missed between runs.
     batch = ready[args.offset:args.offset + args.limit]
+    # --redo-below spares rows INSIDE the window (never by shrinking the
+    # list): the full list stays stable between runs, so offset windows tile
+    # exactly as without the flag — spared rows just cost nothing.
+    if args.redo_below is not None:
+        spared = len(batch)
+        batch = keep_below(batch, args.redo_below)
+        spared -= len(batch)
+        if spared:
+            print(f"  {spared} row(s) in this window already at/above "
+                  f"{args.redo_below} — marks kept, nothing re-bought.")
     window = (f"rows {args.offset + 1}-{args.offset + len(batch)} of {len(ready)}"
               if args.offset else f"{len(batch)} of {len(ready)}")
     print(f"\n{'WOULD REVIEW' if not args.run else 'REVIEWING'} {window} "

@@ -677,6 +677,64 @@ def _extract_scanned_pdf(data: bytes) -> Tuple[str, str]:
 
 # ---------- DOCX -----------------------------------------------------------
 
+# Office files get the SAME picture treatment as PDFs. A .docx or .pptx is a
+# ZIP whose media folder holds every pasted image — and learners paste their
+# deliverable into Word constantly (Day 01: student 1315's .docx scored 0.0
+# because the plan image inside it was never looked at). Thin typed text plus
+# embedded pictures means OCR as well, same threshold, same labelling.
+
+MAX_EMBEDDED_IMAGES = int(os.getenv("MAX_EMBEDDED_IMAGES", "6"))
+MAX_EMBEDDED_IMAGE_BYTES = int(os.getenv("MAX_EMBEDDED_IMAGE_BYTES",
+                                         str(6 * 1024 * 1024)))
+
+
+def _embedded_media_images(data: bytes, folder: str) -> List[Tuple[str, str]]:
+    """(media_type, b64) for pictures inside an OOXML zip's media folder.
+
+    Never raises — a malformed archive returns [] and the caller falls back
+    to text-only, exactly as before this existed. Tiny images (icons, bullet
+    glyphs) are skipped by a size floor so six logo decorations cannot crowd
+    out the one picture that is the actual deliverable.
+    """
+    import zipfile
+    out: List[Tuple[str, str]] = []
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            names = sorted(n for n in z.namelist()
+                           if n.startswith(folder)
+                           and os.path.splitext(n)[1].lower() in IMAGE_EXTS)
+            for name in names:
+                if len(out) >= MAX_EMBEDDED_IMAGES:
+                    break
+                blob = z.read(name)
+                if not (10_000 <= len(blob) <= MAX_EMBEDDED_IMAGE_BYTES):
+                    continue                      # icon-sized or oversized
+                converted, media_type, why = _to_readable_image(
+                    blob, os.path.splitext(name)[1].lower())
+                if not why:
+                    out.append((media_type,
+                                base64.b64encode(converted).decode()))
+    except Exception:
+        return []
+    return out
+
+
+def _with_embedded_pictures(text: str, data: bytes, folder: str,
+                            kind: str, label: str) -> Tuple[str, str]:
+    """Combine typed text with OCR of the file's pasted pictures — the PDF
+    rule (`pdf_needs_ocr`) applied to Office files: a real write-up is never
+    re-billed for decoration, thin text with pictures gets both read."""
+    images = _embedded_media_images(data, folder)
+    if not images or not pdf_needs_ocr(text, True):
+        return (text, "") if text else ("", f"{label} parsed but empty")
+    ocr, ocr_why = _ocr_with_claude(images, kind=kind)
+    if ocr and text:
+        return f"{text}\n\n=== PICTURES IN THIS {label} ===\n{ocr}", ""
+    if ocr:
+        return ocr, ""
+    return (text, "") if text else ("", ocr_why or f"{label} parsed but empty")
+
+
 def _extract_docx(data: bytes) -> Tuple[str, str]:
     try:
         from docx import Document
@@ -692,9 +750,9 @@ def _extract_docx(data: bytes) -> Tuple[str, str]:
                     if cell.text:
                         parts.append(cell.text)
         text = _clean("\n".join(parts))
-        if not text:
-            return "", "DOCX parsed but empty"
-        return text, ""
+        return _with_embedded_pictures(
+            text, data, "word/media/",
+            kind="pictures pasted into a Word document", label="DOCUMENT")
     except Exception as e:
         return "", f"docx parse error: {e}"
 
@@ -928,7 +986,9 @@ def _extract_pptx(data: bytes) -> Tuple[str, str]:
                     parts.append(f"[Speaker notes] {notes}")
             out.append("\n".join(parts))
         text = _clean("\n\n".join(out))[:SHEET_MAX_CHARS]
-        return (text, "") if text else ("", "pptx parsed but empty")
+        return _with_embedded_pictures(
+            text, data, "ppt/media/",
+            kind="pictures on a presentation's slides", label="PRESENTATION")
     except Exception as e:
         return "", f"pptx parse error: {e}"
 
