@@ -811,6 +811,27 @@ def _extract_rtf(data: bytes) -> Tuple[str, str]:
 
 # ---------- Image OCR ------------------------------------------------------
 
+def _sniff_media_type(data: bytes) -> str:
+    """The media type the BYTES say they are, or "" when they say nothing.
+
+    Live 21 Aug: WhatsApp saves PNG screenshots with a .jpeg name, and the
+    vision API refuses the pair outright — 'specified using the image/jpeg
+    media type, but the image appears to be a image/png image' — so the file
+    the student really did upload scored as unreadable. The filename is the
+    student's claim; the magic bytes are the file's own testimony, and only
+    the testimony is admissible.
+    """
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
 def _to_readable_image(data: bytes, ext: str) -> Tuple[bytes, str, str]:
     """(bytes, media_type, error) — convert anything the vision API cannot read.
 
@@ -818,9 +839,18 @@ def _to_readable_image(data: bytes, ext: str) -> Tuple[bytes, str, str]:
     per extension. HEIC was handled and the rest were not, so a learner who
     submitted a GIF or an AVIF — both ordinary outputs of the tools this course
     teaches — was told their image could not be read.
+
+    The media type is decided by the bytes, never the extension: a PNG named
+    .jpeg passes through as image/png, and a native-named file whose bytes are
+    some OTHER real image format (a BMP renamed .png) falls through to the
+    Pillow conversion below instead of being sent mislabelled and refused.
     """
     if ext in NATIVE_IMAGE_EXTS:
-        return data, _media_type_for_ext(ext), ""
+        sniffed = _sniff_media_type(data)
+        if sniffed:
+            return data, sniffed, ""
+        # The extension promised a native format the bytes don't back up —
+        # let Pillow identify and normalise whatever this actually is.
     try:
         from PIL import Image
         if ext in {".heic", ".heif"}:
@@ -1081,24 +1111,8 @@ def _extract_ipynb(data: bytes) -> Tuple[str, str]:
 
 # ---------- helpers --------------------------------------------------------
 
-def _media_type_for_ext(ext: str) -> str:
-    return {
-        ".jpg":  "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".png":  "image/png",
-        ".webp": "image/webp",
-        ".gif":  "image/gif",
-    }.get(ext, "image/png")
-
-
 def _looks_like_image(data: bytes) -> bool:
-    if len(data) < 12:
-        return False
-    return (
-        data[:3] == b"\xff\xd8\xff"            # JPEG
-        or data[:8] == b"\x89PNG\r\n\x1a\n"    # PNG
-        or data[:4] == b"RIFF" and data[8:12] == b"WEBP"  # WEBP
-    )
+    return bool(_sniff_media_type(data))
 
 
 def _clean(text: str) -> str:

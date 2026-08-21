@@ -89,6 +89,18 @@ def test_a_weak_on_task_attempt_is_a_low_score_not_a_wrong_task(monkeypatch):
     assert out["scores"]["totalScore"] < 40
 
 
+def test_wrong_task_returned_as_plain_text_never_crashes(monkeypatch):
+    """Live 21 Aug: the model answered wrong_task as a STRING instead of the
+    schema's object, and `.get()` on it crashed the whole review to a bare
+    500 mid-sweep. A malformed declaration carries no valid ruling — the
+    review must complete normally with wrongTask undeclared."""
+    answer = _review(pct=60, declare_wrong=False)
+    answer["wrong_task"] = "This is not the right task"
+    out = _run(monkeypatch, answer)
+    assert out["wrongTask"] == {"declared": False, "whatItIs": ""}
+    assert out["scores"]["totalScore"] > 0
+
+
 def test_a_model_that_omits_the_field_changes_nothing(monkeypatch):
     """Older responses / degraded outputs: absence of wrong_task must degrade
     to normal scoring, never crash, never un-grade."""
@@ -115,6 +127,19 @@ def test_a_declaration_that_names_nothing_is_ignored(monkeypatch):
     answer["wrong_task"]["what_it_is"] = "  "
     out = _run(monkeypatch, answer)
     assert out["wrongTask"]["declared"] is False
+
+
+def test_career_choice_is_never_grounds_for_wrong_task():
+    """Ranjana's ruling, 21 Aug (verbatim option: 'Any career counts'). The
+    21 Aug sweep un-graded ~20 real personal plans — lawyer (772, was 5.5),
+    government officer via MPSC/SSC (1104, 729), CA/CS roadmaps, a professor
+    plan — because the career sat outside FinTech/Banking/AI. A personal
+    5-year vision in ANY field IS the task; wrong_task is reserved for
+    content that is not a personal plan at all."""
+    rules = rp._JUDGE_INSTRUCTIONS.lower()
+    assert "career choice is never grounds" in rules
+    assert "any career counts" in rules
+    assert "not a personal future-self plan at all" in rules
 
 
 def test_the_judge_is_told_wrong_work_is_not_low_quality_work():
