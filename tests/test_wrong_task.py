@@ -54,7 +54,7 @@ def _review(pct, declare_wrong, quotes=("slide 3: Berger Paints margin",)):
     }
 
 
-def _run(monkeypatch, answer):
+def _run(monkeypatch, answer, word_count=400):
     monkeypatch.setattr(rp.ai_service, "call_structured",
                         lambda blocks, schema, **kw: answer)
     monkeypatch.setattr(rp.ai_service, "set_student_context",
@@ -62,7 +62,8 @@ def _run(monkeypatch, answer):
     return rp.run_review(
         scope_type="assignment", scope_id=17, pack=PACK, pack_version=1,
         rubric=RUBRIC, student_answer="Deck about paints. " * 40,
-        word_count=200, word_limit_min=0, word_limit_max=999999, student_id=1151)
+        word_count=word_count, word_limit_min=0, word_limit_max=999999,
+        student_id=1151)
 
 
 def test_the_investment_deck_is_declared_not_scored(monkeypatch):
@@ -97,10 +98,32 @@ def test_a_model_that_omits_the_field_changes_nothing(monkeypatch):
     assert out["wrongTask"] == {"declared": False, "whatItIs": ""}
 
 
+def test_a_thin_or_unreadable_row_can_never_be_ruled_wrong_task(monkeypatch):
+    """THE 19 Aug false-positive storm, pinned. The sweep marked ~95 rows
+    wrong_task — most were rows whose files could not be read, including
+    'My_Future_Self_in_5_Years.pdf' (obviously on-task), and five students'
+    real grades were cleared. To the judge, invisible work 'isn't this
+    task's work' — so a declaration on thin content is suspicion, not
+    recognition, and must be ignored."""
+    out = _run(monkeypatch, _review(pct=5, declare_wrong=True), word_count=40)
+    assert out["wrongTask"]["declared"] is False
+
+
+def test_a_declaration_that_names_nothing_is_ignored(monkeypatch):
+    """'Not this task' without saying WHAT it is instead — no ruling."""
+    answer = _review(pct=10, declare_wrong=True)
+    answer["wrong_task"]["what_it_is"] = "  "
+    out = _run(monkeypatch, answer)
+    assert out["wrongTask"]["declared"] is False
+
+
 def test_the_judge_is_told_wrong_work_is_not_low_quality_work():
     rules = rp._JUDGE_INSTRUCTIONS.lower()
     assert "wrong work is not low-quality work" in rules
     assert "no grade, not a low grade" in rules
+    assert "never wrong_task" in rules
+    assert "unreadable content is never wrong_task" in rules \
+        or "unreadable" in rules
 
 
 def test_the_schema_requires_the_declaration():

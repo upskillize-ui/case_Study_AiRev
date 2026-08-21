@@ -339,7 +339,7 @@ NON-NEGOTIABLE METHOD:
 9c. NEVER DEDUCT FOR UNPROVABLE PROVENANCE. "No evidence the image was AI-generated", "cannot confirm which tool made this" — a finished artifact carries no record of its maker, so these statements are about YOUR visibility, not the learner's work. If the task asked for an AI-generated artifact and a plausible artifact is present, the generation requirement is satisfied.
 10. ONE WEAKNESS, ONE DEDUCTION. Judge each criterion strictly on what ITS OWN name asks and nothing else. If a rubric has "five steps are listed" and "the steps are specific", vague steps cost marks on the SECOND only — the first asks whether five steps exist, and they do. Charging one shortcoming against two criteria takes 60 marks for a single flaw and buries the part the learner actually did. Where two criteria overlap, credit the narrower reading of each.
 11. HOW THE WORK WAS MADE IS NOT A SCORING FACT. Never lower a criterion because you cannot tell which AI drafted it, which settings were toggled, or in what order the steps were taken. A finished artifact carries no record of its own making, so "no evidence ChatGPT was used" is a statement about your visibility, not about the learner's work — and deducting for it fails every learner equally, including the ones who followed the method exactly. Judge the OUTPUT the method was meant to produce. This is the same rule as the authorship estimate above: provenance is advisory, never scored.
-12. WRONG WORK IS NOT LOW-QUALITY WORK. If the submission is recognizably a DIFFERENT task's deliverable — a slide deck of investment analysis where a 5-year career-plan image was asked for, a link to an unrelated artifact — set wrong_task.is_wrong_task=true and name what it is in what_it_is. Do not stretch the rubric over it and do not score it as a weak attempt: the policy for wrong work is NO grade, not a low grade. A weak, partial or badly formatted attempt AT THIS TASK is never wrong_task — that is a low score with reasons."""
+12. WRONG WORK IS NOT LOW-QUALITY WORK. If the submission is recognizably a DIFFERENT task's deliverable — a slide deck of investment analysis where a 5-year career-plan image was asked for, a link to an unrelated artifact — set wrong_task.is_wrong_task=true and name what it is in what_it_is. Do not stretch the rubric over it and do not score it as a weak attempt: the policy for wrong work is NO grade, not a low grade. Declare it ONLY from substantial content you actually READ that clearly belongs to another task — you must be able to say WHAT the work is, not merely that this task's evidence is missing. Empty, thin, fragmentary or unreadable content is NEVER wrong_task (that is a no-evidence low score), and a weak, partial or badly formatted attempt AT THIS TASK is never wrong_task either — that is a low score with reasons."""
 
 
 # ─── Pure functions: gates + aggregation (unit-tested, no I/O) ───────────────
@@ -442,6 +442,12 @@ def aggregate(gated: dict, word_count: int, word_limit_min: int,
 # A garbage verdict zeroes a submission outright, so it needs a second,
 # objective opinion. Above this word count the rubric decides instead.
 GARBAGE_HARD_ZERO_MAX_WORDS = int(os.getenv("GARBAGE_HARD_ZERO_MAX_WORDS", "40"))
+
+# A wrong-task ruling ungrades a submission outright, so it demands MORE
+# evidence than a low score does: at least this many words of actually-read
+# content. Below it, "this isn't the task's work" usually means "I couldn't
+# see the work" — the 19 Aug false-positive storm.
+WRONG_TASK_MIN_WORDS = int(os.getenv("WRONG_TASK_MIN_WORDS", "120"))
 
 
 def should_hard_zero(review: dict, word_count: int) -> bool:
@@ -736,14 +742,31 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
     # Wrong-task: the model DECLARES, the arithmetic CORROBORATES, Python
     # decides. Policy (Ranjana, 18 Aug): work that belongs to a different task
     # is not graded at all — "do not grade or give score" — the learner is
-    # asked to attach the right work. The declaration alone is not enough: a
-    # rubric total ≥ 40 means the answer earned real marks against THIS task's
-    # criteria, so the declaration is wrong and is ignored. Routes act on
-    # wrongTask["declared"]; the score object still travels for logging.
+    # asked to attach the right work.
+    #
+    # THREE corroborations, all required — because on the 19 Aug sweep the
+    # model declared wrong_task on ~95 rows, most of them rows whose files
+    # could not be READ: to the judge, invisible work "isn't this task's
+    # work", and the declaration cleared five students' real grades
+    # (763: 6.0, 913: 4.9, 395: 5.0, 230: 2.6, 1133: 0.5). Absence of this
+    # task's evidence is NOT presence of another task's work.
+    #   1. totalScore < 40  — an answer earning real marks is on-task.
+    #   2. word_count >= WRONG_TASK_MIN_WORDS — a wrong-task verdict needs
+    #      SUBSTANTIAL READ CONTENT (student 1151's investment deck extracts
+    #      hundreds of words). A thin/unreadable row is a no-evidence low
+    #      score or an unassessable skip, never a wrong-task ruling.
+    #   3. what_it_is is non-empty — the model must NAME what it read;
+    #      "not this task" without an identification is suspicion, not
+    #      recognition.
+    # Routes act on wrongTask["declared"]; scores still travel for logging.
     wrong = review.get("wrong_task") or {}
+    what_it_is = (wrong.get("what_it_is") or "").strip()
     wrong_task = {
-        "declared": bool(wrong.get("is_wrong_task")) and scores["totalScore"] < 40,
-        "whatItIs": (wrong.get("what_it_is") or "").strip(),
+        "declared": (bool(wrong.get("is_wrong_task"))
+                     and scores["totalScore"] < 40
+                     and word_count >= WRONG_TASK_MIN_WORDS
+                     and bool(what_it_is)),
+        "whatItIs": what_it_is,
     }
 
     # Authorship is ADVISORY — a missing or malformed field must never crash
