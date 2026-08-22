@@ -82,7 +82,14 @@ MEDIA_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".3gp", ".wmv",
               ".flv", ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".wma",
               ".flac"}
 CODE_EXTS  = {".py", ".sql", ".js", ".ts", ".jsx", ".tsx", ".java", ".c",
-              ".cpp", ".r", ".json", ".html", ".css", ".sh", ".yaml", ".yml"}
+              ".cpp", ".r", ".json", ".css", ".sh", ".yaml", ".yml"}
+
+# A web page the learner BUILT — Day 02's deliverable (Claude artifacts are
+# exported as .html). Read as a page first (what a visitor would see), source
+# second (what the learner wrote) — never refused as a failed download.
+# .htm was previously in NO set at all, so an .htm upload fell through to the
+# unknown-ext sniff, hit the login-page guard, and was refused as NOT_A_FILE.
+HTML_EXTS = {".html", ".htm", ".xhtml"}
 SHEET_MAX_ROWS  = 300     # per sheet — enough for any coursework workbook
 SHEET_MAX_COLS  = 40
 SHEET_MAX_CHARS = 60000   # whole-workbook render cap; truncation is stated
@@ -292,7 +299,7 @@ def _extract_dispatch(data: bytes, file_name: str = "") -> Tuple[str, str]:
     # A document extension proves nothing about what the server actually sent.
     # These rows arrived as ".pdf" and were HTML; without this the PDF branch
     # fails, OCR fails, and some paths still fall through to a text decode.
-    if ext not in TEXT_EXTS and ext != ".html" and looks_like_web_page(data):
+    if ext not in TEXT_EXTS and ext not in HTML_EXTS and looks_like_web_page(data):
         return "", NOT_A_FILE
 
     try:
@@ -366,6 +373,8 @@ def _extract_dispatch(data: bytes, file_name: str = "") -> Tuple[str, str]:
         # Code / notebooks (capstones: "build a decisioning engine") -------
         if ext == ".ipynb":
             return _extract_ipynb(data)
+        if ext in HTML_EXTS:
+            return _extract_html(data)
         if ext in CODE_EXTS:
             body = _clean(data.decode("utf-8", errors="ignore"))[:SHEET_MAX_CHARS]
             return (f"[Code file: {name.rsplit('/', 1)[-1]}]\n{body}", "") if body \
@@ -788,6 +797,45 @@ def _extract_odf(data: bytes, ext: str) -> Tuple[str, str]:
         return "", (f"this {ext} file has no readable text — if the work is a "
                     f"picture inside it, export it as a PDF or image and re-upload")
     return text, ""
+
+
+_DATA_URI_RE = re.compile(r"(data:[a-zA-Z0-9/+.-]+;base64,)[A-Za-z0-9+/=]{80,}")
+_HTML_SOURCE_MIN_VISIBLE_WORDS = 40
+
+
+def _extract_html(data: bytes) -> Tuple[str, str]:
+    """A web page the learner BUILT (Day 02: Claude artifacts export as .html).
+
+    Two honest readings, tried in order:
+
+    1. As a PAGE — the text a visitor would see, which is what the rubric
+       judges. Uses the same tag-stripper the link path trusts (late import:
+       submission_intake imports this module, so a top-level import here
+       would be circular).
+    2. As SOURCE — a React/JS artifact export renders client-side, so its
+       visible text is nothing but the learner still wrote (or generated and
+       curated) every line. The source IS the deliverable then; it goes to
+       the marker labelled as source, with embedded base64 blobs truncated so
+       one background image cannot spend the whole text budget.
+    """
+    source = data.decode("utf-8", errors="ignore")
+    if not source.strip():
+        return "", "HTML file was empty"
+
+    from app.utils.submission_intake import html_to_text
+    title_m = re.search(r"<title[^>]*>(.*?)</title>", source, re.I | re.S)
+    title = re.sub(r"\s+", " ", title_m.group(1)).strip() if title_m else ""
+    head = "[WEB PAGE BUILT BY THE LEARNER" + (f" — title: {title}" if title else "") + "]"
+
+    visible = html_to_text(source)
+    if len(visible.split()) >= _HTML_SOURCE_MIN_VISIBLE_WORDS:
+        return f"{head}\n{visible}", ""
+
+    stripped = _DATA_URI_RE.sub(r"\1[...embedded image data removed...]", source)
+    body = _clean(stripped)[:SHEET_MAX_CHARS]
+    return (f"{head}\n[The page renders in the browser, so its source code is "
+            f"shown — this source is the learner's built deliverable.]\n"
+            + (f"Visible text: {visible}\n" if visible else "") + body, "")
 
 
 def _extract_rtf(data: bytes) -> Tuple[str, str]:

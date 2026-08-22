@@ -339,8 +339,9 @@ NON-NEGOTIABLE METHOD:
 9c. NEVER DEDUCT FOR UNPROVABLE PROVENANCE. "No evidence the image was AI-generated", "cannot confirm which tool made this", "no AI prompt is provided", "prompt engineering cannot be assessed" — a finished artifact carries no record of its maker OR of the prompt that made it, so these statements are about YOUR visibility, not the learner's work. If the task asked for an AI-generated artifact and a plausible artifact is present, the generation requirement is satisfied in full. Deduct for a missing prompt ONLY when the task text explicitly asks the learner to submit the prompt. (Live failure: a complete professional 5-year poster lost 35% of its image criterion for "no AI prompt provided" on a task that never asked for one.)
 10. ONE WEAKNESS, ONE DEDUCTION. Judge each criterion strictly on what ITS OWN name asks and nothing else. If a rubric has "five steps are listed" and "the steps are specific", vague steps cost marks on the SECOND only — the first asks whether five steps exist, and they do. Charging one shortcoming against two criteria takes 60 marks for a single flaw and buries the part the learner actually did. Where two criteria overlap, credit the narrower reading of each.
 11. HOW THE WORK WAS MADE IS NOT A SCORING FACT. Never lower a criterion because you cannot tell which AI drafted it, which settings were toggled, or in what order the steps were taken. A finished artifact carries no record of its own making, so "no evidence ChatGPT was used" is a statement about your visibility, not about the learner's work — and deducting for it fails every learner equally, including the ones who followed the method exactly. Judge the OUTPUT the method was meant to produce. This is the same rule as the authorship estimate above: provenance is advisory, never scored.
-12. WRONG WORK IS NOT LOW-QUALITY WORK. If the submission is recognizably a DIFFERENT task's deliverable — a slide deck of investment analysis where a 5-year career-plan image was asked for, a link to an unrelated artifact — set wrong_task.is_wrong_task=true and name what it is in what_it_is. Do not stretch the rubric over it and do not score it as a weak attempt: the policy for wrong work is NO grade, not a low grade. Declare it ONLY from substantial content you actually READ that clearly belongs to another task — you must be able to say WHAT the work is, not merely that this task's evidence is missing. Empty, thin, fragmentary or unreadable content is NEVER wrong_task (that is a no-evidence low score), and a weak, partial or badly formatted attempt AT THIS TASK is never wrong_task either — that is a low score with reasons. THE LEARNER'S CAREER CHOICE IS NEVER GROUNDS FOR wrong_task: a personal 5-year vision of the learner's own future — lawyer, CA, teacher, government officer, writer, athlete, ANY field — IS this task, whether or not it touches the programme's FinTech/Banking/AI domain (policy: any career counts; domain alignment may be discussed in feedback but never used to un-grade and never charged against existence criteria). wrong_task is reserved for content that is not a personal future-self plan AT ALL: study guides, exam-syllabus material, another assignment's deliverable, unrelated artwork, generic reference documents about a field with no personal plan in them.
-13. MORE THAN ASKED IS NOT LESS THAN ASKED. When a criterion requires N items and the learner provides N OR MORE that clearly include the required N, the count requirement is FULLY met — score that aspect as satisfied. Never deduct for exceeding a requested count, length, or scope. (Live failure: a learner listed 8 career steps containing the required 5 and was scored 30% on "5 distinct steps are listed" — the five steps were right there, plus three the task didn't ask for.) Extra material may still be judged for QUALITY under the criteria that measure quality — but existence criteria are met by inclusion."""
+12. WRONG WORK IS NOT LOW-QUALITY WORK. If the submission is recognizably a DIFFERENT task's deliverable — a slide deck of investment analysis where a 5-year career-plan image was asked for, another day's assignment resubmitted here — set wrong_task.is_wrong_task=true and name what it is in what_it_is. Do not stretch the rubric over it and do not score it as a weak attempt: the policy for wrong work is NO grade, not a low grade. Declare it ONLY from substantial content you actually READ that clearly belongs to another task — you must be able to say WHAT the work is, not merely that this task's evidence is missing. Empty, thin, fragmentary or unreadable content is NEVER wrong_task (that is a no-evidence low score); an unread or partially read link or file is NEVER wrong_task; and a weak, partial or badly formatted attempt AT THIS TASK is never wrong_task either — that is a low score with reasons. THE LEARNER'S OWN CHOICES WITHIN THE BRIEF ARE NEVER GROUNDS FOR wrong_task — topic, style, career, domain, tool settings: an attempt at THIS task about the learner's own subject IS this task. (Live rule for the 5-year-plan day: THE LEARNER'S CAREER CHOICE IS NEVER GROUNDS FOR wrong_task — a personal vision as lawyer, CA, teacher, government officer, writer, athlete, ANY field counts; policy: any career counts; domain alignment may be discussed in feedback but never used to un-grade. On that day wrong_task was reserved for content that is not a personal future-self plan AT ALL — study guides, exam-syllabus material, generic reference documents. Apply the same shape to every task: wrong_task is reserved for content that makes no attempt at THIS task's brief whatsoever.) CONTRADICTION CHECK before declaring: re-read your own what_it_is — if that description could equally describe THIS task's deliverable ("a personal 5-year career plan" on the 5-year-plan day), then is_wrong_task MUST be false: you have just identified the work as the task itself, and its shortcomings are a score, not an un-grading.
+13. MORE THAN ASKED IS NOT LESS THAN ASKED. When a criterion requires N items and the learner provides N OR MORE that clearly include the required N, the count requirement is FULLY met — score that aspect as satisfied. Never deduct for exceeding a requested count, length, or scope. (Live failure: a learner listed 8 career steps containing the required 5 and was scored 30% on "5 distinct steps are listed" — the five steps were right there, plus three the task didn't ask for.) Extra material may still be judged for QUALITY under the criteria that measure quality — but existence criteria are met by inclusion.
+14. BUILT ARTIFACTS AND PUBLISHED LINKS. When the task's deliverable is something the learner BUILT — a web page, an app, an artifact, a slide deck: (a) whatever was READ from it IS the deliverable — extracted slide text, OCR of its screenshots, a page's visible text, or a page's SOURCE CODE all count in full; source code of a client-rendered page is that page, judge the built thing from its code exactly as you would from its screen. (b) A link the manifest confirms as submitted but unreadable from the server (browser-only pages such as Claude artifact links) is evidence the learner PUBLISHED a deliverable: it fully satisfies any criterion that asks for the artifact to be created, published, shared or linked. Judge the remaining quality criteria only from what IS readable — the screenshots, pasted content, and the learner's own description — and state plainly which parts could not be seen. Never charge a criterion for OUR inability to open the learner's published page (the same visibility rule as 9c and 11), and never rule wrong_task from a link you could not read."""
 
 
 # ─── Pure functions: gates + aggregation (unit-tested, no I/O) ───────────────
@@ -449,6 +450,55 @@ GARBAGE_HARD_ZERO_MAX_WORDS = int(os.getenv("GARBAGE_HARD_ZERO_MAX_WORDS", "40")
 # content. Below it, "this isn't the task's work" usually means "I couldn't
 # see the work" — the 19 Aug false-positive storm.
 WRONG_TASK_MIN_WORDS = int(os.getenv("WRONG_TASK_MIN_WORDS", "120"))
+
+
+# Words that describe the MEDIUM or the setting, not the substance. They are
+# excluded from the overlap test below so "an AI-generated image of a monument"
+# does not collide with a task summary that also says "image" and "AI".
+_TASK_OVERLAP_NOISE = {
+    "a", "an", "the", "this", "that", "these", "those", "is", "are", "was",
+    "were", "of", "and", "or", "in", "on", "to", "for", "with", "about",
+    "by", "from", "into", "as", "at", "it", "its", "their", "own", "not",
+    "generic", "typed", "written", "detailed", "personal", "professional",
+    "document", "file", "pdf", "image", "picture", "photo", "poster",
+    "presentation", "slide", "deck", "screenshot", "text", "note", "notes",
+    "submission", "work", "task", "assignment", "deliverable", "student",
+    "learner", "day", "ai", "generated", "create", "generate", "chatgpt",
+    "claude", "content", "material", "upload", "attachment",
+}
+
+
+def _significant_words(text: str) -> set:
+    words = re.findall(r"[a-z0-9]+", (text or "").lower().replace("-", " "))
+    folded = set()
+    for w in words:
+        if w in ("five",):
+            w = "5"
+        if len(w) > 3 and w.endswith("s"):
+            w = w[:-1]                       # years/steps -> year/step
+        if w not in _TASK_OVERLAP_NOISE:
+            folded.add(w)
+    return folded
+
+
+def names_this_task(what_it_is: str, task_text: str) -> bool:
+    """Does the declaration DESCRIBE this task's own deliverable? Pure.
+
+    Live 22 Aug sweep: rows were un-graded as wrong_task while the judge's own
+    identification read "A personal 5-year career plan" — on the 5-year-plan
+    assignment. A declaration that names THIS task's deliverable is a
+    contradiction, not a recognition, and carries no ruling. The test is a
+    significant-word overlap (>= 2) between the identification and the task's
+    title/summary, with medium words (image, deck, pdf ...) excluded so that
+    genuinely foreign work — "an investment analysis slide deck", "a photo of
+    a historical monument" — still overlaps on nothing and stays declared.
+
+    The asymmetry is deliberate: a missed wrong_task costs one honest low
+    score; a false one deletes a real grade. When the words say "this could
+    be the task", the rubric scores it.
+    """
+    return len(_significant_words(what_it_is)
+               & _significant_words(task_text)) >= 2
 
 
 def should_hard_zero(review: dict, word_count: int) -> bool:
@@ -768,13 +818,26 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
     if not isinstance(wrong, dict):
         wrong = {}
     what_it_is = (wrong.get("what_it_is") or "").strip()
+    #   4. what_it_is must NOT describe this task's own deliverable — the
+    #      22 Aug sweep un-graded rows whose identification literally read
+    #      "A personal 5-year career plan" on the 5-year-plan assignment.
+    #      A declaration that names THIS task is a contradiction; the rubric
+    #      scores the work instead (see names_this_task).
+    task_text = f"{pack.get('title', '')} {pack.get('summary', '')}"
     wrong_task = {
         "declared": (bool(wrong.get("is_wrong_task"))
                      and scores["totalScore"] < 40
                      and word_count >= WRONG_TASK_MIN_WORDS
-                     and bool(what_it_is)),
+                     and bool(what_it_is)
+                     and not names_this_task(what_it_is, task_text)),
         "whatItIs": what_it_is,
     }
+    if (bool(wrong.get("is_wrong_task")) and what_it_is
+            and not wrong_task["declared"]
+            and names_this_task(what_it_is, task_text)):
+        print(f"[WRONG-TASK] declaration VOIDED — identification "
+              f"'{what_it_is[:80]}' names this task's own deliverable; "
+              f"scoring normally")
 
     # Authorship is ADVISORY — a missing or malformed field must never crash
     # the scoring pipeline (live 22 Jul: KeyError 'authorship' dropped a review

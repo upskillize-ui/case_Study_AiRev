@@ -177,3 +177,50 @@ def test_mark_not_graded_clears_the_grade_and_reopens_the_row(monkeypatch):
     assert re.search(r"status\s*=\s*'submitted'", captured["sql"])
     assert captured["params"][-1] == 4321
     assert "notGraded" in captured["params"][0]
+
+
+# ── the 22 Aug contradiction: a declaration that NAMES this task ──────────
+#
+# The 22 Aug sweep un-graded rows whose own identification read "A personal
+# 5-year career plan" (students 171, 314, 583) — on the 5-year-plan
+# assignment. The judge recognized the task and declared against it anyway.
+# Python now voids any declaration whose identification describes this
+# task's own deliverable.
+
+TASK = "Day 01: generate an AI image of yourself in 5 years, with 5 steps."
+
+
+def test_a_declaration_naming_this_task_is_voided(monkeypatch):
+    answer = _review(pct=15, declare_wrong=True)
+    answer["wrong_task"]["what_it_is"] = "A personal 5-year career plan"
+    out = _run(monkeypatch, answer)
+    assert out["wrongTask"]["declared"] is False, \
+        "the judge identified the work as THIS task and still un-graded it"
+
+
+def test_genuinely_foreign_work_still_declares(monkeypatch):
+    for foreign in ("an investment analysis slide deck",
+                    "a photo of a historical monument",
+                    "a generic banking study guide and course material",
+                    "a Van Gogh-style painting of a landscape"):
+        answer = _review(pct=10, declare_wrong=True)
+        answer["wrong_task"]["what_it_is"] = foreign
+        out = _run(monkeypatch, answer)
+        assert out["wrongTask"]["declared"] is True, foreign
+
+
+def test_names_this_task_is_pure_and_medium_blind():
+    assert rp.names_this_task("A personal 5-year career plan", TASK)
+    assert rp.names_this_task("A typed career vision and five year roadmap",
+                              TASK)
+    # medium words (image, AI, deck) never count toward the overlap
+    assert not rp.names_this_task("an AI-generated image of a monument", TASK)
+    assert not rp.names_this_task("an investment analysis slide deck", TASK)
+    assert not rp.names_this_task("", TASK)
+
+
+def test_the_judge_carries_the_contradiction_check():
+    rules = rp._JUDGE_INSTRUCTIONS.lower()
+    assert "contradiction check" in rules
+    assert "is_wrong_task must be false: you have just identified the work" \
+        in rules

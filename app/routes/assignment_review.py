@@ -332,6 +332,32 @@ def submit_and_review_assignment(
             "processingTimeMs": int((time.time() - start_time) * 1000),
         }
 
+    # A deliverable we could not open, with nothing readable beside it, must
+    # not be scored — a mark there would measure OUR reach, not their work
+    # (the Day 06 Suno failure: URL-only rows pinned at the no-evidence cap).
+    # The regrade path has refused this since 19 Aug; the LIVE submit path
+    # did not, and Day 02's deliverable is a Claude artifact link — a page
+    # that only opens in a browser. Caught HERE, at submit time, the learner
+    # can fix it in the same sitting instead of days later from a sweep.
+    if not req.storeOnly and intake.is_unassessable(manifest, content):
+        msg = ("We can see you submitted your work, but we could not open it "
+               "from our side. Links like Claude artifact links only open in "
+               "a browser, so please ALSO add one of these, then click Submit "
+               "again: a screenshot of your work, the HTML file (use the "
+               "artifact's Download or Copy option), or a few lines in the "
+               "answer box about what you built and how. No marks are "
+               "recorded yet.")
+        print(f"[ASSIGNMENT] NOT SCORED (unassessable deliverable): "
+              f"{word_count} words beside an unreadable link/file — no review run")
+        return {
+            "success": True,
+            "status": "needs_input",
+            "needsInput": True,
+            "submission": {"submissionId": 0, "attemptNumber": 0},
+            "feedback": _empty_feedback(msg, helpful=True),
+            "processingTimeMs": int((time.time() - start_time) * 1000),
+        }
+
     # ── Reflexes: zero-token checks before any AI spend ────────────────────
     # storeOnly skips them: storage must never be withheld — the checks run
     # when the stored text is actually reviewed.
@@ -716,11 +742,25 @@ def re_review_assignment(
     artefacts: list[intake.Artefact] = []
     stored_notes = clean_text(row.get("notes") or "")
     already_assembled = intake.from_stored_submission(stored_notes)
+    stored_file = row.get("file_path") or row.get("file_url")
+
+    # A stored assembly that RECORDS a failed read, while the source file is
+    # still on record, is not a result — it is a snapshot of the failure.
+    # Reusing it replays that failure forever: the 21 Aug probe found ~110
+    # "unreadable" rows whose files existed and served bytes the whole time
+    # (transient fetches, the media-type bug). Discard the snapshot and read
+    # the source again; only the learner's own TYPED TEXT blocks carry over,
+    # never the old manifest (the 1126 nesting rule).
+    if (already_assembled and stored_file
+            and intake.records_failed_read(already_assembled[0])):
+        print(f"[REGRADE] submission {submission_id}: stored assembly records "
+              f"a failed read and the file is still on record — re-extracting")
+        stored_notes = intake.typed_text_from(already_assembled[1])
+        already_assembled = None
 
     if already_assembled:
         manifest, content = already_assembled
     else:
-        stored_file = row.get("file_path") or row.get("file_url")
         if stored_file:
             artefacts.append(intake.from_stored_file(stored_file, row.get("file_name") or ""))
         if stored_notes:
@@ -772,9 +812,11 @@ def re_review_assignment(
         if previous_grade is None:
             _tell_student_why(tenant, submission_id, (
                 "You submitted a file or link, but we could not open it. "
-                "No marks given yet. Please upload the file again (image, "
-                "PDF or Word) — or write a few lines about your work in the "
-                "answer box — then click Submit."))
+                "No marks given yet. If it is a link that only opens in a "
+                "browser (like a Claude artifact link), also add a "
+                "screenshot of your work, or the HTML file, or a few lines "
+                "about what you built. If it is a file, upload it again "
+                "(image, PDF or Word). Then click Submit."))
         return {"success": False, "skipped": "unassessable_deliverable",
                 "submissionId": submission_id,
                 "previousGrade": previous_grade,

@@ -216,7 +216,7 @@ def test_the_worker_releases_its_lock_when_the_job_crashes(monkeypatch):
     """A crash that leaves the flag set would block every future job until the
     Space restarted."""
     monkeypatch.setattr(jobs, "_worker_running", False, raising=False)
-    monkeypatch.setattr(jobs, "drain",
+    monkeypatch.setattr(jobs, "drain_parallel",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
     monkeypatch.setattr(jobs, "set_job_state", lambda *a, **k: None)
 
@@ -293,3 +293,94 @@ def test_a_queue_that_will_not_drain_is_reported_not_declared_finished(store):
                pause=0.001, sleeper=tripwire)
     assert s.job_state[0] == "aborted", s.job_state
     assert "not draining" in s.job_state[1]
+
+
+# ── the pool: the sweep shape that graded Day 01, now inside the Space ────
+#
+# 21 Aug proved concurrency 2 by hand: sweeps at 2 finished and stayed up,
+# a run at 3 restarted cpu-basic mid-cohort. drain_parallel is that proven
+# shape — first item alone to warm the rubric/pack caches, then a small pool.
+
+def test_parallel_reviews_every_item_exactly_once(store):
+    s = store(pending(9))
+    seen = []
+    final = jobs.drain_parallel(
+        object(), 1, lambda sid, sub: (seen.append(sub), ("done", "", 5))[1],
+        workers=2, pause=0)
+    assert sorted(seen) == [1000 + i for i in range(1, 10)]
+    assert final.done == 9 and final.finished
+    assert s.job_state[0] == "finished"
+
+
+def test_the_first_item_runs_alone_before_the_pool_starts(store):
+    """Cache warm-up. If item 1 is still mid-review when items 2+ start, every
+    thread rebuilds the rubric and knowledge pack — the 17 Aug herd again."""
+    store(pending(4))
+    import threading as th
+    order = []
+    first_done = th.Event()
+
+    def review_one(sid, sub):
+        if sub == 1001:
+            order.append("first")
+            first_done.set()
+        else:
+            assert first_done.is_set(), \
+                f"item {sub} started before the warm-up finished"
+            order.append("rest")
+        return "done", "", 5
+
+    jobs.drain_parallel(object(), 1, review_one, workers=3, pause=0)
+    assert order[0] == "first" and order.count("rest") == 3
+
+
+def test_one_worker_is_exactly_the_serial_drain(store, monkeypatch):
+    """workers<=1 must not fork a second code path — it IS drain()."""
+    store(pending(3))
+    called = {"drain": False}
+    real = jobs.drain
+
+    def spy(*a, **k):
+        called["drain"] = True
+        return real(*a, **k)
+
+    monkeypatch.setattr(jobs, "drain", spy)
+    final = jobs.drain_parallel(object(), 1, lambda sid, sub: ("done", "", 5),
+                                workers=1, pause=0)
+    assert called["drain"] and final.done == 3
+
+
+def test_parallel_repeated_failure_still_aborts_the_whole_pool(store):
+    """The dead-provider guard survives the pool: the counter is shared, and
+    once it trips no thread takes another row."""
+    s = store(pending(40))
+    calls = []
+
+    def always_fails(sid, sub):
+        calls.append(sub)
+        return "failed", "provider down", None
+
+    final = jobs.drain_parallel(object(), 1, always_fails, workers=2, pause=0)
+    assert s.job_state[0] == "aborted"
+    assert "consecutive" in s.job_state[1]
+    # Threads mid-flight when the trip happens may finish their row; what is
+    # bounded is the tail — nowhere near the whole cohort.
+    assert len(calls) <= jobs.MAX_CONSECUTIVE_FAILURES + 4, calls
+    assert final.pending > 0
+
+
+def test_parallel_skips_and_successes_reset_the_shared_counter(store):
+    store(pending(20))
+    outcomes = iter(["failed", "failed", "skipped", "failed", "done"] * 4)
+    final = jobs.drain_parallel(
+        object(), 1, lambda sid, sub: (next(outcomes), "", None),
+        workers=2, pause=0)
+    assert final.finished, "interleaved failures wrongly tripped the abort"
+
+
+def test_parallel_on_an_already_finished_job_just_closes_it(store):
+    s = store([dict(i, state="done") for i in pending(3)])
+    final = jobs.drain_parallel(object(), 1,
+                                lambda sid, sub: pytest.fail("reviewed a done row"),
+                                workers=2, pause=0)
+    assert final.finished and s.job_state[0] == "finished"

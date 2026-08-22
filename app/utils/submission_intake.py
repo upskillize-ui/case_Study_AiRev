@@ -332,6 +332,29 @@ def describe_from_metadata(html: str) -> str:
             "the page states about itself:]\n" + "\n".join(lines))
 
 
+# Meta tags that describe the PLATFORM, not the learner's work. Verified live
+# 21 Aug: every claude.ai/claude.site artifact page serves the identical
+# "Title: Claude Artifact" boilerplate with no artifact-specific content —
+# counting that as "read" would hand the judge 20 generic words per learner
+# and pin the whole cohort at the no-evidence cap (the Day 06 Suno failure,
+# one level up). Boilerplate is a CONFIRMED-but-unread deliverable instead,
+# which routes the row to the honest ask-for-more path, never to a 2/10.
+_PLATFORM_BOILERPLATE_TITLES = {
+    "claude.ai": "claude artifact",
+    "claude.site": "claude artifact",
+}
+
+
+def _is_platform_boilerplate(url: str, meta: str) -> bool:
+    """True when the metadata names the platform, not the learner's work."""
+    host = (urlparse(url).hostname or "").lower().removeprefix("www.")
+    generic = _PLATFORM_BOILERPLATE_TITLES.get(host)
+    if not generic:
+        return False
+    m = re.search(r"^Title:\s*(.+)$", meta or "", re.M)
+    return bool(m) and m.group(1).strip().lower() == generic
+
+
 def _read_response(content: bytes, ctype: str, url: str) -> Tuple[str, str]:
     """Turn a fetched body into reviewable text, whatever it turned out to be."""
     if not content:
@@ -354,7 +377,7 @@ def _read_response(content: bytes, ctype: str, url: str) -> Tuple[str, str]:
         # published exactly what the task asked for. Observed live 14 Aug on
         # Day 06 (Suno): "11 words of content, link(unread)".
         meta = describe_from_metadata(html)
-        if meta:
+        if meta and not _is_platform_boilerplate(url, meta):
             return meta, ""
         return "", ("the page loads its content in the browser, so its text "
                     "could not be read server-side")
@@ -579,6 +602,40 @@ def substantive_words(content: str) -> int:
 def unreadable_deliverable(manifest: str) -> bool:
     """Does the manifest record an artefact that exists but could not be read?"""
     return "could not be read" in (manifest or "")
+
+
+def records_failed_read(manifest: str) -> bool:
+    """Does this stored manifest carry a FAILED read — an item that could not
+    be read or could not be retrieved when the row was first assembled?
+
+    Why it matters: the regrade path reuses stored assemblies whole (see
+    from_stored_submission — correct, that stopped the 1126 double-manifest
+    bug). But a stored assembly that RECORDS a failure is a snapshot of a bad
+    day: the 21 Aug probe found ~110 'unreadable' files that existed and
+    served bytes on demand — transient fetch errors and the media-type bug,
+    frozen into notes and replayed by every regrade since. A failure on
+    record is a reason to read the source again, not a result to reuse.
+    """
+    m = manifest or ""
+    return "could not be read" in m or "could not be retrieved" in m
+
+
+_TYPED_BLOCK_RE = re.compile(
+    r"===\s*ITEM\s+\d+\s*:\s*TYPED TEXT[^\n]*===\s*\n(.*?)(?=\n===\s*ITEM\s+\d+\s*:|\Z)",
+    re.IGNORECASE | re.DOTALL)
+
+
+def typed_text_from(assembled_content: str) -> str:
+    """Recover the learner's own typing from an assembled content body.
+
+    Used when a stored assembly is being DISCARDED for re-extraction: feeding
+    the whole assembly back through from_typed would nest manifest inside
+    manifest — the exact defect that took student 1126 from 6.8 to 1.2 — so
+    only the TYPED TEXT blocks come forward.
+    """
+    return "\n\n".join(
+        m.strip() for m in _TYPED_BLOCK_RE.findall(assembled_content or "")
+    ).strip()
 
 
 def is_unassessable(manifest: str, content: str) -> bool:

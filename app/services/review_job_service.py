@@ -54,6 +54,12 @@ MAX_CONSECUTIVE_FAILURES = int(os.getenv("REVIEW_JOB_MAX_FAILS", "8"))
 # /health and to the learners using it while a cohort is grading.
 PAUSE_SECONDS = float(os.getenv("REVIEW_JOB_PAUSE", "0.5"))
 
+# Reviews in flight at once AFTER the warm-up item. 2 is the ceiling the
+# 21 Aug sweeps proved on cpu-basic hardware — 3 concurrent OCR-heavy reviews
+# restarted the Space mid-cohort. Raise this env only after upgrading the
+# Space hardware, never speculatively.
+WORKER_CONCURRENCY = max(1, int(os.getenv("REVIEW_JOB_CONCURRENCY", "2")))
+
 
 def jobs_enabled() -> bool:
     """The flag. Absent means this whole subsystem is inert."""
@@ -209,6 +215,31 @@ def worker_is_running() -> bool:
     return _worker_running
 
 
+def _run_one(tenant, item: dict, review_one: Callable) -> str:
+    """Review one item, record the outcome, return the state. Never raises —
+    a failing row is data for the abort counter, not a queue-stopper."""
+    try:
+        state, detail, score = review_one(item["scope_id"], item["submission_id"])
+    except Exception as e:
+        state, detail, score = "failed", f"{type(e).__name__}: {e}"[:255], None
+    mark_item(tenant, item["id"], state, detail, score)
+    return state
+
+
+def _finalize(tenant, job_id: int) -> Progress:
+    """Write the job's closing state from what the items actually say."""
+    final = progress(tenant, job_id)
+    if not final.finished:
+        set_job_state(tenant, job_id, "aborted",
+                      f"stopped with {final.pending} still pending — the queue "
+                      f"is not draining, look at the Space log")
+    else:
+        set_job_state(tenant, job_id, "finished",
+                      f"{final.done} reviewed, {final.skipped} skipped, "
+                      f"{final.failed} failed")
+    return final
+
+
 def drain(tenant, job_id: int, review_one: Callable, pause: float = PAUSE_SECONDS,
           sleeper: Callable = time.sleep) -> Progress:
     """Review every pending item in this job, one at a time.
@@ -236,12 +267,7 @@ def drain(tenant, job_id: int, review_one: Callable, pause: float = PAUSE_SECOND
         if item is None:
             break
 
-        try:
-            state, detail, score = review_one(item["scope_id"], item["submission_id"])
-        except Exception as e:                      # never let one row stop the queue
-            state, detail, score = "failed", f"{type(e).__name__}: {e}"[:255], None
-
-        mark_item(tenant, item["id"], state, detail, score)
+        state = _run_one(tenant, item, review_one)
         consecutive = consecutive + 1 if state == "failed" else 0
 
         if should_abort(consecutive):
@@ -253,16 +279,75 @@ def drain(tenant, job_id: int, review_one: Callable, pause: float = PAUSE_SECOND
         if pause:
             sleeper(pause)
 
-    final = progress(tenant, job_id)
-    if not final.finished:
+    return _finalize(tenant, job_id)
+
+
+def drain_parallel(tenant, job_id: int, review_one: Callable,
+                   workers: Optional[int] = None, pause: float = PAUSE_SECONDS,
+                   sleeper: Callable = time.sleep) -> Progress:
+    """drain() with a small pool — the shape the 21 Aug sweeps proved by hand.
+
+    The FIRST item still runs alone: it derives the rubric and builds the
+    knowledge pack that every later review of the same assignment reuses, so
+    starting parallel on a cold cache would rebuild them N times (the exact
+    thundering herd drain()'s docstring records). After that warm-up, up to
+    `workers` reviews run at once from a shared cursor. workers<=1 is drain()
+    exactly.
+
+    The consecutive-failure abort survives the pool: a shared counter behind a
+    lock, an Event the threads check before taking the next row. Eight dead
+    provider calls stop every thread, not just the one that saw them.
+    """
+    workers = WORKER_CONCURRENCY if workers is None else workers
+    if workers <= 1:
+        return drain(tenant, job_id, review_one, pause, sleeper)
+
+    pending = [i for i in job_items(tenant, job_id) if i["state"] == "pending"]
+    if not pending:
+        return _finalize(tenant, job_id)
+
+    first_state = _run_one(tenant, pending[0], review_one)   # cache warm-up
+    rest = pending[1:]
+
+    lock = threading.Lock()
+    shared = {"next": 0, "consecutive": 1 if first_state == "failed" else 0}
+    stop = threading.Event()
+
+    def take() -> Optional[dict]:
+        with lock:
+            if stop.is_set() or shared["next"] >= len(rest):
+                return None
+            item = rest[shared["next"]]
+            shared["next"] += 1
+            return item
+
+    def work() -> None:
+        while True:
+            item = take()
+            if item is None:
+                return
+            state = _run_one(tenant, item, review_one)
+            with lock:
+                shared["consecutive"] = (shared["consecutive"] + 1
+                                         if state == "failed" else 0)
+                if should_abort(shared["consecutive"]):
+                    stop.set()
+            if pause:
+                sleeper(pause)
+
+    threads = [threading.Thread(target=work, name=f"review-job-w{n}", daemon=True)
+               for n in range(min(workers, max(1, len(rest))))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    if stop.is_set():
         set_job_state(tenant, job_id, "aborted",
-                      f"stopped after one pass with {final.pending} still pending "
-                      f"— the queue is not draining, look at the Space log")
-        return final
-    set_job_state(tenant, job_id, "finished",
-                  f"{final.done} reviewed, {final.skipped} skipped, "
-                  f"{final.failed} failed")
-    return final
+                      f"stopped after {shared['consecutive']} consecutive "
+                      f"failures — check the provider key and the Space log")
+        return progress(tenant, job_id)
+    return _finalize(tenant, job_id)
 
 
 def start_worker(tenant, job_id: int, review_one: Callable) -> bool:
@@ -280,8 +365,9 @@ def start_worker(tenant, job_id: int, review_one: Callable) -> bool:
     def _run():
         global _worker_running
         try:
-            print(f"[JOB {job_id}] worker started")
-            final = drain(tenant, job_id, review_one)
+            print(f"[JOB {job_id}] worker started "
+                  f"(concurrency {WORKER_CONCURRENCY})")
+            final = drain_parallel(tenant, job_id, review_one)
             print(f"[JOB {job_id}] finished — {final.done} reviewed, "
                   f"{final.skipped} skipped, {final.failed} failed")
         except Exception as e:

@@ -17,6 +17,7 @@ from app.routes.review import router as review_router
 from app.routes.assignment_review import router as assignment_router
 from app.routes.industry_session_review import router as industry_session_router   # ← ADD THIS
 from app.routes.exceptions import router as exceptions_router
+from app.routes.review_jobs import router as review_jobs_router, resume_after_restart
 from app.services.capacity import CapacityFull, BUSY_MESSAGE, RETRY_AFTER_SECONDS, snapshot as capacity_snapshot
 from app.tenants import resolve_tenant_by_key, all_tenant_ids, configured_tenant_ids, TENANTS, Tenant
 from app.database import test_all_tenants, set_current_tenant
@@ -81,6 +82,7 @@ app.include_router(review_router,            dependencies=[Depends(require_auth_
 app.include_router(assignment_router,        dependencies=[Depends(require_auth_and_tenant)])
 app.include_router(industry_session_router,  dependencies=[Depends(require_auth_and_tenant)])   # ← ADD THIS
 app.include_router(exceptions_router,        dependencies=[Depends(require_auth_and_tenant)])
+app.include_router(review_jobs_router,       dependencies=[Depends(require_auth_and_tenant)])
 
 
 # ===== Public endpoints (no auth) =====
@@ -252,6 +254,12 @@ async def startup():
     ok = sum(1 for v in results.values() if v)
     print(f"   {ok}/{len(results)} tenant DBs connected")
     print("")
+    # Deploys restart the Space mid-cohort; a flagged-on queue picks its job
+    # back up from DB state instead of leaving half a class unmarked.
+    try:
+        resume_after_restart()
+    except Exception as e:
+        print(f"   ⚠️ review-jobs resume skipped: {e}")
 
 
 # NOTE: /api/debug/keycheck was removed on 12 Aug 2026.
