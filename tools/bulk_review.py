@@ -282,6 +282,12 @@ def review_one(p: Pending, agent_url: str, api_key: str, timeout: int,
                           extra={"words": data.get("wordCount"),
                                  "was": data.get("previousGrade"),
                                  "outOf": data.get("outOf")})
+        if data.get("status") == "wrong_task":
+            # A ruling, not a failure: the row was read and judged to be a
+            # different task's work — no mark written, student told what
+            # arrived. Reporting these as "no stored content" (22 Aug) made a
+            # policy outcome look like 108 fetch failures.
+            return Result(p, False, detail="", ms=ms, skipped="wrong_task")
         if data.get("needsInput") or data.get("status") == "needs_input":
             return Result(p, False, detail="no stored content to review", ms=ms)
         if data.get("blocked"):

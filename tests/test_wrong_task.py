@@ -224,3 +224,134 @@ def test_the_judge_carries_the_contradiction_check():
     assert "contradiction check" in rules
     assert "is_wrong_task must be false: you have just identified the work" \
         in rules
+
+
+# ── 22 Aug PRODUCTION defect: the guard compared against an EMPTY string ──
+#
+# The first contradiction guard read pack["title"]/["summary"] — keys the
+# real knowledge pack does not have (concepts, question_demands, band_anchors
+# ...). task_text was "" in production, the guard never fired, and 143 rows
+# were re-run through it unprotected while the tests stayed green on a toy
+# pack that DID have "summary". These tests replay the real pack shape and
+# the live rulings from that run.
+
+REAL_PACK = {   # the shape knowledge_service actually builds — no title/summary
+    "concepts": [{"name": "Goal decomposition", "why_it_matters": "x",
+                  "must_cover": True}],
+    "question_demands": ["Generate an AI image of your 5-year future self",
+                         "List the 5 steps you will take to achieve it"],
+    "ideal_answer_skeleton": ["A personal vision", "Five sequenced steps"],
+    "band_anchors": {"outstanding": "o", "proficient": "p", "emerging": "e"},
+    "common_misconceptions": [], "specificity_markers": [],
+}
+
+TASK_EXPLICIT = ("Day 01:ChatGpt Assignment - Yourself in 5 years "
+                 "Generate an AI image of your 5-year future self, along "
+                 "with the 5 steps you will take to achieve it.")
+
+
+def _run_real_pack(monkeypatch, answer, task_text=""):
+    monkeypatch.setattr(rp.ai_service, "call_structured",
+                        lambda blocks, schema, **kw: answer)
+    monkeypatch.setattr(rp.ai_service, "set_student_context",
+                        lambda *a, **k: None, raising=False)
+    return rp.run_review(
+        scope_type="assignment", scope_id=17, pack=REAL_PACK, pack_version=1,
+        rubric=RUBRIC, student_answer="My plan. " * 100, word_count=300,
+        word_limit_min=0, word_limit_max=999999, student_id=713,
+        task_text=task_text)
+
+
+def test_student_713_the_upsc_plan_is_scored_not_ungraded(monkeypatch):
+    """Live 22 Aug ruling, verbatim: the judge NAMES the work a personal
+    5-year career plan and still declares — with the real pack shape."""
+    answer = _review(pct=15, declare_wrong=True)
+    answer["wrong_task"]["what_it_is"] = (
+        "This is a personal 5-year career plan focused on preparing for the "
+        "UPSC examination to become an IAS Officer, which falls entirely "
+        "outside the FinTech, Banking, and AI domain")
+    out = _run_real_pack(monkeypatch, answer, task_text=TASK_EXPLICIT)
+    assert out["wrongTask"]["declared"] is False
+
+
+def test_the_pack_fallback_protects_even_without_explicit_task_text(monkeypatch):
+    """No route-supplied task text: question_demands/skeleton carry the
+    task's words, so the guard still fires — never an empty comparison."""
+    answer = _review(pct=15, declare_wrong=True)
+    answer["wrong_task"]["what_it_is"] = "A personal 5-year career plan"
+    out = _run_real_pack(monkeypatch, answer, task_text="")
+    assert out["wrongTask"]["declared"] is False
+
+
+def test_student_685_the_lawyer_poster_is_scored(monkeypatch):
+    """'A personal career aspiration poster for becoming a lawyer in India,
+    which lies entirely outside the FinTech...' — personal + domain
+    exclusion, both forbidden grounds."""
+    answer = _review(pct=20, declare_wrong=True)
+    answer["wrong_task"]["what_it_is"] = (
+        "A personal career aspiration poster for becoming a lawyer in India, "
+        "which lies entirely outside the FinTech, Banking, and AI domains")
+    out = _run_real_pack(monkeypatch, answer, task_text=TASK_EXPLICIT)
+    assert out["wrongTask"]["declared"] is False
+
+
+def test_student_121_missing_image_is_incomplete_not_wrong(monkeypatch):
+    """'...career planning document outlining a Finance Manager role and
+    five career steps, with no AI-generated image submitted' — an attempt
+    missing ONE element is a low score on that element, never wrong_task."""
+    answer = _review(pct=25, declare_wrong=True)
+    answer["wrong_task"]["what_it_is"] = (
+        "A text-only career planning document outlining a Finance Manager "
+        "role and five career steps, with no AI-generated image submitted")
+    out = _run_real_pack(monkeypatch, answer, task_text=TASK_EXPLICIT)
+    assert out["wrongTask"]["declared"] is False
+
+
+def test_verbose_negations_do_not_void_legitimate_rulings(monkeypatch):
+    """The judge restates the task in the negation clause ('...not a
+    personal 5-year future-self plan'). Overlap runs on the pre-negation
+    part only, so the Asian Paints deck and the Van Gogh stay declared."""
+    for legit in (
+        "A comparative investment analysis slide deck evaluating Asian "
+        "Paints versus Berger Paints as financial instruments — a financial "
+        "research assignment, not a personal 5-year future-self career plan "
+        "with AI image and sequential steps.",
+        "A Van Gogh-style landscape painting (Starry Night derivative) with "
+        "no connection to a personal 5-year career plan, future professional "
+        "self, or FinTech/Banking/AI domain.",
+        "A multi-level marketing (MLM) recruitment and sales roadmap for "
+        "Herbalife, not a personal 5-year career vision or AI-generated "
+        "image of the student's future self.",
+        "This is the HTML boilerplate and JavaScript runtime of the "
+        "Claude.ai web application interface itself, not a student "
+        "submission to the 5-year future self assignment.",
+    ):
+        answer = _review(pct=10, declare_wrong=True)
+        answer["wrong_task"]["what_it_is"] = legit
+        out = _run_real_pack(monkeypatch, answer, task_text=TASK_EXPLICIT)
+        assert out["wrongTask"]["declared"] is True, legit[:60]
+
+
+def test_generic_qualification_infographics_stay_declared(monkeypatch):
+    """Her ruling's OTHER half: generic reference material with no personal
+    plan in it IS wrong task — CA/CS pathway posters keep their ruling."""
+    answer = _review(pct=12, declare_wrong=True)
+    answer["wrong_task"]["what_it_is"] = (
+        "This is a generic career-progression roadmap for pursuing the "
+        "Company Secretary (CS) qualification in India, describing the "
+        "statutory pathway set by ICSI")
+    out = _run_real_pack(monkeypatch, answer, task_text=TASK_EXPLICIT)
+    assert out["wrongTask"]["declared"] is True
+
+
+def test_void_reason_is_pure_and_names_its_grounds():
+    t = TASK_EXPLICIT
+    assert "names this task" in rp.wrong_task_void_reason(
+        "A personal 5-year career plan", t)
+    assert "PERSONAL" in rp.wrong_task_void_reason(
+        "A personal career aspiration poster for becoming a lawyer", t)
+    assert "any career counts" in rp.wrong_task_void_reason(
+        "A study roadmap, which falls entirely outside the FinTech domain", t)
+    assert rp.wrong_task_void_reason(
+        "an investment analysis slide deck", t) == ""
+    assert rp.wrong_task_void_reason("", t) == ""

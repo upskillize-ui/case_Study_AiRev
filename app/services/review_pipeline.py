@@ -339,7 +339,7 @@ NON-NEGOTIABLE METHOD:
 9c. NEVER DEDUCT FOR UNPROVABLE PROVENANCE. "No evidence the image was AI-generated", "cannot confirm which tool made this", "no AI prompt is provided", "prompt engineering cannot be assessed" — a finished artifact carries no record of its maker OR of the prompt that made it, so these statements are about YOUR visibility, not the learner's work. If the task asked for an AI-generated artifact and a plausible artifact is present, the generation requirement is satisfied in full. Deduct for a missing prompt ONLY when the task text explicitly asks the learner to submit the prompt. (Live failure: a complete professional 5-year poster lost 35% of its image criterion for "no AI prompt provided" on a task that never asked for one.)
 10. ONE WEAKNESS, ONE DEDUCTION. Judge each criterion strictly on what ITS OWN name asks and nothing else. If a rubric has "five steps are listed" and "the steps are specific", vague steps cost marks on the SECOND only — the first asks whether five steps exist, and they do. Charging one shortcoming against two criteria takes 60 marks for a single flaw and buries the part the learner actually did. Where two criteria overlap, credit the narrower reading of each.
 11. HOW THE WORK WAS MADE IS NOT A SCORING FACT. Never lower a criterion because you cannot tell which AI drafted it, which settings were toggled, or in what order the steps were taken. A finished artifact carries no record of its own making, so "no evidence ChatGPT was used" is a statement about your visibility, not about the learner's work — and deducting for it fails every learner equally, including the ones who followed the method exactly. Judge the OUTPUT the method was meant to produce. This is the same rule as the authorship estimate above: provenance is advisory, never scored.
-12. WRONG WORK IS NOT LOW-QUALITY WORK. If the submission is recognizably a DIFFERENT task's deliverable — a slide deck of investment analysis where a 5-year career-plan image was asked for, another day's assignment resubmitted here — set wrong_task.is_wrong_task=true and name what it is in what_it_is. Do not stretch the rubric over it and do not score it as a weak attempt: the policy for wrong work is NO grade, not a low grade. Declare it ONLY from substantial content you actually READ that clearly belongs to another task — you must be able to say WHAT the work is, not merely that this task's evidence is missing. Empty, thin, fragmentary or unreadable content is NEVER wrong_task (that is a no-evidence low score); an unread or partially read link or file is NEVER wrong_task; and a weak, partial or badly formatted attempt AT THIS TASK is never wrong_task either — that is a low score with reasons. THE LEARNER'S OWN CHOICES WITHIN THE BRIEF ARE NEVER GROUNDS FOR wrong_task — topic, style, career, domain, tool settings: an attempt at THIS task about the learner's own subject IS this task. (Live rule for the 5-year-plan day: THE LEARNER'S CAREER CHOICE IS NEVER GROUNDS FOR wrong_task — a personal vision as lawyer, CA, teacher, government officer, writer, athlete, ANY field counts; policy: any career counts; domain alignment may be discussed in feedback but never used to un-grade. On that day wrong_task was reserved for content that is not a personal future-self plan AT ALL — study guides, exam-syllabus material, generic reference documents. Apply the same shape to every task: wrong_task is reserved for content that makes no attempt at THIS task's brief whatsoever.) CONTRADICTION CHECK before declaring: re-read your own what_it_is — if that description could equally describe THIS task's deliverable ("a personal 5-year career plan" on the 5-year-plan day), then is_wrong_task MUST be false: you have just identified the work as the task itself, and its shortcomings are a score, not an un-grading.
+12. WRONG WORK IS NOT LOW-QUALITY WORK. If the submission is recognizably a DIFFERENT task's deliverable — a slide deck of investment analysis where a 5-year career-plan image was asked for, another day's assignment resubmitted here — set wrong_task.is_wrong_task=true and name what it is in what_it_is. Do not stretch the rubric over it and do not score it as a weak attempt: the policy for wrong work is NO grade, not a low grade. Declare it ONLY from substantial content you actually READ that clearly belongs to another task — you must be able to say WHAT the work is, not merely that this task's evidence is missing. Empty, thin, fragmentary or unreadable content is NEVER wrong_task (that is a no-evidence low score); an unread or partially read link or file is NEVER wrong_task; and a weak, partial or badly formatted attempt AT THIS TASK is never wrong_task either — that is a low score with reasons. THE LEARNER'S OWN CHOICES WITHIN THE BRIEF ARE NEVER GROUNDS FOR wrong_task — topic, style, career, domain, tool settings: an attempt at THIS task about the learner's own subject IS this task. (Live rule for the 5-year-plan day: THE LEARNER'S CAREER CHOICE IS NEVER GROUNDS FOR wrong_task — a personal vision as lawyer, CA, teacher, government officer, writer, athlete, ANY field counts; policy: any career counts; domain alignment may be discussed in feedback but never used to un-grade. On that day wrong_task was reserved for content that is not a personal future-self plan AT ALL — study guides, exam-syllabus material, generic reference documents. Apply the same shape to every task: wrong_task is reserved for content that makes no attempt at THIS task's brief whatsoever.) CONTRADICTION CHECK before declaring: re-read your own what_it_is — if that description could equally describe THIS task's deliverable ("a personal 5-year career plan" on the 5-year-plan day), then is_wrong_task MUST be false: you have just identified the work as the task itself, and its shortcomings are a score, not an un-grading. An image depicting a person in ANY professional role (lawyer, teacher, officer, artist...) on a future-self task IS the future-self image — score the missing pieces (steps, reasoning) on their own criteria, never wrong_task. A submission MISSING one required element (no image, no steps) is an incomplete attempt — low score on that element's criteria, never wrong_task.
 13. MORE THAN ASKED IS NOT LESS THAN ASKED. When a criterion requires N items and the learner provides N OR MORE that clearly include the required N, the count requirement is FULLY met — score that aspect as satisfied. Never deduct for exceeding a requested count, length, or scope. (Live failure: a learner listed 8 career steps containing the required 5 and was scored 30% on "5 distinct steps are listed" — the five steps were right there, plus three the task didn't ask for.) Extra material may still be judged for QUALITY under the criteria that measure quality — but existence criteria are met by inclusion.
 14. BUILT ARTIFACTS AND PUBLISHED LINKS. When the task's deliverable is something the learner BUILT — a web page, an app, an artifact, a slide deck: (a) whatever was READ from it IS the deliverable — extracted slide text, OCR of its screenshots, a page's visible text, or a page's SOURCE CODE all count in full; source code of a client-rendered page is that page, judge the built thing from its code exactly as you would from its screen. (b) A link the manifest confirms as submitted but unreadable from the server (browser-only pages such as Claude artifact links) is evidence the learner PUBLISHED a deliverable: it fully satisfies any criterion that asks for the artifact to be created, published, shared or linked. Judge the remaining quality criteria only from what IS readable — the screenshots, pasted content, and the learner's own description — and state plainly which parts could not be seen. Never charge a criterion for OUR inability to open the learner's published page (the same visibility rule as 9c and 11), and never rule wrong_task from a link you could not read."""
 
@@ -499,6 +499,72 @@ def names_this_task(what_it_is: str, task_text: str) -> bool:
     """
     return len(_significant_words(what_it_is)
                & _significant_words(task_text)) >= 2
+
+
+# The judge writes identifications as "X, not Y" — and Y restates the task
+# ("...not a personal 5-year future-self plan with AI image"). Overlap must
+# run on X alone, the part that says what the work IS: matching against the
+# negation clause would void every verbose ruling, including the legitimate
+# ones (the Asian Paints deck's ruling also ends "...not a 5-year plan").
+_NEGATION_SPLIT = re.compile(
+    r",?\s+(?:not\s|rather than\s|instead of\s|as opposed to\s|with no\b|"
+    r"no evidence of\s|without\s|lacking\s|unrelated to\s|—\s*not\s)", re.I)
+
+# Career-choice exclusion in the judge's own words — the reasoning Ranjana's
+# 21 Aug ruling forbids outright ("any career counts"). Live 22 Aug: "falls
+# entirely outside the FinTech, Banking, and AI domain" (student 713, an IAS
+# plan), "lies entirely outside the FinTech..." (685, a lawyer poster).
+_DOMAIN_EXCLUSION = re.compile(
+    r"outside the|falls?\s+outside|lies?\s+.{0,12}outside|not aligned with|"
+    r"different domain|domain that (?:frames|defines)|outside .{0,30}domain",
+    re.I)
+
+# "A personal career aspiration poster for becoming a lawyer" — the judge
+# calling the work PERSONAL plus a plan-word is the judge recognizing the
+# task (a personal plan in ANY field IS the task).
+_PERSONAL_PLAN = re.compile(
+    r"\bpersonal\b.{0,80}\b(?:plan|vision|aspiration|goal|roadmap|journey|"
+    r"career)\b", re.I)
+
+
+def wrong_task_void_reason(what_it_is: str, task_text: str) -> str:
+    """Why this declaration carries no ruling — or "" when it stands. Pure.
+
+    Three independent voiders, any one final:
+      1. The pre-negation identification names THIS task's own deliverable
+         (word overlap with the task title/brief).
+      2. The identification calls the work a PERSONAL plan/vision — career
+         choice is never grounds for wrong_task.
+      3. The ruling reasons by domain exclusion ("outside the FinTech...
+         domain") — the exact reasoning the any-career policy forbids.
+    """
+    ident = _NEGATION_SPLIT.split(what_it_is or "", 1)[0]
+    if names_this_task(ident, task_text):
+        return "identification names this task's own deliverable"
+    if _PERSONAL_PLAN.search(ident):
+        return "identified as a PERSONAL plan — career choice is never grounds"
+    if _DOMAIN_EXCLUSION.search(what_it_is or ""):
+        return "domain-exclusion reasoning — any career counts"
+    return ""
+
+
+def _task_text_for(pack: dict, explicit: str = "") -> str:
+    """The words that describe THIS task, for the contradiction check.
+
+    22 Aug defect, pinned: the first version read pack["title"]/["summary"] —
+    keys the real knowledge pack DOES NOT HAVE (its keys are concepts,
+    question_demands, band_anchors...). task_text came back empty, the guard
+    never fired in production, and the tests stayed green because their toy
+    pack had a "summary". Now the route passes the assignment's own
+    title+description explicitly, and the fallback reads the fields the pack
+    actually carries.
+    """
+    if (explicit or "").strip():
+        return explicit
+    parts = [pack.get("title", ""), pack.get("summary", "")]
+    parts += [str(p) for p in (pack.get("question_demands") or [])]
+    parts += [str(p) for p in (pack.get("ideal_answer_skeleton") or [])]
+    return " ".join(p for p in parts if p)
 
 
 def should_hard_zero(review: dict, word_count: int) -> bool:
@@ -677,6 +743,11 @@ def review_with_knowledge(scope_type: str, scope_id: int, raw_source: dict,
         rubric=rubric, student_answer=student_answer, word_count=word_count,
         word_limit_min=word_limit_min, word_limit_max=word_limit_max,
         student_id=student_id, gate_overrides_in=gate_overrides,
+        # The task's OWN words, for the wrong-task contradiction check — the
+        # pack does not carry title/description (22 Aug defect, see
+        # _task_text_for).
+        task_text=(f"{raw_source.get('title', '')} "
+                   f"{raw_source.get('description', '')}"),
     )
 
 
@@ -684,7 +755,8 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
                rubric: dict, student_answer: str, word_count: int,
                word_limit_min: int, word_limit_max: int,
                scope_id: int = 0, student_id: int = 0,
-               gate_overrides_in: Optional[dict] = None) -> dict:
+               gate_overrides_in: Optional[dict] = None,
+               task_text: str = "") -> dict:
     """Full pipeline for one submission. Raises on AI failure — the route
     owns the fallback to the legacy path."""
     rubric_criteria = rubric.get("criteria", []) or []
@@ -818,26 +890,25 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
     if not isinstance(wrong, dict):
         wrong = {}
     what_it_is = (wrong.get("what_it_is") or "").strip()
-    #   4. what_it_is must NOT describe this task's own deliverable — the
-    #      22 Aug sweep un-graded rows whose identification literally read
-    #      "A personal 5-year career plan" on the 5-year-plan assignment.
-    #      A declaration that names THIS task is a contradiction; the rubric
-    #      scores the work instead (see names_this_task).
-    task_text = f"{pack.get('title', '')} {pack.get('summary', '')}"
+    #   4. the ruling must survive wrong_task_void_reason — declarations that
+    #      NAME this task's own deliverable, call the work a PERSONAL plan,
+    #      or reason by domain exclusion carry no ruling (22 Aug: "a personal
+    #      5-year career plan ... outside the FinTech domain" un-graded real
+    #      attempts; policy: any career counts).
+    void_reason = (wrong_task_void_reason(
+        what_it_is, _task_text_for(pack, task_text))
+        if wrong.get("is_wrong_task") and what_it_is else "")
     wrong_task = {
         "declared": (bool(wrong.get("is_wrong_task"))
                      and scores["totalScore"] < 40
                      and word_count >= WRONG_TASK_MIN_WORDS
                      and bool(what_it_is)
-                     and not names_this_task(what_it_is, task_text)),
+                     and not void_reason),
         "whatItIs": what_it_is,
     }
-    if (bool(wrong.get("is_wrong_task")) and what_it_is
-            and not wrong_task["declared"]
-            and names_this_task(what_it_is, task_text)):
-        print(f"[WRONG-TASK] declaration VOIDED — identification "
-              f"'{what_it_is[:80]}' names this task's own deliverable; "
-              f"scoring normally")
+    if void_reason:
+        print(f"[WRONG-TASK] declaration VOIDED ({void_reason}) — "
+              f"'{what_it_is[:80]}' — scoring normally")
 
     # Authorship is ADVISORY — a missing or malformed field must never crash
     # the scoring pipeline (live 22 Jul: KeyError 'authorship' dropped a review
