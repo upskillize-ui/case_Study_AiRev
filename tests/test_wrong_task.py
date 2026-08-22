@@ -219,6 +219,41 @@ def test_names_this_task_is_pure_and_medium_blind():
     assert not rp.names_this_task("", TASK)
 
 
+# Live 22 Aug, assignment 19 "India's Fintech Market": Day-03 work sent to
+# the wrong day. The identification is plainly foreign, but it shares two
+# GENERIC words with the task — and that used to void the ruling and score
+# the row 0/F instead of leaving it un-graded for resubmission.
+FINTECH_TASK = ("Day 04: India's Fintech Market - research the Indian fintech "
+                "market, UPI adoption and the RBI regulations shaping it.")
+
+
+def test_generic_topic_words_alone_no_longer_void_a_ruling():
+    for foreign in (
+        "An infographic on AI's labor market impact in India "
+        "(2022-2026 hiring/job losses)",
+        "A career plan for the Indian job market",
+        "A report on India's population growth",
+    ):
+        assert not rp.names_this_task(foreign, FINTECH_TASK), foreign
+
+
+def test_a_distinctive_word_still_voids_the_ruling():
+    assert rp.names_this_task("A research note on UPI adoption", FINTECH_TASK)
+    assert rp.names_this_task("A deck about the fintech sector", FINTECH_TASK)
+
+
+def test_a_task_with_no_distinctive_words_keeps_the_two_word_rule():
+    """Day 01 owns nothing but generic words; there the original rule is the
+    only protection a real 5-year plan has."""
+    assert rp.names_this_task("A personal 5-year career plan", TASK)
+    assert not rp.names_this_task("A poster about the Indian market", TASK)
+
+
+def test_apostrophe_debris_never_counts_as_overlap():
+    assert "s" not in rp._significant_words("AI's labor market")
+    assert "5" in rp._significant_words("5 years")       # digits are real
+
+
 def test_the_judge_carries_the_contradiction_check():
     rules = rp._JUDGE_INSTRUCTIONS.lower()
     assert "contradiction check" in rules

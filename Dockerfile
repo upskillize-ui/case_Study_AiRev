@@ -13,7 +13,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Headless Chromium for link rendering (LINK_RENDER_ENABLED). --with-deps
 # pulls the system libraries Chromium needs on slim images. Kept AFTER the
 # pip layer so requirement changes don't re-download the browser.
+#
+# The browser goes in /opt, not the build user's home: whichever uid the
+# Space ends up running as must be able to READ it, and a browser installed
+# into /root/.cache is invisible to every other user. a+rX makes that
+# explicit rather than incidental.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 RUN playwright install --with-deps chromium \
+    && chmod -R a+rX /opt/ms-playwright \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . .

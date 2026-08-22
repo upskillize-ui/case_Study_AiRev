@@ -468,6 +468,24 @@ _TASK_OVERLAP_NOISE = {
 }
 
 
+# Topic words so common across this cohort's assignments that sharing them
+# proves nothing. Live 22 Aug, assignment 19 (India's Fintech Market): Day-03
+# work submitted to the wrong day identified itself as "An infographic on AI's
+# labor market impact in India" and was VOIDED on the overlap {india, market}
+# — two generic words — so genuinely wrong work was scored 0/F instead of
+# being left un-graded for resubmission. Generic words may no longer carry a
+# void on their own when the task has distinctive terms of its own.
+_GENERIC_TOPIC = {
+    "india", "indian", "market", "sector", "industry", "economy", "economic",
+    "research", "study", "report", "plan", "planning", "roadmap", "guide",
+    "overview", "summary", "analysi", "analysis", "insight", "career", "job",
+    "role", "year", "step", "goal", "future", "growth", "impact", "trend",
+    "labor", "labour", "workforce", "hiring", "company", "business", "brand",
+    "technology", "tool", "use", "using", "case", "example", "people",
+    "population", "self", "life", "world", "global", "new", "top", "list",
+}
+
+
 def _significant_words(text: str) -> set:
     words = re.findall(r"[a-z0-9]+", (text or "").lower().replace("-", " "))
     folded = set()
@@ -476,6 +494,10 @@ def _significant_words(text: str) -> set:
             w = "5"
         if len(w) > 3 and w.endswith("s"):
             w = w[:-1]                       # years/steps -> year/step
+        # 1-2 letter fragments are apostrophe debris ("AI's" -> ai, s) and
+        # match everything; digits that short are real ("5 years", "Day 01").
+        if len(w) < 3 and not w.isdigit():
+            continue
         if w not in _TASK_OVERLAP_NOISE:
             folded.add(w)
     return folded
@@ -496,9 +518,22 @@ def names_this_task(what_it_is: str, task_text: str) -> bool:
     The asymmetry is deliberate: a missed wrong_task costs one honest low
     score; a false one deletes a real grade. When the words say "this could
     be the task", the rubric scores it.
+
+    Two regimes, because "overlap" means different things on different days:
+      * A TOPIC-SPECIFIC task (fintech, Grok, Asian Paints) owns distinctive
+        words. Only those count — sharing "india" and "market" with the task
+        is not evidence of being it (assignment 19, live 22 Aug).
+      * A GENERIC task (Day 01: "yourself in 5 years, 5 steps") owns no
+        distinctive words at all. There the original rule stands: two
+        significant words in common mean the declaration is describing the
+        very thing it claims is foreign.
     """
-    return len(_significant_words(what_it_is)
-               & _significant_words(task_text)) >= 2
+    ident = _significant_words(what_it_is)
+    task = _significant_words(task_text)
+    distinctive = task - _GENERIC_TOPIC
+    if distinctive:
+        return bool(ident & distinctive)
+    return len(ident & task) >= 2
 
 
 # The judge writes identifications as "X, not Y" — and Y restates the task
