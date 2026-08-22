@@ -192,6 +192,19 @@ def from_links_in(text: str, limit: int = MAX_LINKS) -> List[Artefact]:
                                 note="not opened — link-reading time budget spent"))
             continue
         body, why = fetch_link(url)
+        if not body or _is_preview_only(body):
+            # The plain fetch saw nothing (or only link-preview metadata) —
+            # the page builds itself in a browser. If the agent's own browser
+            # is switched on, open the link the way a visitor would and read
+            # what actually renders. Failure falls through to the honest
+            # confirmed-but-unread record, exactly as before.
+            from app.services import link_renderer
+            if link_renderer.enabled():
+                rendered_text, render_why = link_renderer.read_rendered_link(url)
+                if rendered_text:
+                    body, why = rendered_text, ""
+                elif not body:
+                    why = render_why or why
         if body:
             out.append(Artefact(kind="link", label=url, text=body, confirmed=True))
         else:
@@ -199,6 +212,13 @@ def from_links_in(text: str, limit: int = MAX_LINKS) -> List[Artefact]:
             # we simply could not read it from here. Both facts go on the record.
             out.append(Artefact(kind="link", label=url, note=why, confirmed=True))
     return out
+
+
+def _is_preview_only(body: str) -> bool:
+    """Is this fetch_link result just link-preview metadata, not content?
+    That marker is describe_from_metadata's own header — when the renderer is
+    available, a real render beats a two-line preview. Pure."""
+    return (body or "").lstrip().startswith("[This link is a published page")
 
 
 def find_urls(text: str) -> List[str]:

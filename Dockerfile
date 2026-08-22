@@ -10,6 +10,12 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Headless Chromium for link rendering (LINK_RENDER_ENABLED). --with-deps
+# pulls the system libraries Chromium needs on slim images. Kept AFTER the
+# pip layer so requirement changes don't re-download the browser.
+RUN playwright install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY . .
 
 EXPOSE 7860

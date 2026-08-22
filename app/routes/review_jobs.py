@@ -188,6 +188,26 @@ def job_status(job_id: int, tenant: Tenant = Depends(get_tenant)):
     }
 
 
+@router.post("/render-check")
+def render_check(body: dict, tenant: Tenant = Depends(get_tenant),
+                 x_admin_key: str = Header(default="")):
+    """Staff canary for the link renderer: what would the agent read from
+    this URL? No review, no DB write — open, render, report. Lets Ranjana
+    verify a student link (Claude artifact, Gamma, Notion...) in seconds
+    after flipping LINK_RENDER_ENABLED, before any cohort run trusts it."""
+    _require_staff(x_admin_key)
+    from app.services import link_renderer
+    if not link_renderer.enabled():
+        raise HTTPException(status_code=403,
+                            detail="Set LINK_RENDER_ENABLED=1 on the Space first.")
+    url = str(body.get("url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="Send {\"url\": \"...\"}")
+    text, why = link_renderer.read_rendered_link(url)
+    return {"url": url, "readable": bool(text),
+            "words": len(text.split()), "preview": text[:1200], "why": why}
+
+
 def resume_after_restart() -> None:
     """Called at startup: deploys restart the Space mid-cohort, and item state
     lives in the DB precisely so the job can pick itself back up. Only acts
