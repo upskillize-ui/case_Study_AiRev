@@ -77,23 +77,45 @@ CHROME_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 # and all three would have been scored as the submission. A page matching
 # any of these is reported unreadable WITH ITS REASON, so the student can be
 # told what to fix instead of being graded on Notion's error text.
-_INTERSTITIALS = (
+# What a gate, a challenge or an error page says — none of it the student's
+# work. Live 22 Aug: two Notion links returned "Your browser is not
+# compatible with Notion", one returned Cloudflare's "Just a moment...", and
+# after those were fixed a third returned Notion's sign-in wall — "Sign in
+# to see this page in Darshana Gaikwad's space" — which the first phrase
+# list missed and reported as 251 readable words.
+#
+# STRONG phrases are unmistakable and match at any length: no student's
+# portfolio contains Notion's own sign-in copy. WEAK phrases could occur in
+# real writing ("page not found" in a note about a broken link), so they
+# only count on a page too short to be the work.
+_STRONG_INTERSTITIALS = (
+    (("sign in to see this page", "sign in to see this",
+      "you need access to view", "request access to view",
+      "you don't have access to this page"),
+     "this link is private — it opens a sign-in page instead of the work. "
+     "The page has to be published to the web (Share -> Publish) and the "
+     "published link submitted"),
     (("just a moment", "verifying you are human", "checking your browser",
-      "verifying...", "verify you are human", "attention required",
-      "ddos protection", "needs to review the security"),
+      "verify you are human", "attention required", "ddos protection",
+      "needs to review the security"),
      "the page was still showing a human-check (Cloudflare) when the "
      "browser gave up"),
     (("your browser is not compatible", "unsupported browser",
-      "browser is not supported", "update your browser",
-      "upgrade to the latest browser"),
+      "browser is not supported", "upgrade to the latest browser"),
      "the site refused to open this link in the reviewer's browser"),
     (("enable javascript", "requires javascript", "javascript is disabled",
       "javascript to run"),
      "the page never rendered — it asked for JavaScript it had been given"),
+)
+
+_WEAK_INTERSTITIALS = (
     (("sign in to continue", "log in to continue", "you need access",
       "request access", "permission to access", "sign up to view",
-      "no access to this page", "ask for access"),
-     "this link is private — it asks whoever opens it to sign in"),
+      "new user? sign up", "no access to this page", "ask for access",
+      "continue with google", "verifying..."),
+     "this link is private — it opens a sign-in page instead of the work. "
+     "The page has to be published to the web (Share -> Publish) and the "
+     "published link submitted"),
     (("page not found", "no longer exists", "content does not exist",
       "this page does not exist", "404 error"),
      "the page no longer exists at that address"),
@@ -125,17 +147,34 @@ class Rendered:
     final_url: str
 
 
+def _flatten(text: str) -> str:
+    """Lowercase, straighten typographic quotes, collapse whitespace. Pure.
+
+    Notion writes "You're almost there!" with a curly apostrophe, and the
+    line breaks inside a rendered page fall wherever the layout puts them —
+    so a phrase like "sign in to see this page" arrives split across lines
+    with a character no phrase list would match. Flatten first, then look.
+    """
+    flat = (text or "").lower().replace("\u2019", "'").replace("\u2018", "'")
+    return " ".join(flat.split())
+
+
 def interstitial_reason(title: str, text: str) -> str:
     """A gate, a challenge or an error page instead of the work? Pure.
 
     Returns the plain-English reason, or "" when the page looks like real
-    content. Long pages are never judged: a portfolio that happens to
-    contain the words "sign in" is a portfolio, not a login wall.
+    content. Strong phrases (Notion's own sign-in copy, Cloudflare's
+    challenge) are decisive at any length; weak ones are only trusted on a
+    page too short to be a submission, so a portfolio that happens to say
+    "sign in" keeps its grade.
     """
+    blob = _flatten(f"{title or ''} {text or ''}")
+    for phrases, reason in _STRONG_INTERSTITIALS:
+        if any(p in blob for p in phrases):
+            return reason
     if len((text or "").split()) > LINK_INTERSTITIAL_MAX_WORDS:
         return ""
-    blob = f"{title or ''} {text or ''}".lower()
-    for phrases, reason in _INTERSTITIALS:
+    for phrases, reason in _WEAK_INTERSTITIALS:
         if any(p in blob for p in phrases):
             return reason
     return ""

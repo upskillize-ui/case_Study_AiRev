@@ -305,3 +305,74 @@ def test_the_browser_claims_a_version_sites_can_parse():
     import re as _re
     assert _re.search(r"Chrome/\d+\.\d+\.\d+\.\d+ Safari", lr.CHROME_UA)
     assert "Headless" not in lr.CHROME_UA
+
+
+# ── the sign-in wall that got through the first phrase list ───────────────
+#
+# Live 22 Aug, student 1039's link. Reported READABLE, 251 words. Every one
+# of those words was Notion's login form. Note the curly apostrophe and the
+# line breaks — the reason it was missed.
+
+NOTION_SIGNIN = """Skip to content
+Skip to content
+D
+You’re almost there!
+Sign in to see this page in Darshana Gaikwad’s space
+Email
+Use an organization email to easily collaborate with teammates
+Continue
+or continue with
+Google
+ChatGPT
+Apple
+Microsoft
+Passkey
+SSO
+New user? Sign up
+By continuing, you acknowledge that you understand and agree to the Terms
+What is Notion?"""
+
+# Student 337's link, same run: a real portfolio, must keep its grade.
+REAL_PORTFOLIO = """30 Days 30 AI Tools : Overview
+Chatgpt
+What we learnt ? Uploading images in chatgpt. Making it colourful.
+Generating our future photo with desired occupation.
+Claude
+What we learnt about Claude? Making games. Generating PPTs. Creating apps.
+Perplexity
+AI-powered search and answer engine, not just a chatbot. Gives sources and
+citations for most answers so you can verify info. Great for research.
+Notion AI
+Revise the tool. Understand the tool. Practice the tool."""
+
+
+def test_the_notion_signin_wall_is_caught_however_it_is_punctuated():
+    reason = lr.interstitial_reason("Notion", NOTION_SIGNIN)
+    assert "private" in reason
+    assert "Publish" in reason                # tells the student the fix
+
+
+def test_a_signin_wall_is_caught_even_when_it_runs_long():
+    """It slipped through at 251 words. Length must not rescue a gate."""
+    padded = NOTION_SIGNIN + ("\nterms and conditions and privacy policy" * 60)
+    assert len(padded.split()) > lr.LINK_INTERSTITIAL_MAX_WORDS
+    assert "private" in lr.interstitial_reason("Notion", padded)
+
+
+def test_the_real_portfolio_from_the_same_run_still_grades():
+    assert lr.interstitial_reason("30 Days 30 AI Tools : Overview",
+                                  REAL_PORTFOLIO) == ""
+
+
+def test_curly_apostrophes_and_line_breaks_never_hide_a_phrase():
+    assert lr._flatten("You’re\nalmost   there!") == "you're almost there!"
+    split_across_lines = "Sign in to see\nthis page in someone's space"
+    assert "private" in lr.interstitial_reason("", split_across_lines)
+
+
+def test_a_student_writing_about_signing_in_keeps_the_grade():
+    """Weak phrases stay weak: a long page that discusses signing in to
+    ChatGPT is a portfolio, not a login wall."""
+    essay = ("To use ChatGPT you continue with Google and sign in to continue. "
+             "I wrote about that on day one. " * 40)
+    assert lr.interstitial_reason("My Portfolio", essay) == ""
