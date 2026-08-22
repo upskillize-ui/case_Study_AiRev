@@ -57,9 +57,19 @@ LINK_RENDER_OCR_MIN_WORDS = int(os.getenv("LINK_RENDER_OCR_MIN_WORDS", "80"))
 _render_lock = threading.Lock()
 
 
+# Values that mean "leave the browser switched off". Everything else means
+# on. Deliberately inverted: the old rule accepted only 1/true/yes, so a
+# well-meant LINK_RENDER_ENABLED=3 ("three browsers, please") read as OFF
+# and a whole link-day cohort would have been reviewed with every published
+# page unread — a silent failure, the worst kind. This is a switch, not a
+# count; the number of reviews running at once is reviewday's concurrency
+# argument, and the browser is one-at-a-time by design regardless.
+_OFF_VALUES = {"", "0", "false", "no", "off", "none", "null", "disabled"}
+
+
 def enabled() -> bool:
-    """The flag. Absent means this whole subsystem is inert."""
-    return os.getenv("LINK_RENDER_ENABLED", "").strip().lower() in ("1", "true", "yes")
+    """The flag. Absent or explicitly off means this subsystem is inert."""
+    return os.getenv("LINK_RENDER_ENABLED", "").strip().lower() not in _OFF_VALUES
 
 
 @dataclass

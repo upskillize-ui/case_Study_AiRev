@@ -217,3 +217,25 @@ def test_the_thin_and_richer_rules_are_pure():
     assert intake._render_is_richer("a b c", "") is True
     assert intake._render_is_richer("a b c", "[This link is a published page]") is True
     assert intake._render_is_richer("a b", "one two three four") is False
+
+
+# ── the switch is a switch, not a count ───────────────────────────────────
+
+def test_anything_that_is_not_plainly_off_switches_the_browser_on(monkeypatch):
+    """Ranjana, 22 Aug: 'what if i put 3 here?' Under the old rule 3 read as
+    OFF and every published page on a link day would come back unread, with
+    nothing in the log saying why. Only an explicit off value switches off."""
+    for value in ("1", "3", "true", "TRUE", "yes", "on", "Y", "2"):
+        monkeypatch.setenv("LINK_RENDER_ENABLED", value)
+        assert lr.enabled() is True, value
+
+
+def test_the_explicit_off_values_all_switch_it_off(monkeypatch):
+    for value in ("0", "false", "FALSE", "no", "off", "", "  ", "none"):
+        monkeypatch.setenv("LINK_RENDER_ENABLED", value)
+        assert lr.enabled() is False, repr(value)
+
+
+def test_an_absent_variable_is_still_off(monkeypatch):
+    monkeypatch.delenv("LINK_RENDER_ENABLED", raising=False)
+    assert lr.enabled() is False
