@@ -41,6 +41,7 @@ import base64
 import ipaddress
 import os
 import threading
+import time
 from dataclasses import dataclass
 from typing import Optional, Tuple
 from urllib.parse import urlparse
@@ -56,8 +57,18 @@ LINK_RENDER_OCR_MIN_WORDS = int(os.getenv("LINK_RENDER_OCR_MIN_WORDS", "80"))
 # A challenge page ("Just a moment...") clears itself a few seconds later.
 # Harvest, and if what came back is a gate rather than the work, wait and
 # harvest again — only on pages that need it, so a normal page pays nothing.
-LINK_RENDER_SETTLE_MS = int(os.getenv("LINK_RENDER_SETTLE_MS", "4000"))
-LINK_RENDER_SETTLE_TRIES = int(os.getenv("LINK_RENDER_SETTLE_TRIES", "3"))
+LINK_RENDER_SETTLE_MS = int(os.getenv("LINK_RENDER_SETTLE_MS", "5000"))
+LINK_RENDER_SETTLE_TRIES = int(os.getenv("LINK_RENDER_SETTLE_TRIES", "5"))
+# Cloudflare's challenge clears on a reload more often than on waiting: after
+# the first settle attempt fails, load the page once more before giving up.
+LINK_RENDER_RELOAD_ON_CHALLENGE = os.getenv(
+    "LINK_RENDER_RELOAD_ON_CHALLENGE", "1").strip().lower() not in ("0", "false", "no")
+# Minimum gap between two renders of the SAME host. The Day 04 audit opened
+# 73 Notion pages back to back and 23 came back as "Just a moment..." — while
+# 26 of their neighbours read fine. Successes and failures interleave, which
+# is the shape of rate limiting, not of a broken renderer. A few seconds of
+# space between visits costs a link day nothing and stops us tripping it.
+LINK_RENDER_HOST_GAP_MS = int(os.getenv("LINK_RENDER_HOST_GAP_MS", "5000"))
 # Above this many words the page is long enough to be real work, and a
 # stray "sign in" in a student's own text must not be read as a gate.
 LINK_INTERSTITIAL_MAX_WORDS = int(os.getenv("LINK_INTERSTITIAL_MAX_WORDS", "200"))
@@ -122,6 +133,20 @@ _WEAK_INTERSTITIALS = (
 )
 
 _render_lock = threading.Lock()
+_last_visit: dict = {}                # host -> monotonic seconds of last render
+
+
+def wait_needed(last_at: float, now: float, gap_ms: int) -> float:
+    """Seconds to pause before visiting this host again. Pure.
+
+    Zero when the host is new or the gap has already passed; never negative,
+    and never longer than the gap itself (a clock that jumped must not park
+    a review for an hour).
+    """
+    if last_at <= 0 or gap_ms <= 0:
+        return 0.0
+    remaining = (gap_ms / 1000.0) - (now - last_at)
+    return min(max(remaining, 0.0), gap_ms / 1000.0)
 
 
 # Values that mean "leave the browser switched off". Everything else means
@@ -262,10 +287,19 @@ def _render_raw(url: str) -> Tuple[Optional[Rendered], str]:
                 # A challenge page resolves itself; give it the chance
                 # before calling the link unreadable. Costs nothing on a
                 # page that came back clean the first time.
+                reloaded = False
                 for _ in range(LINK_RENDER_SETTLE_TRIES):
                     if not interstitial_reason(title, text):
                         break
                     page.wait_for_timeout(LINK_RENDER_SETTLE_MS)
+                    if LINK_RENDER_RELOAD_ON_CHALLENGE and not reloaded:
+                        reloaded = True
+                        try:
+                            page.reload(wait_until="domcontentloaded",
+                                        timeout=LINK_RENDER_TIMEOUT_MS)
+                            page.wait_for_timeout(LINK_RENDER_WAIT_MS)
+                        except Exception:
+                            pass          # the wait alone still gets a turn
                     text = _harvest_text(page)
                     title = page.title() or ""
 
@@ -297,8 +331,16 @@ def render_link(url: str) -> Tuple[Optional[Rendered], str]:
     ok, why = check_public_url(url)
     if not ok:
         return None, why
+    host = (urlparse(url).hostname or "").lower()
     with _render_lock:                    # one Chromium at a time, ever
-        return _render_raw(url)
+        pause = wait_needed(_last_visit.get(host, 0.0),
+                            time.monotonic(), LINK_RENDER_HOST_GAP_MS)
+        if pause:
+            time.sleep(pause)             # do not trip the host's rate limit
+        try:
+            return _render_raw(url)
+        finally:
+            _last_visit[host] = time.monotonic()
 
 
 # ─── what the marker receives ───────────────────────────────────────────────

@@ -376,3 +376,43 @@ def test_a_student_writing_about_signing_in_keeps_the_grade():
     essay = ("To use ChatGPT you continue with Google and sign in to continue. "
              "I wrote about that on day one. " * 40)
     assert lr.interstitial_reason("My Portfolio", essay) == ""
+
+
+# ── not tripping the host's rate limit ────────────────────────────────────
+#
+# The Day 04 audit opened 73 Notion pages back to back. 26 read fine, 23
+# came back "Just a moment...", and the two kinds interleave through the
+# run — the shape of rate limiting, not of a broken renderer. Spacing
+# visits to one host costs a link day a couple of minutes and stops us
+# manufacturing "US must act" rows out of our own impatience.
+
+def test_a_host_we_have_not_visited_is_never_delayed():
+    assert lr.wait_needed(0.0, 100.0, 5000) == 0.0
+
+
+def test_a_second_visit_too_soon_waits_the_remainder():
+    assert lr.wait_needed(100.0, 102.0, 5000) == pytest.approx(3.0)
+
+
+def test_a_host_left_alone_long_enough_is_not_delayed():
+    assert lr.wait_needed(100.0, 130.0, 5000) == 0.0
+
+
+def test_the_gap_can_be_switched_off():
+    assert lr.wait_needed(100.0, 100.5, 0) == 0.0
+
+
+def test_a_clock_that_jumped_never_parks_a_review():
+    """max one gap, whatever the clock says."""
+    assert lr.wait_needed(9_999_999.0, 100.0, 5000) == 5.0
+
+
+def test_a_challenged_page_is_reloaded_before_being_given_up_on():
+    import inspect
+    src = inspect.getsource(lr._render_raw)
+    assert "page.reload" in src
+    assert "reloaded" in src, "reload once, not on every settle pass"
+
+
+def test_the_settle_budget_is_long_enough_for_a_cloudflare_challenge():
+    assert lr.LINK_RENDER_SETTLE_TRIES * lr.LINK_RENDER_SETTLE_MS >= 20_000
