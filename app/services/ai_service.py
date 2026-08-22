@@ -206,8 +206,15 @@ def providers() -> list:
     if gw_key and gw_url:
         chain.append(Provider("startupapi", gw_key, gw_url,
                               bearer_auth=True, strict=False))
+    # PROVIDER_FALLBACK=off pins ALL spend to the gateway: the official API
+    # never enters the chain while the gateway is configured. A failed review
+    # then stays a FAIL (retried by the next sweep, on the gateway) instead of
+    # silently becoming direct-API spend. With no gateway configured the
+    # official API still serves — a switch must never mean "no Claude at all".
+    fallback_on = os.getenv("PROVIDER_FALLBACK", "on").strip().lower() \
+        not in ("off", "0", "false", "no")
     direct = os.getenv("ANTHROPIC_API_KEY", "").strip()
-    if direct:
+    if direct and (fallback_on or not chain):
         chain.append(Provider("anthropic", direct,
                               os.getenv("ANTHROPIC_BASE_URL", "").strip(),
                               bearer_auth=False, strict=True))
@@ -258,7 +265,28 @@ def _should_failover(exc, provider=None) -> bool:
         return True
 
 
-def create_message(**kwargs):
+# Gateway statuses worth WAITING OUT rather than paying the official API to
+# absorb. The 21-22 Aug sweeps showed the shape: startupapi 503s under
+# sustained batch load, healthy again seconds later — but the chain fell
+# through to direct-API spend on the FIRST failure, so a transient capacity
+# blip billed the whole batch at official rates.
+GATEWAY_TRANSIENT = frozenset({408, 409, 429, 500, 502, 503, 504})
+GATEWAY_RETRIES = int(os.getenv("GATEWAY_RETRIES", "3"))
+GATEWAY_RETRY_BASE = float(os.getenv("GATEWAY_RETRY_BASE", "2.0"))
+
+
+def _gateway_transient(exc) -> bool:
+    """A failure that a short wait on the SAME provider can cure. Pure."""
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        return True                       # network never answered — wait, retry
+    try:
+        return int(status) in GATEWAY_TRANSIENT
+    except (TypeError, ValueError):
+        return True
+
+
+def create_message(_sleeper=None, **kwargs):
     """Send ONE Claude request, walking the provider chain in order.
 
     Returns (response, provider_name). Raises the last error when every
@@ -267,7 +295,16 @@ def create_message(**kwargs):
     Every Claude call in this codebase goes through here — that is what makes
     "gateway first, official second" a single fact rather than three copies
     that drift.
+
+    COST RULE: a NON-FINAL provider (the cheap gateway) gets its transient
+    failures retried with backoff (GATEWAY_RETRIES × GATEWAY_RETRY_BASE
+    seconds, growing) BEFORE anything falls through — a 503 that clears in
+    four seconds must cost gateway rates, not official-API rates. Hard
+    failures (bad key, missing model) fall through immediately: waiting
+    cannot cure those. `_sleeper` is injectable for tests.
     """
+    import time as _time
+    sleep = _sleeper or _time.sleep
     chain = providers()
     if not chain:
         raise RuntimeError(
@@ -277,19 +314,34 @@ def create_message(**kwargs):
 
     last_error = None
     for index, provider in enumerate(chain):
-        try:
-            response = _client_for(provider).messages.create(**kwargs)
-            if index:
-                print(f"   Claude served by FALLBACK provider '{provider.name}'")
-            return response, provider.name
-        except Exception as exc:
-            last_error = exc
-            remaining = chain[index + 1:]
-            if not remaining or not _should_failover(exc, provider):
-                raise
-            status = getattr(exc, "status_code", "no-status")
-            print(f"⚠️  Provider '{provider.name}' failed ({status}: "
-                  f"{str(exc)[:160]}) — falling back to '{remaining[0].name}'.")
+        remaining = chain[index + 1:]
+        # Only a provider with someone behind it earns retries — it is the
+        # cheap seat we are trying to keep the spend in. The final provider
+        # gets one attempt, as before; its caller owns any further fallback.
+        tries = 1 + (GATEWAY_RETRIES if remaining else 0)
+        for attempt in range(tries):
+            try:
+                response = _client_for(provider).messages.create(**kwargs)
+                if index:
+                    print(f"   💸 Claude served by FALLBACK provider "
+                          f"'{provider.name}' — this call is DIRECT-API spend")
+                return response, provider.name
+            except Exception as exc:
+                last_error = exc
+                status = getattr(exc, "status_code", "no-status")
+                if attempt + 1 < tries and _gateway_transient(exc):
+                    wait = GATEWAY_RETRY_BASE * (attempt + 1)
+                    print(f"⚠️  '{provider.name}' transient failure ({status}) "
+                          f"— retry {attempt + 1}/{GATEWAY_RETRIES} on the "
+                          f"same provider in {wait:.0f}s (keeping spend there)")
+                    sleep(wait)
+                    continue
+                if not remaining or not _should_failover(exc, provider):
+                    raise
+                print(f"⚠️  Provider '{provider.name}' failed ({status}: "
+                      f"{str(exc)[:160]}) — falling back to "
+                      f"'{remaining[0].name}'.")
+                break
     raise last_error
 
 STUDENT_TEXT_FRAME = (
