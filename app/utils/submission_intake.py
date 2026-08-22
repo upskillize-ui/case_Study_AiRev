@@ -645,6 +645,44 @@ def substantive_words(content: str) -> int:
     return len([w for w in text.split() if any(ch.isalnum() for ch in w)])
 
 
+# Tasks whose DELIVERABLE is the published thing itself: a Notion site, a
+# Claude artifact, a Gamma deck, a Lovable app. On these, a typed paragraph
+# is a description OF the work, not the work — so a link that will not open
+# means the submission was never seen, however much the learner typed.
+#
+# Ranjana's ruling, 22 Aug, on 21 Day-04 rows that were marked 0.0-4.7 while
+# their own feedback said the page could not be read: "No grade, ask them to
+# publish." A mark on work nobody could open measures our reach, not their
+# effort — and unlike a low mark, a withheld one can still become a real
+# score the same evening.
+_PUBLISHED_DELIVERABLE = re.compile(
+    r"publish(?:ed|ing)?\b|\bshare (?:the |your )?link|\bpublic link\b|"
+    r"\bas a website\b|\bartifact\b|\bartefact\b|\bnotion\b|\bgamma\b|"
+    r"\blovable\b|\bdeploy(?:ed)?\b|\blive (?:page|site|link|url)\b", re.I)
+
+
+def link_is_the_deliverable(task_text: str) -> bool:
+    """Does this task ask for a published page or artifact? Pure.
+
+    Deliberately narrow: on an essay day a pasted link is a citation, and
+    withholding a grade there would punish a learner for a footnote.
+    """
+    return bool(_PUBLISHED_DELIVERABLE.search(task_text or ""))
+
+
+def only_unreadable_links(artefacts) -> bool:
+    """The learner submitted link(s), none opened, and no file opened either.
+
+    True means nothing of the actual deliverable reached the marker. Typed
+    text is not consulted here on purpose — whether it rescues the row is
+    the caller's policy decision, not this function's. Pure.
+    """
+    links = [a for a in artefacts if a.kind == "link"]
+    if not links or any(a.readable for a in links):
+        return False
+    return not any(a.readable for a in artefacts if a.kind != "link")
+
+
 def unreadable_deliverable(manifest: str) -> bool:
     """Does the manifest record an artefact that exists but could not be read?"""
     return "could not be read" in (manifest or "")

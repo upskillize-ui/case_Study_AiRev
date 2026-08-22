@@ -44,7 +44,8 @@ router = APIRouter(prefix="/api/review/jobs", tags=["review-jobs"])
 # Regrade outcomes that are policy, not breakage. They must not trip the
 # consecutive-failure abort — a run of human-graded rows is a healthy queue.
 _SKIP_STATES = {"human_graded", "no_readable_content",
-                "unassessable_deliverable", "content_shrunk", "wrong_task"}
+                "unassessable_deliverable", "content_shrunk", "wrong_task",
+                "unreadable_published_link"}
 
 
 class JobRequest(BaseModel):

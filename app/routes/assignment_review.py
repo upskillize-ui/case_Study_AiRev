@@ -358,6 +358,27 @@ def submit_and_review_assignment(
             "processingTimeMs": int((time.time() - start_time) * 1000),
         }
 
+    # Same ruling at submit time, where the learner can still fix it in the
+    # same sitting: a publish-this task whose link never opened is not graded.
+    if not req.storeOnly and intake.link_is_the_deliverable(
+            f"{assignment.get('title', '')} {assignment.get('description', '')}"
+    ) and intake.only_unreadable_links(artefacts):
+        msg = ("Your link did not open for us — it asks whoever visits to sign in, "
+               "so your page could not be read and NO MARKS are recorded yet. "
+               "In Notion open your page, click Share, then Publish, and copy "
+               "the published link (it looks like yourname.notion.site/...). "
+               "Submit that link and you will be marked normally.")
+        print(f"[ASSIGNMENT] NOT SCORED (published link never opened): "
+              f"{word_count} words typed beside an unopenable link")
+        return {
+            "success": True,
+            "status": "needs_input",
+            "needsInput": True,
+            "submission": {"submissionId": 0, "attemptNumber": 0},
+            "feedback": _empty_feedback(msg, helpful=True),
+            "processingTimeMs": int((time.time() - start_time) * 1000),
+        }
+
     # ── Reflexes: zero-token checks before any AI spend ────────────────────
     # storeOnly skips them: storage must never be withheld — the checks run
     # when the stored text is actually reviewed.
@@ -825,6 +846,32 @@ def re_review_assignment(
                            "open, and there is no written answer to judge. Ask the "
                            "learner to add a few lines describing what they made "
                            "and how, then re-review.")}
+
+    # Ranjana's ruling, 22 Aug (Day 04): when the DELIVERABLE is the published
+    # page itself, a typed paragraph beside a link that will not open is a
+    # description OF the work, not the work. 21 rows were marked 0.0-4.7 while
+    # their own feedback said the page could not be read. A withheld mark can
+    # still become a real score tonight; a recorded 2.5 cannot.
+    task_text = f"{assignment.get('title', '')} {assignment.get('description', '')}"
+    if (intake.link_is_the_deliverable(task_text)
+            and intake.only_unreadable_links(artefacts)):
+        print(f"[REGRADE] submission {submission_id}: published link never "
+              f"opened on a publish-this task — no mark, row untouched")
+        if previous_grade is None:
+            _tell_student_why(tenant, submission_id, (
+                "Your link did not open for us — it asks whoever visits to sign in, "
+               "so your page could not be read and NO MARKS are recorded yet. "
+               "In Notion open your page, click Share, then Publish, and copy "
+               "the published link (it looks like yourname.notion.site/...). "
+               "Submit that link and you will be marked normally."))
+        return {"success": False, "skipped": "unreadable_published_link",
+                "submissionId": submission_id,
+                "previousGrade": previous_grade,
+                "artefacts": inventory,
+                "detail": ("The task asks for a published page and the link "
+                           "submitted never opened — it asks visitors to sign "
+                           "in. No mark: the work was never seen. The learner "
+                           "must publish the page and resubmit the public link.")}
 
     # Rule 2, extended: reading LESS than the stored review saw is a fetch
     # problem, not a performance change — refuse to replace a mark earned on

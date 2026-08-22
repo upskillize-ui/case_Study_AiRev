@@ -289,6 +289,16 @@ def review_one(p: Pending, agent_url: str, api_key: str, timeout: int,
             # policy outcome look like 108 fetch failures.
             return Result(p, False, detail="", ms=ms, skipped="wrong_task")
         if data.get("needsInput") or data.get("status") == "needs_input":
+            # "no stored content" is the wrong words for a link-day row: the
+            # student stored plenty, we just could not open their page. Day 04
+            # printed that 106 times and problem_report then told Ranjana not
+            # to message any of them. Say which it is.
+            fb = data.get("feedback") or {}
+            note = str(fb.get("message") or fb.get("summary") or "")
+            if "sign in" in note.lower() or "publish" in note.lower():
+                return Result(p, False, ms=ms, skipped="unreadable_published_link",
+                              detail="published link never opened — student must "
+                                     "publish the page and resubmit")
             return Result(p, False, detail="no stored content to review", ms=ms)
         if data.get("blocked"):
             return Result(p, False, detail=f"blocked: {data['blocked']}", ms=ms)
