@@ -68,6 +68,22 @@ def test_the_file_ends_with_a_newline():
         assert f.read().endswith("\n"), "requirements.txt must end with a newline"
 
 
+def test_the_base_image_is_pinned_to_a_distro_playwright_knows():
+    """The second build failure: python:3.11-slim floated to Debian 13, which
+    Playwright 1.49 has no package list for. It fell back to Ubuntu 20.04
+    names (ttf-ubuntu-font-family, ttf-unifont) that Debian 13 does not
+    carry, and the browser install died. Playwright 1.49 supports debian11,
+    debian12 and ubuntu20.04/22.04/24.04 — the tag must name one of them."""
+    with open(DOCKERFILE, encoding="utf-8") as f:
+        docker = f.read()
+    base = re.search(r"^FROM\s+(\S+)", docker, re.M)
+    assert base, "no FROM line"
+    known = ("bookworm", "bullseye", "jammy", "noble", "focal")
+    assert any(k in base.group(1) for k in known), (
+        f"{base.group(1)} does not name a distro Playwright 1.49 knows "
+        f"({', '.join(known)}) — an unpinned tag will float again")
+
+
 def test_the_browser_is_installed_where_any_uid_can_read_it():
     """A browser in /root/.cache is invisible to a container running as a
     non-root uid — a runtime failure a build cannot show you."""
