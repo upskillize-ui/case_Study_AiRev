@@ -160,3 +160,60 @@ def test_preview_marker_detection_is_pure():
     assert intake._is_preview_only("[This link is a published page …]") is True
     assert intake._is_preview_only("Real content of a real page") is False
     assert intake._is_preview_only("") is False
+
+
+# ── Day 04: a fetch can succeed and still not be the work ─────────────────
+
+NOTION = "https://tejasvini.notion.site/30-Days-30-AI-Tools-Portfolio"
+
+# What a published-site shell serves a plain reader: real words, none of
+# them the student's. It clears LINK_MIN_WORDS, so the old rule accepted it.
+SITE_CHROME = ("30 Days 30 AI Tools Portfolio. Home About Contact. "
+               "Built with Notion. This site uses cookies to improve your "
+               "experience. Accept all cookies or manage preferences. "
+               "Powered by Notion. Duplicate this template. Sign up free. "
+               "Log in. Privacy policy. Terms of service.")
+
+REAL_WORK = ("ChatGPT: I used it to draft my career plan and learned to give "
+             "it a role and a constraint. " * 12)
+
+
+def test_a_published_site_shell_is_opened_in_the_browser(monkeypatch):
+    """The Day 04 failure mode: chrome long enough to pass for content."""
+    monkeypatch.setenv("LINK_RENDER_ENABLED", "1")
+    monkeypatch.setattr(intake, "fetch_link", lambda url: (SITE_CHROME, ""))
+    monkeypatch.setattr(lr, "read_rendered_link", lambda url: (REAL_WORK, ""))
+    arts = intake.from_links_in(NOTION)
+    assert arts[0].readable
+    assert "career plan" in arts[0].text          # the work, not the footer
+    assert "cookies" not in arts[0].text
+
+
+def test_a_content_rich_fetch_never_starts_a_browser(monkeypatch):
+    """Rendering is protection, not a toll — a page that already read fine
+    must cost no browser and no time."""
+    monkeypatch.setenv("LINK_RENDER_ENABLED", "1")
+    monkeypatch.setattr(intake, "fetch_link", lambda url: (REAL_WORK, ""))
+    monkeypatch.setattr(lr, "read_rendered_link",
+                        lambda url: pytest.fail("browser started for a rich page"))
+    arts = intake.from_links_in(NOTION)
+    assert arts[0].readable and "career plan" in arts[0].text
+
+
+def test_a_thinner_render_never_replaces_a_better_fetch(monkeypatch):
+    """A render that comes back emptier is a failed render, not an upgrade."""
+    monkeypatch.setenv("LINK_RENDER_ENABLED", "1")
+    monkeypatch.setattr(intake, "fetch_link", lambda url: (SITE_CHROME, ""))
+    monkeypatch.setattr(lr, "read_rendered_link",
+                        lambda url: ("Loading...", ""))
+    arts = intake.from_links_in(NOTION)
+    assert "cookies" in arts[0].text              # kept the better of the two
+
+
+def test_the_thin_and_richer_rules_are_pure():
+    assert intake._is_thin_body("word " * 10) is True
+    assert intake._is_thin_body("word " * 300) is False
+    assert intake._is_thin_body("") is True
+    assert intake._render_is_richer("a b c", "") is True
+    assert intake._render_is_richer("a b c", "[This link is a published page]") is True
+    assert intake._render_is_richer("a b", "one two three four") is False

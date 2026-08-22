@@ -72,6 +72,15 @@ LINK_MAX_CHARS = int(os.getenv("LINK_MAX_CHARS", "20000"))
 # A fetched page yielding less than this is not real content — it is a
 # JavaScript shell. Say so plainly instead of feeding the marker boilerplate.
 LINK_MIN_WORDS = 25
+# ...but clearing LINK_MIN_WORDS is not the same as carrying the work. A
+# published-site shell can server-render its nav, its title, a footer and a
+# cookie notice — sixty words, none of them the learner's. Day 04 (Notion
+# portfolio pages, published as websites) is exactly that shape, and scoring
+# that chrome would be the marker reviewing the platform instead of the
+# student. Below this many words the agent OPENS the page in its browser and
+# keeps the render only if it comes back richer. A genuinely content-bearing
+# fetch is untouched and costs no browser.
+LINK_RENDER_PREFER_WORDS = int(os.getenv("LINK_RENDER_PREFER_WORDS", "120"))
 
 _URL_RE = re.compile(r"https?://[^\s<>\"'\]\)}]+", re.IGNORECASE)
 _TRAILING_PUNCT = ".,;:!?’”'\")]}>"
@@ -192,16 +201,17 @@ def from_links_in(text: str, limit: int = MAX_LINKS) -> List[Artefact]:
                                 note="not opened — link-reading time budget spent"))
             continue
         body, why = fetch_link(url)
-        if not body or _is_preview_only(body):
-            # The plain fetch saw nothing (or only link-preview metadata) —
-            # the page builds itself in a browser. If the agent's own browser
-            # is switched on, open the link the way a visitor would and read
-            # what actually renders. Failure falls through to the honest
-            # confirmed-but-unread record, exactly as before.
+        if not body or _is_preview_only(body) or _is_thin_body(body):
+            # The plain fetch saw nothing, only link-preview metadata, or so
+            # little that it cannot be the deliverable — the page builds
+            # itself in a browser. If the agent's own browser is switched on,
+            # open the link the way a visitor would and read what actually
+            # renders. Failure falls through to the honest confirmed-but-
+            # unread record, exactly as before.
             from app.services import link_renderer
             if link_renderer.enabled():
                 rendered_text, render_why = link_renderer.read_rendered_link(url)
-                if rendered_text:
+                if rendered_text and _render_is_richer(rendered_text, body):
                     body, why = rendered_text, ""
                 elif not body:
                     why = render_why or why
@@ -212,6 +222,22 @@ def from_links_in(text: str, limit: int = MAX_LINKS) -> List[Artefact]:
             # we simply could not read it from here. Both facts go on the record.
             out.append(Artefact(kind="link", label=url, note=why, confirmed=True))
     return out
+
+
+def _is_thin_body(body: str) -> bool:
+    """Too little text to be the work itself — open it in a browser. Pure."""
+    return len((body or "").split()) < LINK_RENDER_PREFER_WORDS
+
+
+def _render_is_richer(rendered: str, body: str) -> bool:
+    """Keep a render only when it beats what the plain fetch already had.
+
+    A render that comes back thinner than the fetch is a failed render
+    dressed as a success; the fetch keeps the page. Pure.
+    """
+    if not (body or "").strip() or _is_preview_only(body):
+        return True
+    return len(rendered.split()) > len(body.split())
 
 
 def _is_preview_only(body: str) -> bool:
