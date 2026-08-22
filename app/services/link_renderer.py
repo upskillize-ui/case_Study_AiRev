@@ -53,6 +53,51 @@ LINK_RENDER_TIMEOUT_MS = int(os.getenv("LINK_RENDER_TIMEOUT_MS", "30000"))
 # app) and the screenshot goes to the vision reviewer as well. Above it, the
 # text alone carries the submission and the OCR call's cost is not spent.
 LINK_RENDER_OCR_MIN_WORDS = int(os.getenv("LINK_RENDER_OCR_MIN_WORDS", "80"))
+# A challenge page ("Just a moment...") clears itself a few seconds later.
+# Harvest, and if what came back is a gate rather than the work, wait and
+# harvest again — only on pages that need it, so a normal page pays nothing.
+LINK_RENDER_SETTLE_MS = int(os.getenv("LINK_RENDER_SETTLE_MS", "4000"))
+LINK_RENDER_SETTLE_TRIES = int(os.getenv("LINK_RENDER_SETTLE_TRIES", "3"))
+# Above this many words the page is long enough to be real work, and a
+# stray "sign in" in a student's own text must not be read as a gate.
+LINK_INTERSTITIAL_MAX_WORDS = int(os.getenv("LINK_INTERSTITIAL_MAX_WORDS", "200"))
+
+# Claimed browser identity. Playwright's headless UA says "HeadlessChrome",
+# which Notion answers with "Your browser is not compatible" — verified live
+# 22 Aug on three real student links. This is the honest version string of
+# the Chromium that Playwright 1.49 actually ships, in the four-part form
+# every real Chrome sends; sites that version-check now get an answer they
+# can parse instead of one they reject.
+CHROME_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+             "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+
+# What a gate, a challenge or an error page says — none of it the student's
+# work. Live 22 Aug: two Notion links returned "Your browser is not
+# compatible with Notion" and one returned Cloudflare's "Just a moment...",
+# and all three would have been scored as the submission. A page matching
+# any of these is reported unreadable WITH ITS REASON, so the student can be
+# told what to fix instead of being graded on Notion's error text.
+_INTERSTITIALS = (
+    (("just a moment", "verifying you are human", "checking your browser",
+      "verifying...", "verify you are human", "attention required",
+      "ddos protection", "needs to review the security"),
+     "the page was still showing a human-check (Cloudflare) when the "
+     "browser gave up"),
+    (("your browser is not compatible", "unsupported browser",
+      "browser is not supported", "update your browser",
+      "upgrade to the latest browser"),
+     "the site refused to open this link in the reviewer's browser"),
+    (("enable javascript", "requires javascript", "javascript is disabled",
+      "javascript to run"),
+     "the page never rendered — it asked for JavaScript it had been given"),
+    (("sign in to continue", "log in to continue", "you need access",
+      "request access", "permission to access", "sign up to view",
+      "no access to this page", "ask for access"),
+     "this link is private — it asks whoever opens it to sign in"),
+    (("page not found", "no longer exists", "content does not exist",
+      "this page does not exist", "404 error"),
+     "the page no longer exists at that address"),
+)
 
 _render_lock = threading.Lock()
 
@@ -80,6 +125,22 @@ class Rendered:
     final_url: str
 
 
+def interstitial_reason(title: str, text: str) -> str:
+    """A gate, a challenge or an error page instead of the work? Pure.
+
+    Returns the plain-English reason, or "" when the page looks like real
+    content. Long pages are never judged: a portfolio that happens to
+    contain the words "sign in" is a portfolio, not a login wall.
+    """
+    if len((text or "").split()) > LINK_INTERSTITIAL_MAX_WORDS:
+        return ""
+    blob = f"{title or ''} {text or ''}".lower()
+    for phrases, reason in _INTERSTITIALS:
+        if any(p in blob for p in phrases):
+            return reason
+    return ""
+
+
 def _blocked_host(host: str) -> bool:
     """In-page requests the browser must not make. Pure.
 
@@ -95,6 +156,21 @@ def _blocked_host(host: str) -> bool:
         return False                      # a hostname, not an IP literal
 
 
+def _harvest_text(page) -> str:
+    """Every frame's visible text, joined. Artifacts render inside iframes,
+    so the top document alone is not the page."""
+    texts = []
+    for frame in page.frames:
+        try:
+            t = frame.evaluate(
+                "() => document.body ? document.body.innerText : ''")
+            if t and t.strip():
+                texts.append(t.strip())
+        except Exception:
+            continue                      # cross-origin frame — its loss
+    return "\n\n".join(texts)
+
+
 def _render_raw(url: str) -> Tuple[Optional[Rendered], str]:
     """One browser, one page, one harvest. Runs under _render_lock."""
     try:
@@ -105,14 +181,29 @@ def _render_raw(url: str) -> Tuple[Optional[Rendered], str]:
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+            browser = p.chromium.launch(headless=True, args=[
+                "--no-sandbox",
+                # /dev/shm is tiny in a container; without this Chromium
+                # dies part-way through drawing a heavy page.
+                "--disable-dev-shm-usage",
+                # Removes the automation banner flag sites fingerprint on.
+                # We are reading a page the learner published publicly, in
+                # a real browser engine — the claim is accurate.
+                "--disable-blink-features=AutomationControlled",
+            ])
             try:
                 ctx = browser.new_context(
                     viewport={"width": 1280, "height": 900},
-                    user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                "Chrome/126.0 Safari/537.36"),
+                    user_agent=CHROME_UA,
+                    locale="en-IN",
+                    timezone_id="Asia/Kolkata",
+                    extra_http_headers={"Accept-Language": "en-IN,en;q=0.9"},
                 )
+                # navigator.webdriver is the other automation tell. Sites
+                # that see it serve a challenge instead of the page.
+                ctx.add_init_script(
+                    "Object.defineProperty(navigator, 'webdriver', "
+                    "{get: () => undefined})")
                 page = ctx.new_page()
                 page.route("**/*", lambda route: (
                     route.abort()
@@ -127,15 +218,17 @@ def _render_raw(url: str) -> Tuple[Optional[Rendered], str]:
                     pass                  # busy pages never go idle — fine
                 page.wait_for_timeout(LINK_RENDER_WAIT_MS)
 
-                texts = []
-                for frame in page.frames:
-                    try:
-                        t = frame.evaluate(
-                            "() => document.body ? document.body.innerText : ''")
-                        if t and t.strip():
-                            texts.append(t.strip())
-                    except Exception:
-                        continue          # cross-origin frame — its loss
+                text = _harvest_text(page)
+                title = page.title() or ""
+                # A challenge page resolves itself; give it the chance
+                # before calling the link unreadable. Costs nothing on a
+                # page that came back clean the first time.
+                for _ in range(LINK_RENDER_SETTLE_TRIES):
+                    if not interstitial_reason(title, text):
+                        break
+                    page.wait_for_timeout(LINK_RENDER_SETTLE_MS)
+                    text = _harvest_text(page)
+                    title = page.title() or ""
 
                 shot = ""
                 try:
@@ -144,8 +237,7 @@ def _render_raw(url: str) -> Tuple[Optional[Rendered], str]:
                 except Exception:
                     pass                  # text alone can still carry a review
 
-                return Rendered(title=page.title() or "",
-                                text="\n\n".join(texts),
+                return Rendered(title=title, text=text,
                                 screenshot_b64=shot,
                                 final_url=page.url), ""
             finally:
@@ -201,6 +293,13 @@ def read_rendered_link(url: str) -> Tuple[str, str]:
         return "", why
     if not rendered.text.strip() and not rendered.screenshot_b64:
         return "", "the page rendered empty"
+
+    # Before any vision money is spent: is this the work, or a gate? A
+    # Notion compatibility error is not a submission, and describing it in
+    # detail would only make the fabrication more convincing.
+    blocked = interstitial_reason(rendered.title, rendered.text)
+    if blocked:
+        return "", blocked
 
     ocr_text = ""
     if needs_vision(rendered):

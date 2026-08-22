@@ -239,3 +239,69 @@ def test_the_explicit_off_values_all_switch_it_off(monkeypatch):
 def test_an_absent_variable_is_still_off(monkeypatch):
     monkeypatch.delenv("LINK_RENDER_ENABLED", raising=False)
     assert lr.enabled() is False
+
+
+# ── gates, challenges and error pages are never the submission ────────────
+#
+# Live 22 Aug, three real Day 04 student links. Two came back "Your browser
+# is not compatible with Notion" and one came back Cloudflare's "Just a
+# moment... Verifying...". All three were reported READABLE, and the run
+# would have graded 123 students on Notion's error text. These are the
+# pages, verbatim from that run.
+
+NOTION_INCOMPATIBLE = ("Your browser is not compatible with Notion.\n"
+                       "Please upgrade to the latest browser version, or "
+                       "visit our help center for more information.")
+
+
+def test_the_notion_compatibility_page_is_not_a_submission():
+    assert "refused to open" in lr.interstitial_reason("Notion",
+                                                       NOTION_INCOMPATIBLE)
+
+
+def test_the_cloudflare_challenge_is_not_a_submission():
+    reason = lr.interstitial_reason("Just a moment...", "Verifying...")
+    assert "human-check" in reason
+
+
+def test_a_private_link_says_so_instead_of_scoring_zero():
+    reason = lr.interstitial_reason("Notion", "You need access to view this "
+                                              "page. Request access.")
+    assert "private" in reason
+
+
+def test_a_real_portfolio_is_never_called_a_gate():
+    work = ("My 30 Days 30 AI Tools portfolio. Day 01 ChatGPT: I learned to "
+            "give the model a role before a task. Day 02 Claude: I built an "
+            "EMI calculator artifact. Day 03 Perplexity: I checked three "
+            "sources before trusting a number. " * 8)
+    assert lr.interstitial_reason("My Portfolio", work) == ""
+
+
+def test_a_long_page_that_merely_mentions_signing_in_is_still_work():
+    """The false positive that would delete a real grade: a portfolio about
+    AI tools naturally contains the words 'sign in'."""
+    work = ("To use ChatGPT you sign in to continue with a Google account. " 
+            "That was my first step. " * 40)
+    assert lr.interstitial_reason("Portfolio", work) == ""
+
+
+def test_an_interstitial_never_reaches_the_marker_and_never_buys_vision(monkeypatch):
+    monkeypatch.setenv("LINK_RENDER_ENABLED", "1")
+    monkeypatch.setattr(lr, "check_public_url", lambda url: (True, ""))
+    import app.utils.file_extractor as fe
+    monkeypatch.setattr(fe, "_ocr_with_claude",
+                        lambda images, kind: pytest.fail("paid to read an error page"))
+    monkeypatch.setattr(lr, "_render_raw", lambda url: (
+        lr.Rendered(title="Notion", text=NOTION_INCOMPATIBLE,
+                    screenshot_b64="x" * 100, final_url=ART), ""))
+    text, why = lr.read_rendered_link(ART)
+    assert text == ""
+    assert "refused to open" in why
+
+
+def test_the_browser_claims_a_version_sites_can_parse():
+    """Notion rejected 'Chrome/126.0'. Real Chrome sends four parts."""
+    import re as _re
+    assert _re.search(r"Chrome/\d+\.\d+\.\d+\.\d+ Safari", lr.CHROME_UA)
+    assert "Headless" not in lr.CHROME_UA
