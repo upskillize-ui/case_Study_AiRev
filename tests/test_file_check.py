@@ -140,13 +140,21 @@ def test_the_tool_can_find_the_agents_own_reader():
 
 
 def test_it_runs_from_any_working_directory():
-    """Ranjana runs it from the repo root; a scheduled job would not."""
+    """Ranjana runs it from the repo root; a scheduled job would not.
+
+    tempfile.gettempdir(), not "/tmp": this test was written on Linux and
+    hardcoded a path Windows does not have, so it failed on the one machine
+    that actually runs these tools. A test that only passes on the author's
+    computer is worse than no test — it fails in the middle of a push and
+    costs the time it was meant to save.
+    """
     import subprocess
     import sys as _sys
+    import tempfile
     tool = os.path.join(os.path.dirname(__file__), "..", "tools", "file_check.py")
     out = subprocess.run([_sys.executable, os.path.abspath(tool),
                           "--assignment-id", "24"],
-                         cwd="/tmp", capture_output=True, text=True,
-                         env={**os.environ, "AIREV_DB_URL": ""})
+                         cwd=tempfile.gettempdir(), capture_output=True,
+                         text=True, env={**os.environ, "AIREV_DB_URL": ""})
     assert "No module named" not in out.stderr, out.stderr[-300:]
     assert "AIREV_DB_URL" in (out.stdout + out.stderr)
