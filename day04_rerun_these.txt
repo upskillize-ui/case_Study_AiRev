@@ -1,31 +1,37 @@
-DAY 04 - pages that read fine and should have been graded (26)
+DAY 04 - pages that read fine and should have been graded (33)
 
-   106    251 words  Chilwant Rajnandini Rajwardhan
+   106    177 words  Chilwant Rajnandini Rajwardhan
    128    479 words  Kulkarni Aryan Kiran
-   130    361 words  Mane Shweta Tanaji
+   130    366 words  Mane Shweta Tanaji
+   131    358 words  Mane Shraddha Dhanaji
    140    314 words  Shendge Shital Munjabhau
    149    326 words  Shaikh Saniya Babu
-   186    227 words  Thete vaishnavi sunil
-   215    227 words  Pawar Payal Manik
+   160    144 words  Kadam Samruddhi Laxman
+   167    137 words  Shetkar Vaibhavi Prabhakar
+   168    132 words  Patil Parth Prasad
    222    541 words  Jagtap Shital Suresh
    228    235 words  Ghogare nachiket ramdas
    230    235 words  Navatakke Abhay Deepak
-   232    222 words  Jatte Gaurishankar Vaijinath
-   284    193 words  Mahenoor  Shabbir  Mugal
+   232    221 words  Jatte Gaurishankar Vaijinath
+   241    150 words  Shinde Kamlesh Laxman
+   244    141 words  Laxman Santosh Salunke
+   284    197 words  Mahenoor  Shabbir  Mugal
+   375    320 words  omkar madhukar gaikwad
+   416    193 words  Shaikh Faiza Shujaoddin
    464    235 words  Kshirsagar Sujit Ashruba
-   537   1182 words  Narendra Navnath Chavan
-   557    104 words  Kadam Suhani Tatyarao
    666    314 words  Shendge Bhagwat Munjabhau
-   818    168 words  Jangid pava  ummed
-   824    219 words  Kulkarni Surbhi Rahul
+   669    175 words  Jadhav vaishnavi ramkaran
+   738    449 words  Bobde Nandini Daulat
+   824    227 words  Kulkarni Surbhi Rahul
    872    141 words  Shaikh Alfa razzak
    909   2704 words  Mane Vishakha ram
+   971    328 words  suryawanshi Vyankat yvsh ayuSufu
+  1057    320 words  Prachi Rakesh Dwivedi
+  1151    371 words  Malwad Samiksha Dattatray
   1297    118 words  Lobhe prachi vyankat
-  1332    197 words  Sharma Manasi Prashant
   1369    118 words  Gaurav Modani
-  1409    206 words  Rupali
+  1409    184 words  Rupali
   1456   2168 words  Jangid punam gopalchand
   1464    121 words  shravani gurunath bidve
 
-Student ids, comma separated:
-106,128,130,140,149,186,215,222,228,230,232,284,464,537,557,666,818,824,872,909,1297,1332,1369,1409,1456,1464
+ids: 106,128,130,131,140,149,160,167,168,222,228,230,232,241,244,284,375,416,464,666,669,738,824,872,909,971,1057,1151,1297,1369,1409,1456,1464

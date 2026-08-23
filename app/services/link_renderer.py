@@ -69,6 +69,13 @@ LINK_RENDER_RELOAD_ON_CHALLENGE = os.getenv(
 # is the shape of rate limiting, not of a broken renderer. A few seconds of
 # space between visits costs a link day nothing and stops us tripping it.
 LINK_RENDER_HOST_GAP_MS = int(os.getenv("LINK_RENDER_HOST_GAP_MS", "5000"))
+# How long a worker will wait for the browser to be free before giving up on
+# rendering and letting the review proceed without it. Day 05 (22 Aug) had two
+# items take 3,916,989ms and 3,941,830ms — 65 MINUTES each — and the run's
+# failure rate exploded straight after them. `with _render_lock:` blocks
+# forever by design, so one wedged Chromium parks every other worker behind
+# it for as long as it stays wedged. A queue with no exit is not a queue.
+LINK_RENDER_LOCK_WAIT_S = float(os.getenv("LINK_RENDER_LOCK_WAIT_S", "120"))
 # Above this many words the page is long enough to be real work, and a
 # stray "sign in" in a student's own text must not be read as a gate.
 LINK_INTERSTITIAL_MAX_WORDS = int(os.getenv("LINK_INTERSTITIAL_MAX_WORDS", "200"))
@@ -332,7 +339,13 @@ def render_link(url: str) -> Tuple[Optional[Rendered], str]:
     if not ok:
         return None, why
     host = (urlparse(url).hostname or "").lower()
-    with _render_lock:                    # one Chromium at a time, ever
+    # One Chromium at a time — but never an unbounded wait. A review that
+    # cannot get the browser reports that plainly and is left un-graded by
+    # the caller, which is recoverable. A worker parked for an hour is not.
+    if not _render_lock.acquire(timeout=LINK_RENDER_LOCK_WAIT_S):
+        return None, ("the browser was busy with another page for longer than "
+                      f"{int(LINK_RENDER_LOCK_WAIT_S)}s — not rendered")
+    try:
         pause = wait_needed(_last_visit.get(host, 0.0),
                             time.monotonic(), LINK_RENDER_HOST_GAP_MS)
         if pause:
@@ -341,6 +354,8 @@ def render_link(url: str) -> Tuple[Optional[Rendered], str]:
             return _render_raw(url)
         finally:
             _last_visit[host] = time.monotonic()
+    finally:
+        _render_lock.release()
 
 
 # ─── what the marker receives ───────────────────────────────────────────────

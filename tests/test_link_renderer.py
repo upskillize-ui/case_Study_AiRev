@@ -416,3 +416,52 @@ def test_a_challenged_page_is_reloaded_before_being_given_up_on():
 
 def test_the_settle_budget_is_long_enough_for_a_cloudflare_challenge():
     assert lr.LINK_RENDER_SETTLE_TRIES * lr.LINK_RENDER_SETTLE_MS >= 20_000
+
+
+# ── the browser queue must have an exit ───────────────────────────────────
+#
+# Day 05, 22 Aug: two items took 3,916,989ms and 3,941,830ms — 65 minutes
+# each — and the run's failure rate exploded immediately after. `with
+# _render_lock:` waits forever, so one wedged Chromium parks every other
+# worker behind it for as long as it stays wedged.
+
+def test_a_worker_gives_up_on_a_busy_browser_instead_of_waiting_forever(monkeypatch):
+    monkeypatch.setenv("LINK_RENDER_ENABLED", "1")
+    monkeypatch.setattr(lr, "check_public_url", lambda url: (True, ""))
+    monkeypatch.setattr(lr, "LINK_RENDER_LOCK_WAIT_S", 0.05)
+    monkeypatch.setattr(lr, "_render_raw",
+                        lambda url: pytest.fail("rendered while the lock was held"))
+    lr._render_lock.acquire()                      # another worker is mid-render
+    try:
+        rendered, why = lr.render_link(ART)
+    finally:
+        lr._render_lock.release()
+    assert rendered is None and "busy" in why
+
+
+def test_the_lock_is_released_even_when_a_render_explodes(monkeypatch):
+    """A crash inside the browser must not wedge every later review."""
+    monkeypatch.setenv("LINK_RENDER_ENABLED", "1")
+    monkeypatch.setattr(lr, "check_public_url", lambda url: (True, ""))
+
+    def boom(url):
+        raise RuntimeError("chromium died")
+
+    monkeypatch.setattr(lr, "_render_raw", boom)
+    with pytest.raises(RuntimeError):
+        lr.render_link(ART)
+    assert lr._render_lock.acquire(timeout=0.1), "lock leaked after a crash"
+    lr._render_lock.release()
+
+
+def test_the_host_gap_still_applies_when_the_lock_was_free(monkeypatch):
+    monkeypatch.setenv("LINK_RENDER_ENABLED", "1")
+    monkeypatch.setattr(lr, "check_public_url", lambda url: (True, ""))
+    monkeypatch.setattr(lr, "_render_raw", lambda url: (_rendered(text="x " * 200), ""))
+    slept = []
+    monkeypatch.setattr(lr.time, "sleep", lambda s: slept.append(s))
+    lr._last_visit.clear()
+    lr.render_link(ART)                            # first visit: no pause
+    assert slept == []
+    lr.render_link(ART)                            # second: spaced
+    assert slept and slept[0] > 0
