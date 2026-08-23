@@ -104,7 +104,11 @@ def test_too_little_content_counts_correctly_and_reads_naturally():
 def test_too_little_content_distinguishes_no_file_from_an_unread_file():
     assert "no file was attached" in sn.too_little_content(4, "", False)
     assert "no readable text" in sn.too_little_content(4, "", True)
-    assert "could not be read (corrupt)" in sn.too_little_content(4, "corrupt", True)
+    # 23 Aug: the raw reason no longer reaches the learner — "corrupt" becomes
+    # a sentence they can act on. See test_no_developer_language.py.
+    damaged = sn.too_little_content(4, "corrupt", True)
+    assert "could not be read" in damaged and "damaged" in damaged
+    assert "(corrupt)" not in damaged
 
 
 def test_wrong_task_names_both_what_arrived_and_what_was_asked():
@@ -136,7 +140,14 @@ def test_every_registered_reason_resolves_to_a_callable():
 
 
 def test_the_registry_covers_every_public_notice():
+    """Every notice a learner can receive is registered — so the sweep in
+    test_no_developer_language.py cannot miss one that was added quietly.
+
+    plain_reason and publish_steps are excluded on purpose: they build PART
+    of a message, they are never sent alone.
+    """
+    helpers = {"publish_steps", "plain_reason", "urlparse"}
     public = {n for n in dir(sn)
               if not n.startswith("_") and callable(getattr(sn, n))
-              and n not in ("publish_steps", "urlparse")}
+              and n not in helpers}
     assert public == set(f.__name__ for f in sn.NOTICES.values())

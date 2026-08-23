@@ -160,6 +160,57 @@ def start_job(req: JobRequest, tenant: Tenant = Depends(get_tenant),
             "poll": f"/api/review/jobs/{job_id}"}
 
 
+class EnqueueRequest(BaseModel):
+    """One submission, enqueued the moment the learner presses Submit."""
+    assignmentId: int
+    submissionId: int | None = None
+    studentId: int | None = None
+
+
+@router.post("/enqueue")
+def enqueue_one(req: EnqueueRequest, tenant: Tenant = Depends(get_tenant),
+                x_admin_key: str = Header(default="")):
+    """Queue ONE submission for review and return immediately.
+
+    This is the auto-review path. It writes one row and answers in
+    milliseconds, so the learner's submit never waits on a 25-65 second
+    review and never meets the capacity governor's "AiRev is at full
+    capacity" — which is an error message for having done the work on time.
+
+    Staff-keyed like every other job route: the learner's browser does not
+    call this, their LMS does, with the admin key, so nobody is billed.
+    """
+    _require_enabled()
+    _require_staff(x_admin_key)
+
+    submission_id = req.submissionId
+    if not submission_id:
+        if not req.studentId:
+            raise HTTPException(status_code=400,
+                                detail="Send submissionId or studentId.")
+        from app.database import DUAL_ID_MATCH
+        rows = tquery(
+            tenant,
+            f"SELECT id FROM assignment_submissions WHERE assignment_id = %s "
+            f"AND ({DUAL_ID_MATCH}) ORDER BY submitted_at DESC, id DESC LIMIT 1",
+            (req.assignmentId, req.studentId, req.studentId))
+        if not rows:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No submission for student {req.studentId} on "
+                       f"assignment {req.assignmentId}.")
+        submission_id = int(rows[0]["id"])
+
+    job_id, queued = jobs.enqueue_live(tenant, req.assignmentId, submission_id)
+    jobs.start_worker(tenant, job_id, make_review_one(tenant, x_admin_key),
+                      live=True)
+    return {"success": True, "jobId": job_id, "submissionId": submission_id,
+            "queued": queued,
+            "detail": ("queued" if queued else
+                       "already waiting — not queued twice"),
+            "poll": f"/api/review/jobs/{job_id}"}
+
+
 @router.get("")
 def list_jobs(tenant: Tenant = Depends(get_tenant)):
     _require_enabled()

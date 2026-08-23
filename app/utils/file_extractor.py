@@ -544,9 +544,28 @@ class _Fetched:
         self.status_code, self.headers, self.content = status_code, headers, content
 
 
-def _get_following_redirects(client, url: str):
+def _get_following_redirects(client, url: str, ceiling: int):
     """Stream a GET, walking redirects by hand so every hop is address-checked
     AND the body is bounded while it arrives.
+
+    THE `ceiling` PARAMETER WAS MISSING (found 24 Aug 2026, by file_check).
+    The per-file ceiling was added to the CALLER and used throughout this
+    BODY, but never added to this signature. So every call raised
+
+        _get_following_redirects() takes 2 positional arguments but 3 were given
+
+    which _download_file caught as a generic failure, retried four times with
+    backoff, and reported as "download failed". EVERY file fetched by URL —
+    every screenshot, PDF, deck and recording a learner uploaded — has been
+    failing since, silently, while burning nine seconds each in retries.
+
+    On Day 07 that was roughly fifty students told their work could not be
+    read. It was read: it was never fetched.
+
+    REQUIRED, not defaulted. A default would have hidden this same mismatch
+    for another week, and it would let a caller silently cap an Audio Overview
+    at the document limit — the bug size_ceiling_for() was written to end.
+    Every caller states the ceiling it means.
 
     client.stream() — NOT client.get(). A plain get() buffers the entire body
     into memory before returning, so any size check afterwards is decorative:

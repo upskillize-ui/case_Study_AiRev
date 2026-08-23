@@ -82,6 +82,95 @@ def publish_steps(url: str) -> str:
     return _GENERIC_STEPS
 
 
+# ---------------------------------------------------------------------------
+# NOTHING TECHNICAL REACHES A LEARNER (23 Aug 2026).
+#
+# Ranjana: "students do not get confused or be in problem — whatever is
+# happening they should know in an understandable and polished version. Do not
+# tell backend or developer issue as msg them."
+#
+# She is right, and it was live. Verbatim, from these very functions:
+#
+#   "...could not read any text from it (HTTP 403: forbidden)"
+#   "...could not be read (base64 decode failed: BinasciiError)"
+#   "...could not be rendered (TimeoutError)"
+#
+# A learner reading that learns nothing except that something is broken and
+# it might be their fault. Every internal reason now passes through
+# plain_reason() first: it says what happened in words a student can act on,
+# and where the fault is OURS it says so, because a learner should never be
+# left thinking they broke it.
+#
+# Ordered longest-match-first is not needed — each pattern is a distinct
+# fingerprint — but the fallback IS deliberate: an unrecognised reason
+# becomes a plain honest sentence rather than being passed through raw.
+# ---------------------------------------------------------------------------
+
+_PLAIN = (
+    # ours — say so plainly
+    (("403", "forbidden", "401", "unauthorized", "permission denied"),
+     "we were not allowed to open it from our side"),
+    (("404", "not found", "no longer exists", "gone"),
+     "we could not find it — it was no longer there when we looked"),
+    (("timeout", "timed out", "readtimeout", "connecttimeout"),
+     "it took too long to open and we had to stop waiting"),
+    (("could not be rendered", "render failed", "browser", "playwright"),
+     "our reader could not open it"),
+    (("500", "502", "503", "504", "server error", "connection"),
+     "we could not reach the service that stores it"),
+    # the file itself
+    (("password", "encrypted", "decrypt"),
+     "it is password protected, so it could not be opened"),
+    (("corrupt", "invalid pdf", "bad zip", "not a valid", "damaged",
+      "binascii", "decode failed", "unicodedecode"),
+     "the file appears to be damaged"),
+    (("empty", "0 bytes", "no content", "blank"),
+     "the file was empty"),
+    (("no text layer", "ocr found nothing", "scanned", "no readable text"),
+     "no text could be read from it — it may be a photo of something blank, "
+     "or too blurred to read"),
+    (("too large", "exceeds", "size limit", "ceiling"),
+     "it is larger than we can open"),
+    (("unsupported", "cannot be read as text", "not a file", "format"),
+     "this file type could not be opened"),
+)
+
+_FALLBACK_REASON = "it could not be opened"
+
+
+def plain_reason(raw: str) -> str:
+    """An internal reason, in words a learner can act on. Pure.
+
+    Never returns a status code, an exception name, a library name or a
+    stack fragment. An unrecognised reason becomes an honest plain sentence
+    rather than being passed through — passing it through is the bug.
+    """
+    text = (raw or "").strip().lower()
+    if not text:
+        return ""
+    for fingerprints, plain in _PLAIN:
+        if any(f in text for f in fingerprints):
+            return plain
+    return _FALLBACK_REASON
+
+
+def queued_for_review() -> str:
+    """What a learner sees the moment they submit.
+
+    They must never be left watching a spinner, and they must know it is safe
+    to close the page — the review runs whether they are there or not.
+    """
+    return ("Your work is in. Your feedback is being prepared and will appear "
+            "here shortly — usually within a few minutes. You can close this "
+            "page; it will be waiting for you when you come back.")
+
+
+def still_being_reviewed() -> str:
+    """What they see if they return before the review has finished."""
+    return ("Your feedback is still being prepared. Nothing is wrong and "
+            "nothing is lost — check back in a few minutes.")
+
+
 def nothing_submitted() -> str:
     """No text, no file, nothing to read."""
     return ("We could not find any answer for this assignment. Attach your work "
@@ -91,7 +180,8 @@ def nothing_submitted() -> str:
 
 def file_unreadable(file_error: str = "", file_name: str = "") -> str:
     """A file arrived but no text came out of it."""
-    what = f" ({file_error})" if file_error else ""
+    plain = plain_reason(file_error)
+    what = f" — {plain}" if plain else ""
     named = f" \"{file_name}\"" if file_name else ""
     return (f"We received your file{named} but could not read any text from it{what}. "
             f"Check that it opens on your own computer, then re-attach it — or type "
@@ -104,7 +194,8 @@ def too_little_content(word_count: int, file_error: str = "",
     """Enough arrived to store, not enough to judge."""
     found = f"{word_count} word{'' if word_count == 1 else 's'} of text"
     if file_error:
-        found += f", and your attachment could not be read ({file_error})"
+        found += (f", and your attachment could not be read — "
+                  f"{plain_reason(file_error)}")
     elif had_attachment:
         found += ", and no readable text could be taken from your attachment"
     else:
@@ -183,6 +274,8 @@ NOTICES = {
     "link_browser_only":  link_opens_only_in_a_browser,
     "link_missing":       link_missing_entirely,
     "wrong_task":         wrong_task,
+    "queued":             queued_for_review,
+    "still_reviewing":    still_being_reviewed,
     "link_not_the_work":  link_is_not_the_work,
     "media_not_read":     media_not_transcribed,
 }

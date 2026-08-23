@@ -205,6 +205,79 @@ def running_jobs(tenant) -> list:
                 f"WHERE state = 'running' ORDER BY id") or [])
 
 
+# ---------------------------------------------------------------------------
+# THE LIVE QUEUE (23 Aug 2026) — auto-review on submit, without a spinner.
+#
+# Ranjana: "tomorrow onwards students submit and get instant feedback", and
+# "so students not get busy of error msg if same time using multiple students".
+#
+# Reviewing inside the submit request cannot do that. A review takes 25-65
+# seconds and the browser is serial, so fifty submissions in one evening
+# either queue behind each other invisibly or hit the capacity governor and
+# read "AiRev is at full capacity" — an error message for doing the work on
+# time. The learner should never wait on a review at all.
+#
+# So a submission ENQUEUES and returns in milliseconds. The same worker that
+# drains a cohort batch drains this, one at a time, caches warm.
+#
+# One live job is reused rather than one job per learner: a hundred jobs would
+# each want a worker, and only one may run. Items append to the open live job
+# and the worker keeps going until the queue is empty.
+# ---------------------------------------------------------------------------
+
+LIVE_NOTE = "live — auto-review on submit"
+# How many times a finished worker looks again for work that arrived WHILE it
+# was draining. Bounded because an unbounded loop on a daemon thread is how a
+# Space stops responding to /health.
+LIVE_MAX_ROUNDS = int(os.getenv("REVIEW_JOB_LIVE_ROUNDS", "50"))
+
+
+def open_live_job(tenant) -> Optional[int]:
+    """The live job accepting new items, or None. Pure-ish (one SELECT)."""
+    ensure_tables(tenant)
+    rows = tquery(
+        tenant,
+        f"SELECT id FROM {JOBS_TABLE} WHERE note = %s AND state = 'running' "
+        f"ORDER BY id DESC LIMIT 1", (LIVE_NOTE,))
+    return int(rows[0]["id"]) if rows else None
+
+
+def already_queued(tenant, job_id: int, submission_id: int) -> bool:
+    """Is this submission already waiting? Stops a double-click costing twice."""
+    rows = tquery(
+        tenant,
+        f"SELECT id FROM {ITEMS_TABLE} WHERE job_id = %s AND submission_id = %s "
+        f"AND state = 'pending' LIMIT 1", (job_id, int(submission_id)))
+    return bool(rows)
+
+
+def enqueue_live(tenant, scope_id: int, submission_id: int) -> tuple:
+    """Add one submission to the live queue. Returns (job_id, queued: bool).
+
+    Writes no mark and reads no submission — it costs one INSERT, which is
+    why the learner's submit can wait for it.
+    """
+    ensure_tables(tenant)
+    job_id = open_live_job(tenant)
+    if job_id is None:
+        job_id = create_job(tenant, "assignment", [], note=LIVE_NOTE)
+        set_job_state(tenant, job_id, "running", LIVE_NOTE)
+    if already_queued(tenant, job_id, submission_id):
+        return job_id, False
+    texecute(tenant,
+             f"INSERT INTO {ITEMS_TABLE} (job_id, scope_id, submission_id) "
+             f"VALUES (%s, %s, %s)", (job_id, int(scope_id), int(submission_id)))
+    return job_id, True
+
+
+def has_pending(tenant, job_id: int) -> bool:
+    rows = tquery(
+        tenant,
+        f"SELECT id FROM {ITEMS_TABLE} WHERE job_id = %s AND state = 'pending' "
+        f"LIMIT 1", (job_id,))
+    return bool(rows)
+
+
 # ─── the worker ─────────────────────────────────────────────────────────────
 
 _worker_lock = threading.Lock()
@@ -350,7 +423,8 @@ def drain_parallel(tenant, job_id: int, review_one: Callable,
     return _finalize(tenant, job_id)
 
 
-def start_worker(tenant, job_id: int, review_one: Callable) -> bool:
+def start_worker(tenant, job_id: int, review_one: Callable,
+                 live: bool = False) -> bool:
     """Run drain() on a daemon thread. Returns False if one is already going.
 
     ONE at a time, process-wide. Two workers would race on the same rows and
@@ -367,7 +441,14 @@ def start_worker(tenant, job_id: int, review_one: Callable) -> bool:
         try:
             print(f"[JOB {job_id}] worker started "
                   f"(concurrency {WORKER_CONCURRENCY})")
-            final = drain_parallel(tenant, job_id, review_one)
+            # drain_parallel snapshots its work once. On a LIVE queue more
+            # arrives while it runs, so look again — otherwise the last
+            # student to submit waits for the next submission to wake us.
+            for _round in range(LIVE_MAX_ROUNDS):
+                final = drain_parallel(tenant, job_id, review_one)
+                if not live or not has_pending(tenant, job_id):
+                    break
+                set_job_state(tenant, job_id, "running", LIVE_NOTE)
             print(f"[JOB {job_id}] finished — {final.done} reviewed, "
                   f"{final.skipped} skipped, {final.failed} failed")
         except Exception as e:
