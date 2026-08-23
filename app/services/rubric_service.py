@@ -54,7 +54,15 @@ _TABLE = "derived_rubrics"
 #       the fix would ship and change nothing for the two assignments it was
 #       written for. The version is part of the cache key: change the RULES,
 #       change the number, or the rules do not reach the cohort.
-RUBRIC_VERSION = 5
+#   v6: THE RUBRIC IS NO LONGER INVENTED. v1-v5 asked the model to design
+#       criteria AND weight them; it kept adding requirements the brief
+#       never stated (Day 05 NotebookLM: "sources uploaded" + "iterative
+#       review", 45 marks, neither in the task) and every learner lost
+#       them before being read. From v6 the model may only LIST what the
+#       task asks for, in the task's own words; weighting is arithmetic
+#       (requirements_to_criteria) and unprovable requirements are
+#       excluded from scoring instead of failed by the whole cohort.
+RUBRIC_VERSION = 6
 # Per-tenant: one tenant's CREATE TABLE must never suppress another's.
 _tables_ready: set = set()
 
@@ -96,7 +104,7 @@ def cap_word_min(word_min: int, submission_kind: str) -> int:
         return min(value, CAPTION_WORD_MIN)
     return value
 
-RUBRIC_SCHEMA = {
+REQUIREMENTS_SCHEMA = {
     "type": "object",
     "properties": {
         "deliverables": {
@@ -104,21 +112,22 @@ RUBRIC_SCHEMA = {
             "items": {"type": "string"},
             "description": "Every distinct thing the task explicitly asks the student to produce or submit. Quote the task's own wording where possible.",
         },
-        "criteria": {
+        "requirements": {
             "type": "array",
-            "minItems": 3,
+            "minItems": 1,
             "maxItems": 6,
+            "description": "What THIS TASK asks for, taken from the task's own words. Not qualities you think good work has — only what the task states.",
             "items": {
                 "type": "object",
                 "properties": {
                     "name": {"type": "string",
-                             "description": "Short criterion name naming what is judged, in the task's own terms. MUST be judgeable from the submitted text/files alone — never something requiring access to WhatsApp, a live URL, attendance, or any system outside this submission."},
-                    "maxScore": {"type": "integer", "minimum": 5, "maximum": 60,
-                                 "description": "Weight out of 100. All criteria must total exactly 100."},
+                             "description": "The requirement in the TASK'S OWN WORDS, shortened to a label a student would recognise from reading the brief. Never a generic academic quality the task does not name."},
                     "what_earns_it": {"type": "string",
-                                      "description": "One sentence: what the SUBMITTED TEXT OR FILES must contain to earn full marks here. If you cannot state that without needing to see something outside the submission, this criterion is invalid."},
+                                      "description": "One sentence: what the submitted text or files must contain for this requirement to be fully done. Must be answerable from the submission alone."},
+                    "evidenceable": {"type": "boolean",
+                                     "description": "TRUE if a marker holding only the student's text and files could tell whether this was done. FALSE for anything the finished work cannot show: which tool or model made it, which settings were toggled, the order steps were taken in, posting to WhatsApp or a group, attendance, or whether a link is live."},
                 },
-                "required": ["name", "maxScore", "what_earns_it"],
+                "required": ["name", "what_earns_it", "evidenceable"],
             },
         },
         "word_min": {"type": "integer", "minimum": 0, "maximum": 2000,
@@ -130,37 +139,31 @@ RUBRIC_SCHEMA = {
             "description": "The primary form of the deliverable.",
         },
     },
-    "required": ["deliverables", "criteria", "word_min", "word_max", "submission_kind"],
+    "required": ["deliverables", "requirements", "word_min", "word_max", "submission_kind"],
 }
 
-_INSTRUCTIONS = """You are designing the marking rubric for ONE specific piece of coursework.
+# Kept as an alias: external callers and older code refer to RUBRIC_SCHEMA.
+RUBRIC_SCHEMA = REQUIREMENTS_SCHEMA
 
-Read the task below and derive criteria that measure WHAT THIS TASK ACTUALLY ASKS FOR — nothing else.
+_INSTRUCTIONS = """You are reading ONE piece of coursework and listing WHAT IT ASKS FOR. You are not designing a rubric and you are not deciding what good work looks like in general.
+
+Your only source is the task text below. Read it and write down what it tells the student to do.
 
 RULES:
-1. Start from the deliverables. If the task says "generate an image and list 5 steps", then submitting the image and listing five steps ARE the criteria. Do not import generic academic criteria the task never asked for.
-2. If the deliverable is an image, a published artifact, a link or a file, the student's written text is a caption, not an essay. Set word_min low (0-40) and do NOT create criteria that demand extended prose.
-3. Weight by what the task emphasises. maxScore values must total EXACTLY 100.
-4. Name criteria in the task's own language, so a student reading the name knows what was judged.
-5. Be demanding but fair: full marks must mean the task was genuinely done, not that words were written.
-6. Never invent a requirement the task does not state.
-7. VERIFIABILITY IS MANDATORY. You will judge ONLY the text and files the student uploads to this platform. You cannot open links, visit published pages, see a WhatsApp group, check attendance, or view anything outside the submission. NEVER create a criterion you could not evidence from the submission itself — an unverifiable criterion scores 0 for everyone and fails students who did the work.
-   - "Link shared in WhatsApp group"        -> NOT allowed (you cannot see WhatsApp)
-   - "Artifact is live and publicly hosted" -> NOT allowed (you cannot open the link)
-   - "A published link is provided"          -> allowed (visible in the submission)
-   - "The write-up explains what was built"  -> allowed (visible in the submission)
-   Where the task requires off-platform actions, judge the evidence of them that appears IN the submission, and weight the rest onto what you can actually read.
-8. HOW THE WORK WAS MADE IS NOT VISIBLE IN THE WORK. A finished artifact does not record which AI wrote its first draft, which settings were toggled, or which steps came in which order. Tasks routinely PRESCRIBE a method ("use ChatGPT for the lyrics, turn on Custom mode, then generate") — that is instruction to the learner, not something the deliverable can evidence. Never make a criterion out of it.
-   - "ChatGPT was used to write the lyrics" -> NOT allowed (a song carries no authorship signature)
-   - "Custom mode was enabled in the tool"  -> NOT allowed (a setting leaves no trace in the output)
-   - "The workflow steps were followed in order" -> NOT allowed (unless the learner submits the record of them)
-   - "The lyrics are original and on the assigned theme" -> allowed (readable in the submission)
-   - "A style/genre direction is stated"     -> allowed IF the submission is asked to contain it
-   Judge the OUTPUT the method was supposed to produce, and put the method's weight there. A rubric where the cohort cannot reach full marks however well they did the task is a broken rubric.
-9. CRITERIA MUST BE INDEPENDENT. Each one measures a DIFFERENT property of the submission. Never split a single property across two criteria, and never let one weakness be chargeable twice — a learner who did part of the task well must be able to earn those marks even where another part is weak.
-   - "5 concrete steps listed" (40) + "steps are specific and credible" (20) -> WRONG. Vague steps lose 60 marks for one flaw; the first criterion is about whether five steps EXIST.
-   - "Five steps are listed" (40) + "Steps are specific to the learner" (20) -> RIGHT. The first asks IF, the second asks HOW WELL, and each can be earned on its own.
-   Before you finish, read your criteria back and ask: could one shortcoming in the submission lower two of these? If so, merge them or rename the first so it measures only presence."""
+1. EVERY REQUIREMENT COMES FROM THE TASK'S OWN WORDS. If the task says "create a dashboard from a data set using Gemini Canvas", the requirements are the dashboard and the data set. Use the task's vocabulary so a student who read the brief recognises every line.
+2. NEVER ADD A REQUIREMENT THE TASK DOES NOT STATE. No "depth of analysis", no "structure and clarity", no "critical reasoning", no "sources cited", no "iterative refinement" — unless the task asks for it in those terms. A requirement the brief never mentioned fails students for a rule they were never given, and that is the single worst thing this system can do.
+3. A SHORT TASK HAS FEW REQUIREMENTS. One sentence asking for one thing yields ONE requirement. Do not pad to look thorough. Two honest requirements beat six invented ones.
+4. DO NOT ASSIGN WEIGHTS. You list what was asked; the system weights every requirement equally. This is deliberate — you are not permitted to decide that one part of the brief is worth more than another.
+5. MARK evidenceable=false FOR ANYTHING THE FINISHED WORK CANNOT SHOW. A finished artifact carries no record of which AI made it, which mode was enabled, or in what order the steps were taken. Nor can the marker see WhatsApp, attendance, the LMS, or open a live URL. Those requirements are real instructions to the learner but unmarkable evidence, so they are excluded from scoring rather than failed by everyone.
+   - "Use Gemini Canvas to build it"      -> evidenceable=false (a dashboard does not name its maker)
+   - "A dashboard is present"             -> evidenceable=true
+   - "Share the link in the WhatsApp group" -> evidenceable=false
+   - "A published link is provided"       -> evidenceable=true (visible in the submission)
+6. REQUIREMENTS MUST BE INDEPENDENT. Each names a DIFFERENT thing the task asked for. Never split one thing into two lines — a single shortcoming must never be chargeable twice.
+7. HOW WELL each requirement was done is judged later, by a different step, on a 0-100 scale. Your job is only to say WHAT was asked. So write requirements that can be done well or badly, and do not smuggle a quality bar into the wording unless the task states one.
+
+Also report word_min/word_max for the written part and the primary form of the deliverable. When the deliverable is an image, file, link or artifact, the written part is a caption: set word_min low (0-40)."""
+
 
 
 def _ensure_table(tenant) -> None:
@@ -320,6 +323,53 @@ def normalise(criteria: list) -> list:
     return out
 
 
+# ---------------------------------------------------------------------------
+# EQUAL WEIGHTING — why the model is not allowed to weight the task.
+#
+# Under v1-v5 the model both invented criteria AND decided their weights. On
+# Day 05 (NotebookLM) it wrote "sources uploaded" and "iterative review" —
+# neither in the brief — and gave them 45 marks between them. Every learner in
+# the cohort lost those 45 marks before a word of their work was read.
+#
+# From v6 the model may only LIST what the task asked for. The split is
+# arithmetic, done here: every requirement the marker can actually evidence
+# carries the same weight. If faculty want a part of the task to count for
+# more, they say so in the brief by asking for more of it.
+# ---------------------------------------------------------------------------
+
+def requirements_to_criteria(requirements: list) -> list:
+    """Task requirements -> equally weighted criteria totalling 100. Pure.
+
+    Requirements the marker cannot evidence are dropped, not failed: they are
+    genuine instructions to the learner that the finished work cannot prove.
+    Dropping them costs the learner nothing, because normalise() stretches the
+    survivors back to 100.
+
+    Falls back to keeping everything when nothing is evidenceable — a task
+    whose every line is unprovable is a task-wording problem, and marking it
+    against its own words is still fairer than the generic template.
+    """
+    clean = [r for r in (requirements or [])
+             if isinstance(r, dict) and str(r.get("name") or "").strip()]
+    if not clean:
+        return [dict(c) for c in FALLBACK_CRITERIA]
+
+    keepable = [r for r in clean if r.get("evidenceable", True)]
+    dropped = [r for r in clean if not r.get("evidenceable", True)]
+    if not keepable:
+        print("⚠️  requirements: nothing in this task is evidenceable from a "
+              "submission — keeping all of them rather than scoring nothing")
+        keepable, dropped = clean, []
+    if dropped:
+        print("ℹ️  requirements: excluded from scoring (a finished submission "
+              f"cannot show these) {[str(r.get('name'))[:50] for r in dropped]}")
+
+    # Equal weights in, normalise() splits the 100 and absorbs the rounding.
+    return normalise([{"name": r["name"], "maxScore": 100,
+                       "what_earns_it": r.get("what_earns_it", "")}
+                      for r in keepable])
+
+
 def _fallback(reason: str) -> dict:
     print(f"⚠️  rubric derivation unavailable ({reason}) — using generic rubric")
     return {
@@ -360,7 +410,12 @@ def _store(tenant, scope_type: str, scope_id: int, fresh_hash: str, payload: dic
 
 
 def derive(task: dict) -> dict:
-    """Ask the model to design a rubric for this task. Raises on AI failure."""
+    """Read the task and list what it asks for. Raises on AI failure.
+
+    The model no longer designs a rubric — it extracts requirements in the
+    task's own words. Weighting is done here, equally, by
+    requirements_to_criteria(); see the note above it for why.
+    """
     questions = task.get("questions") or []
     q_text = ""
     if questions:
@@ -377,12 +432,14 @@ def derive(task: dict) -> dict:
     )
     result = ai_service.call_structured(
         blocks=[{"text": prompt, "cache": False}],
-        schema=RUBRIC_SCHEMA, tier="default", max_tokens=1500,
+        schema=REQUIREMENTS_SCHEMA, tier="default", max_tokens=1500,
     )
-    kept, dropped = strip_offplatform(result.get("criteria"))
+    criteria = requirements_to_criteria(result.get("requirements"))
+    # Second line of defence: the deterministic off-platform filter still runs.
+    # evidenceable=false is the model's judgement and it can miss one.
+    kept, dropped = strip_offplatform(criteria)
     if dropped:
-        # Visible in the Space log: a silently-narrowed rubric must be auditable.
-        print("⚠️  rubric: dropped off-platform criteria "
+        print("⚠️  requirements: dropped off-platform "
               f"{[c.get('name') for c in dropped]} — weights rebalanced onto "
               "what the reviewer can actually read")
     kind = result.get("submission_kind", "mixed")

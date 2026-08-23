@@ -83,3 +83,71 @@ def test_only_the_newest_attempt_counts():
         _row(9, "https://old.notion.site/broken", when="2026-08-19"),
     ]), 21)
     assert len(rows) == 1 and "fixed" in rows[0]["url"]
+
+
+# ── the identical-word-count tell (Day 07, assignment 24) ───────────────────
+#
+# Seventeen different share.gemini.google links each returned "READABLE — 120
+# words". The auditor never sees the text, only the count — and the count was
+# enough to know none of it was student work.
+
+from link_audit import ACT_SHELL, apply_shell_verdict, shell_word_counts
+
+
+def _r(url, words, act=ACT_OK):
+    return {"url": url, "act": act, "words": words, "reason": "",
+            "name": "", "email": "", "student_id": 1, "submitted_at": ""}
+
+
+def test_three_links_agreeing_to_the_word_are_a_shell():
+    rows = [_r("a", 120), _r("b", 120), _r("c", 120)]
+    assert shell_word_counts(rows) == {120}
+
+
+def test_two_are_a_coincidence_a_big_cohort_will_produce():
+    assert shell_word_counts([_r("a", 120), _r("b", 120)]) == set()
+
+
+def test_genuinely_different_pages_are_never_flagged():
+    rows = [_r("a", 916), _r("b", 6330), _r("c", 103), _r("d", 210)]
+    assert shell_word_counts(rows) == set()
+
+
+def test_the_same_url_repeated_is_not_three_links():
+    """One student re-checked three times is one page, not a pattern."""
+    assert shell_word_counts([_r("a", 120), _r("a", 120), _r("a", 120)]) == set()
+
+
+def test_shared_failure_reasons_are_not_shells():
+    """Twenty links that all failed the same way is expected, not suspicious."""
+    rows = [_r(u, 0, ACT_US) for u in ("a", "b", "c", "d")]
+    assert shell_word_counts(rows) == set()
+
+
+def test_the_day07_shape_end_to_end():
+    """17 at 120 words, 3 genuinely different — exactly what assignment 24
+    returned."""
+    rows = [_r(f"g{i}", 120) for i in range(17)]
+    rows += [_r("real1", 916), _r("real2", 6330), _r("real3", 103)]
+    out = apply_shell_verdict(rows)
+    flagged = [r for r in out if r["act"] == ACT_SHELL]
+    kept = [r for r in out if r["act"] == ACT_OK]
+    assert len(flagged) == 17 and len(kept) == 3
+
+
+def test_the_first_shell_row_is_relabelled_too():
+    """A live guard can only catch repeats. The audit must catch the original
+    as well, or one student stays wrongly marked."""
+    out = apply_shell_verdict([_r("a", 120), _r("b", 120), _r("c", 120)])
+    assert out[0]["act"] == ACT_SHELL
+
+
+def test_the_shell_reason_says_do_not_grade():
+    out = apply_shell_verdict([_r("a", 120), _r("b", 120), _r("c", 120)])
+    assert "Do NOT grade" in out[0]["reason"]
+
+
+def test_apply_shell_verdict_does_not_mutate_its_input():
+    rows = [_r("a", 120), _r("b", 120), _r("c", 120)]
+    apply_shell_verdict(rows)
+    assert all(r["act"] == ACT_OK for r in rows)

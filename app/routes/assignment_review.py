@@ -29,6 +29,7 @@ from app.services import (
     review_pipeline,
     prefilter_service,
     rubric_service,
+    student_notices,
 )
 
 _PIPELINE_ON = os.getenv("REVIEW_PIPELINE", "on").lower() == "on"
@@ -268,14 +269,10 @@ def submit_and_review_assignment(
 
     if not content:
         total_time = int((time.time() - start_time) * 1000)
-        if file_error:
-            msg = (f"We received your file but couldn't read any text from it "
-                   f"({file_error}). Please check it opens correctly, then re-attach "
-                   f"it — or type your answer in the box — and submit again.")
-        else:
-            msg = ("We couldn't find any answer for this assignment. Attach your work "
-                   "(PDF, Word, Excel, image, or text), or type your answer in the box, "
-                   "then click Submit again.")
+        # One wording for this fault, everywhere it can happen — see
+        # app/services/student_notices.py for why these left the routes.
+        msg = (student_notices.file_unreadable(file_error, req.fileName or "")
+               if file_error else student_notices.nothing_submitted())
         return {
             "success": True,
             # Explicit no-content signal (same contract as industry sessions):
@@ -310,17 +307,9 @@ def submit_and_review_assignment(
     # storeOnly is exempt: storage must accept short work — the gate applies
     # when the stored work is actually reviewed.
     if not req.storeOnly and word_count < MIN_REVIEWABLE_WORDS and not deliverable:
-        found = f"{word_count} word{'' if word_count == 1 else 's'} of text"
-        if file_error:
-            found += f", and your attachment could not be read ({file_error})"
-        elif req.fileData or req.fileUrl or req.fileName:
-            found += ", and no readable text could be taken from your attachment"
-        else:
-            found += ", and no file was attached"
-        msg = (f"We haven't scored this yet — we could only find {found}. "
-               f"If your work is in a file, re-attach it (PDF, Word, image or text); "
-               f"if it is written work, add your reasoning in the answer box. "
-               f"No score has been recorded for this attempt.")
+        msg = student_notices.too_little_content(
+            word_count, file_error,
+            had_attachment=bool(req.fileData or req.fileUrl or req.fileName))
         print(f"[ASSIGNMENT] NOT SCORED (too little readable content): "
               f"words={word_count}, file_error={file_error or 'none'} — no row written")
         return {
@@ -344,11 +333,11 @@ def submit_and_review_assignment(
     if not req.storeOnly and intake.link_is_the_deliverable(
             f"{assignment.get('title', '')} {assignment.get('description', '')}"
     ) and intake.only_unreadable_links(artefacts):
-        msg = ("Your link did not open for us — it asks whoever visits to sign in, "
-               "so your page could not be read and NO MARKS are recorded yet. "
-               "In Notion open your page, click Share, then Publish, and copy "
-               "the published link (it looks like yourname.notion.site/...). "
-               "Submit that link and you will be marked normally.")
+        # The steps must match the tool THIS learner used. Sending Notion's
+        # Share -> Publish to someone whose link was a Gemini share taught
+        # them nothing and looked like we had not read their submission.
+        msg = student_notices.link_never_opened(
+            next((a.label for a in artefacts if a.kind == "link"), ""))
         print(f"[ASSIGNMENT] NOT SCORED (published link never opened): "
               f"{word_count} words typed beside an unopenable link")
         return {
@@ -361,13 +350,8 @@ def submit_and_review_assignment(
         }
 
     if not req.storeOnly and intake.is_unassessable(manifest, content):
-        msg = ("We can see you submitted your work, but we could not open it "
-               "from our side. Links like Claude artifact links only open in "
-               "a browser, so please ALSO add one of these, then click Submit "
-               "again: a screenshot of your work, the HTML file (use the "
-               "artifact's Download or Copy option), or a few lines in the "
-               "answer box about what you built and how. No marks are "
-               "recorded yet.")
+        msg = student_notices.link_opens_only_in_a_browser(
+            next((a.label for a in artefacts if a.kind == "link"), ""))
         print(f"[ASSIGNMENT] NOT SCORED (unassessable deliverable): "
               f"{word_count} words beside an unreadable link/file — no review run")
         return {
@@ -461,10 +445,8 @@ def submit_and_review_assignment(
                     "needsInput": True,
                     "submission": submission,
                     "feedback": _empty_feedback(
-                        (f"Not graded: your file looks like {what}, not the "
-                         f"work this assignment asked for "
-                         f"(“{assignment['title']}”). Please attach the "
-                         f"correct work and submit again."), helpful=True),
+                        student_notices.wrong_task(what, assignment["title"]),
+                        helpful=True),
                     "processingTimeMs": int((time.time() - start_time) * 1000),
                 }
             if r is not None:
@@ -833,12 +815,8 @@ def re_review_assignment(
         print(f"[REGRADE] submission {submission_id}: published link never "
               f"opened on a publish-this task — no mark, row untouched")
         if previous_grade is None:
-            _tell_student_why(tenant, submission_id, (
-                "Your link did not open for us — it asks whoever visits to sign in, "
-               "so your page could not be read and NO MARKS are recorded yet. "
-               "In Notion open your page, click Share, then Publish, and copy "
-               "the published link (it looks like yourname.notion.site/...). "
-               "Submit that link and you will be marked normally."))
+            _tell_student_why(tenant, submission_id, student_notices.link_never_opened(
+                next((a.label for a in artefacts if a.kind == "link"), "")))
         return {"success": False, "skipped": "unreadable_published_link",
                 "submissionId": submission_id,
                 "previousGrade": previous_grade,
@@ -857,13 +835,10 @@ def re_review_assignment(
               f"unreadable ({intake.substantive_words(content)} words of answer) "
               f"— row untouched")
         if previous_grade is None:
-            _tell_student_why(tenant, submission_id, (
-                "You submitted a file or link, but we could not open it. "
-                "No marks given yet. If it is a link that only opens in a "
-                "browser (like a Claude artifact link), also add a "
-                "screenshot of your work, or the HTML file, or a few lines "
-                "about what you built. If it is a file, upload it again "
-                "(image, PDF or Word). Then click Submit."))
+            _tell_student_why(tenant, submission_id,
+                              student_notices.link_opens_only_in_a_browser(
+                                  next((a.label for a in artefacts
+                                        if a.kind == "link"), "")))
         return {"success": False, "skipped": "unassessable_deliverable",
                 "submissionId": submission_id,
                 "previousGrade": previous_grade,
@@ -922,10 +897,9 @@ def re_review_assignment(
         # never have been scored at all). Clear the mark, tell the learner
         # what arrived, leave the row 'submitted' so the right work can come.
         what = r["wrongTask"]["whatItIs"] or "work for a different task"
-        wrong_msg = (f"Not graded: your file looks like {what}, not the work "
-                     f"this assignment asked for "
-                     f"(“{assignment.get('title', '')}”). Please attach the "
-                     f"correct work and submit again.")
+        # Same wording the submit path uses — a learner who re-submits must
+        # not be told two different stories about one fault.
+        wrong_msg = student_notices.wrong_task(what, assignment.get("title", ""))
         assignment_db_service.mark_not_graded(
             tenant, submission_id, wrong_msg,
             card=_empty_feedback(wrong_msg, helpful=False))

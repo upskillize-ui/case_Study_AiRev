@@ -465,3 +465,43 @@ def test_the_host_gap_still_applies_when_the_lock_was_free(monkeypatch):
     assert slept == []
     lr.render_link(ART)                            # second: spaced
     assert slept and slept[0] > 0
+
+
+# ── Google's sign-in wall ─────────────────────────────────────────────────
+#
+# Live 23 Aug, student 130's NotebookLM link. render_check reported
+# "READABLE — 186 words". Every one of those words was Google's login form.
+# The phrase list knew Notion's wording and not Google's, which means the
+# Day 05 audit's READABLE verdicts were counting login pages as student work.
+
+GOOGLE_SIGNIN = """Loading
+Sign in
+Use your Google Account
+Email or phone
+Forgot email?
+Not your computer? Use Guest mode to sign in privately. Learn more about
+using Guest mode
+Next
+Create account
+English (United States)
+Help
+Privacy
+Terms"""
+
+
+def test_googles_sign_in_wall_is_not_a_submission():
+    reason = lr.interstitial_reason("Sign in - Google Accounts", GOOGLE_SIGNIN)
+    assert "private" in reason and "Publish" in reason
+
+
+def test_the_google_wall_is_caught_by_body_alone():
+    """The title is not always 'Sign in - Google Accounts'."""
+    assert "private" in lr.interstitial_reason("", GOOGLE_SIGNIN)
+
+
+def test_a_notebook_write_up_that_mentions_google_still_grades():
+    work = ("My NotebookLM notebook on India's digital payments. I signed in "
+            "with my Google account, uploaded three RBI circulars as sources, "
+            "generated an Audio Overview and a Mind Map, then fixed two wrong "
+            "figures the audio had invented. " * 6)
+    assert lr.interstitial_reason("My notebook", work) == ""

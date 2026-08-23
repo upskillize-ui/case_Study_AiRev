@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import base64
 import ipaddress
+import hashlib
 import os
 import threading
 import time
@@ -109,7 +110,15 @@ CHROME_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 _STRONG_INTERSTITIALS = (
     (("sign in to see this page", "sign in to see this",
       "you need access to view", "request access to view",
-      "you don't have access to this page"),
+      "you don't have access to this page",
+      # Google's own wall, verbatim from student 130's NotebookLM link
+      # (23 Aug): title "Sign in - Google Accounts", body "Use your Google
+      # Account ... Forgot email? ... Not your computer? Use Guest mode".
+      # 186 words of login form, reported READABLE by the first phrase list
+      # — which means every Day 05 "READABLE" verdict needs re-checking.
+      "use your google account", "forgot email", "use guest mode",
+      "sign in - google accounts", "couldn't sign you in",
+      "choose an account", "to continue to google"),
      "this link is private — it opens a sign-in page instead of the work. "
      "The page has to be published to the web (Share -> Publish) and the "
      "published link submitted"),
@@ -118,6 +127,21 @@ _STRONG_INTERSTITIALS = (
       "needs to review the security"),
      "the page was still showing a human-check (Cloudflare) when the "
      "browser gave up"),
+    # Google's SIGNED-OUT APP SHELL. Not a login form and not an error — the
+    # product's own marketing chrome, served to anyone without a session.
+    # Day 07 (assignment 24, 23 Aug): SEVENTEEN different share.gemini.google
+    # links each returned exactly 120 words of it, and the audit called every
+    # one of them READABLE. Seventeen students would have been marked on
+    # Google's page furniture. Identical word counts across distinct URLs is
+    # the tell; these phrases are the proof.
+    (("gemini - direct access to google ai",
+      "direct access to google ai",
+      "meet gemini, your personal ai assistant",
+      "sign in to gemini", "try gemini advanced",
+      "google apps\nsign in"),
+     "the link opened Gemini's own page instead of your shared work — a "
+     "Gemini share link only shows the conversation to people who are "
+     "signed in to your account"),
     (("your browser is not compatible", "unsupported browser",
       "browser is not supported", "upgrade to the latest browser"),
      "the site refused to open this link in the reviewer's browser"),
@@ -377,6 +401,73 @@ def needs_vision(r: Rendered) -> bool:
     return bool(r.screenshot_b64) and len(r.text.split()) < LINK_RENDER_OCR_MIN_WORDS
 
 
+# ---------------------------------------------------------------------------
+# THE SHELL DETECTOR — the general form of the Day 07 failure.
+#
+# Seventeen distinct share.gemini.google links each returned exactly 120 words.
+# Distinct URLs cannot serve identical pages unless what came back belongs to
+# the SITE, not to the learner: a signed-out app shell, a marketing page, a
+# generic error frame.
+#
+# The phrase lists above only catch shells we have already met. This catches
+# the ones we have not, including the next tool the syllabus adopts — which is
+# the point, because being one tool behind is how this system keeps failing.
+#
+# Deliberately narrow: identical text, not merely similar, and only across
+# DIFFERENT urls. Two learners who genuinely submit the same page (a shared
+# team artifact) is the one false positive, and refusing to grade a duplicate
+# is the safe direction to be wrong in.
+# ---------------------------------------------------------------------------
+
+_SHELL_MIN_WORDS = 8          # below this, "the page rendered empty" already fires
+_seen_pages: dict = {}        # normalised text -> first url that served it
+
+
+def page_signature(text: str) -> str:
+    """Stable fingerprint of a page's readable text. Pure."""
+    return hashlib.sha1(_flatten(text or "").encode("utf-8")).hexdigest()
+
+
+def duplicate_shell_reason(seen: dict, url: str, text: str) -> str:
+    """Has this exact page already been served for a DIFFERENT url? Pure.
+
+    `seen` maps signature -> first url. Returns the learner-facing reason, or
+    "" when this page is unique (or too short for the check to mean anything).
+    """
+    words = len((text or "").split())
+    if words < _SHELL_MIN_WORDS:
+        return ""
+    sig = page_signature(text)
+    first = seen.get(sig)
+    if first and first != url:
+        return ("the link opened the tool's own page rather than your work — "
+                "we know because another student's different link returned "
+                "exactly the same page")
+    return ""
+
+
+def note_page(url: str, text: str) -> str:
+    """Record this page and report whether it is a shared shell. Not pure.
+
+    Process-wide and deliberately unbounded within a run: a cohort sweep is
+    the unit of comparison, and the map is small (one entry per distinct page).
+    """
+    reason = duplicate_shell_reason(_seen_pages, url, text)
+    if reason:
+        print(f"[link] SHELL: {url} returned the same page as "
+              f"{_seen_pages.get(page_signature(text))} — not graded")
+        return reason
+    if len((text or "").split()) >= _SHELL_MIN_WORDS:
+        _seen_pages.setdefault(page_signature(text), url)
+    return ""
+
+
+def forget_pages() -> None:
+    """Clear the shell map. For tests, and for a long-lived process that wants
+    each sweep judged on its own."""
+    _seen_pages.clear()
+
+
 def read_rendered_link(url: str) -> Tuple[str, str]:
     """(reviewable_text, why_empty) — the one call intake makes.
 
@@ -396,6 +487,12 @@ def read_rendered_link(url: str) -> Tuple[str, str]:
     blocked = interstitial_reason(rendered.title, rendered.text)
     if blocked:
         return "", blocked
+
+    # A page identical to one already served for a different link is the
+    # site's own shell, whatever it says. Checked before vision spend.
+    shell = note_page(url, rendered.text)
+    if shell:
+        return "", shell
 
     ocr_text = ""
     if needs_vision(rendered):

@@ -105,7 +105,17 @@ def test_both_routes_carry_the_rule_and_name_the_fix():
     assert src.count("link_is_the_deliverable") == 2, \
         "submit AND regrade must both refuse; one path alone leaves the hole"
     assert "unreadable_published_link" in src
-    assert "Share, then Publish" in src, "the note must tell them the fix"
+    # The wording moved to student_notices (23 Aug) so submit and regrade
+    # cannot drift, and so the steps match the learner's OWN tool. What the
+    # routes must still do is ask for it.
+    assert src.count("student_notices.link_never_opened") == 2, \
+        "both paths must issue the notice, not just refuse silently"
+    from app.services import student_notices
+    assert "Share, then Publish" in student_notices.link_never_opened(
+        "https://ranjana.notion.site/day-4"), "the note must tell them the fix"
+    assert "Gemini" in student_notices.link_never_opened(
+        "https://share.gemini.google/abc"), \
+        "a Gemini learner must not be sent to Notion's Share menu"
 
 
 def test_the_publish_rule_runs_before_the_generic_unassessable_branch():

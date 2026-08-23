@@ -325,6 +325,7 @@ REVIEW_SCHEMA = {
 _JUDGE_INSTRUCTIONS = """You are AiRev's examiner. Judge the student's answer against the AGENT KNOWLEDGE above — it is your only ground truth. Be exacting in judgement, constructive in wording.
 
 NON-NEGOTIABLE METHOD:
+0. THE CRITERIA LIST IS THE ENTIRE STANDARD. It is not a rubric someone designed — it is what THIS TASK asked for, in the task's own words. Judge the submission against those requirements and NOTHING ELSE. Never lower a score because the work lacks depth, structure, citations, analysis, length or polish that the requirements do not name. If you find yourself writing "could have been more detailed" about something no requirement asks for, that belongs in improvements, never in a score.
 1. For every rubric criterion, FIRST extract verbatim evidence_quotes from the student's answer. Judge ONLY from that evidence. No evidence = say so and score accordingly (the system caps it regardless).
 2. case_specific=true ONLY if the evidence engages the specificity markers — this material's actual facts, figures, names, constraints. Fluent generic prose about the topic is case_specific=false.
 3. Score each criterion strictly on what its NAME demands. Do not let fluency halo into substance scores.
@@ -795,8 +796,13 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
     """Full pipeline for one submission. Raises on AI failure — the route
     owns the fallback to the legacy path."""
     rubric_criteria = rubric.get("criteria", []) or []
-    criteria_list = "\n".join(f"- \"{c['name']}\" (max {c['maxScore']} points)"
-                              for c in rubric_criteria)
+    # whatEarnsIt is the task's own wording for this requirement. Sending only
+    # the NAME made the judge guess what a short label meant, and guessing is
+    # where invented standards come back in through the side door.
+    criteria_list = "\n".join(
+        f"- \"{c['name']}\" (max {c['maxScore']} points)"
+        + (f"\n    fully done when: {c['whatEarnsIt']}" if c.get("whatEarnsIt") else "")
+        for c in rubric_criteria)
 
     # What the agent learned in its sleep: calibration notes + verified
     # anchors for this scope, plus bounded gate overrides. All optional —
