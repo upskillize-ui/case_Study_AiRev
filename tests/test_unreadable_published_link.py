@@ -129,3 +129,42 @@ def test_the_publish_rule_runs_before_the_generic_unassessable_branch():
     second_unassessable = src.index("is_unassessable(manifest, content)",
                                     first_unassessable + 1)
     assert second_link < second_unassessable, "regrade path still ordered wrong"
+
+
+# ── the words between "share" and "link" are not fixed ────────────────────
+#
+# Day 05 (22 Aug) reads "then share your notebook link". The first pattern
+# demanded share and link be adjacent, so the assignment was never treated
+# as a publish-this task, the rule never ran, and 100 students were filed
+# as "US must act — do NOT message" while their notebook sat private.
+
+DAY05_REAL = ("Day 05: Gemini Notebook : Create Studio Output. Pick any "
+              "topic, upload sources, create any Studio outputs (Video "
+              "Overview, Audio Overview, Mind Map, Reports, Slides, Data "
+              "Tables, Infographics, Flashcards, Quiz), review and fix "
+              "them, then share your notebook link.")
+
+
+def test_day05_is_recognised_as_a_publish_this_task():
+    assert intake.link_is_the_deliverable(DAY05_REAL) is True
+
+
+def test_a_clause_between_share_and_link_does_not_hide_the_task():
+    for text in ("share your notebook link",
+                 "share the published link with us",
+                 "share it and send the live link",
+                 "then share your portfolio page link on the LMS"):
+        assert intake.link_is_the_deliverable(text) is True, text
+
+
+def test_the_essay_days_are_still_left_alone():
+    """The rule must stay narrow — these are the days it must NOT claim."""
+    for text in (
+        "Day 03: Perplexity and Grok - India's Fintech Market. Research the "
+        "Indian fintech market and write up what you found.",
+        "Day 01: ChatGpt Assignment - Yourself in 5 years. Generate an AI "
+        "image of your future self and the 5 steps you will take.",
+        "Write a 500-word essay on RBI policy, citing sources with a link "
+        "if useful.",
+    ):
+        assert intake.link_is_the_deliverable(text) is False, text

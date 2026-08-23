@@ -656,9 +656,16 @@ def substantive_words(content: str) -> int:
 # effort — and unlike a low mark, a withheld one can still become a real
 # score the same evening.
 _PUBLISHED_DELIVERABLE = re.compile(
-    r"publish(?:ed|ing)?\b|\bshare (?:the |your )?link|\bpublic link\b|"
-    r"\bas a website\b|\bartifact\b|\bartefact\b|\bnotion\b|\bgamma\b|"
-    r"\blovable\b|\bdeploy(?:ed)?\b|\blive (?:page|site|link|url)\b", re.I)
+    # "share your notebook link", "share the published link", "share it and
+    # send the link" — the words between the verb and the noun vary, and Day
+    # 05 (22 Aug) slipped through a pattern that demanded them adjacent:
+    # 100 students were filed as "we will fix it" when their notebook was
+    # simply private. Allow up to a short clause between share and link.
+    r"\bshare[^.\n]{0,40}\blinks?\b|\bsend[^.\n]{0,30}\blinks?\b|"
+    r"publish(?:ed|ing)?\b|\bpublic link\b|\bas a website\b|"
+    r"\bartifacts?\b|\bartefacts?\b|\bnotion\b|\bnotebooklm\b|"
+    r"\bnotebook\b|\bgamma\b|\blovable\b|\bdeploy(?:ed)?\b|"
+    r"\blive (?:page|site|link|url)\b", re.I)
 
 
 def link_is_the_deliverable(task_text: str) -> bool:

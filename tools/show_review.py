@@ -85,6 +85,10 @@ def main() -> None:
     ap.add_argument("--empty-feedback-only", action="store_true",
                     help="only rows with a mark and no substantiation")
     ap.add_argument("--full", action="store_true", help="dump the whole JSON")
+    ap.add_argument("--notes", action="store_true",
+                    help="print what the student actually typed, and nothing "
+                         "else. Use this when the log says '3 words of "
+                         "content' and you need to know which 3.")
     args = ap.parse_args()
 
     db_url = os.getenv("AIREV_DB_URL", "")
@@ -98,6 +102,7 @@ def main() -> None:
         cur.execute("""
             SELECT id, student_id, grade, feedback, status, submitted_at,
                    CHAR_LENGTH(COALESCE(notes, '')) AS notes_len,
+                   COALESCE(notes, '')     AS notes,
                    COALESCE(file_path, '') AS file_ref
             FROM assignment_submissions
             WHERE assignment_id = %s
@@ -120,6 +125,11 @@ def main() -> None:
         print(f"\n=== student {sid}  submission {r['id']}  grade={r['grade']} "
               f"status={r.get('status')} ===")
         print(f"    typed {r['notes_len']} chars | file: {r['file_ref'][:60] or '-'}")
+        if args.notes:
+            print("    --- what the student typed, verbatim ---")
+            print("    " + (r.get("notes") or "(empty)")[:1500]
+                  .replace("\n", "\n    "))
+            continue
         if not fb:
             print("    (no stored feedback at all)")
             continue
