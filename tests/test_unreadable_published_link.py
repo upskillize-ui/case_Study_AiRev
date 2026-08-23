@@ -106,3 +106,26 @@ def test_both_routes_carry_the_rule_and_name_the_fix():
         "submit AND regrade must both refuse; one path alone leaves the hole"
     assert "unreadable_published_link" in src
     assert "Share, then Publish" in src, "the note must tell them the fix"
+
+
+def test_the_publish_rule_runs_before_the_generic_unassessable_branch():
+    """Ordering is the whole fix. A link-only row (a pasted NotebookLM URL,
+    ~89 characters, no file) trips is_unassessable FIRST, and that branch's
+    message says "upload your work again" — which sent 100 Day-05 students
+    to problem_report as "US must act, do NOT message" when their notebook
+    was simply private. Same refusal either way; only one of them tells the
+    student the truth."""
+    import inspect
+    from app.routes import assignment_review as ar
+    src = inspect.getsource(ar)
+    for path in ("submit", "regrade"):
+        pass
+    first_link = src.index("link_is_the_deliverable")
+    first_unassessable = src.index("is_unassessable(manifest, content)")
+    assert first_link < first_unassessable, \
+        "the publish-link rule must be consulted before the generic branch"
+    # and again for the second (regrade) pair
+    second_link = src.index("link_is_the_deliverable", first_link + 1)
+    second_unassessable = src.index("is_unassessable(manifest, content)",
+                                    first_unassessable + 1)
+    assert second_link < second_unassessable, "regrade path still ordered wrong"

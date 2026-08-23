@@ -339,25 +339,6 @@ def submit_and_review_assignment(
     # did not, and Day 02's deliverable is a Claude artifact link — a page
     # that only opens in a browser. Caught HERE, at submit time, the learner
     # can fix it in the same sitting instead of days later from a sweep.
-    if not req.storeOnly and intake.is_unassessable(manifest, content):
-        msg = ("We can see you submitted your work, but we could not open it "
-               "from our side. Links like Claude artifact links only open in "
-               "a browser, so please ALSO add one of these, then click Submit "
-               "again: a screenshot of your work, the HTML file (use the "
-               "artifact's Download or Copy option), or a few lines in the "
-               "answer box about what you built and how. No marks are "
-               "recorded yet.")
-        print(f"[ASSIGNMENT] NOT SCORED (unassessable deliverable): "
-              f"{word_count} words beside an unreadable link/file — no review run")
-        return {
-            "success": True,
-            "status": "needs_input",
-            "needsInput": True,
-            "submission": {"submissionId": 0, "attemptNumber": 0},
-            "feedback": _empty_feedback(msg, helpful=True),
-            "processingTimeMs": int((time.time() - start_time) * 1000),
-        }
-
     # Same ruling at submit time, where the learner can still fix it in the
     # same sitting: a publish-this task whose link never opened is not graded.
     if not req.storeOnly and intake.link_is_the_deliverable(
@@ -370,6 +351,25 @@ def submit_and_review_assignment(
                "Submit that link and you will be marked normally.")
         print(f"[ASSIGNMENT] NOT SCORED (published link never opened): "
               f"{word_count} words typed beside an unopenable link")
+        return {
+            "success": True,
+            "status": "needs_input",
+            "needsInput": True,
+            "submission": {"submissionId": 0, "attemptNumber": 0},
+            "feedback": _empty_feedback(msg, helpful=True),
+            "processingTimeMs": int((time.time() - start_time) * 1000),
+        }
+
+    if not req.storeOnly and intake.is_unassessable(manifest, content):
+        msg = ("We can see you submitted your work, but we could not open it "
+               "from our side. Links like Claude artifact links only open in "
+               "a browser, so please ALSO add one of these, then click Submit "
+               "again: a screenshot of your work, the HTML file (use the "
+               "artifact's Download or Copy option), or a few lines in the "
+               "answer box about what you built and how. No marks are "
+               "recorded yet.")
+        print(f"[ASSIGNMENT] NOT SCORED (unassessable deliverable): "
+              f"{word_count} words beside an unreadable link/file — no review run")
         return {
             "success": True,
             "status": "needs_input",
@@ -822,31 +822,6 @@ def re_review_assignment(
                 "artefacts": inventory,
                 "detail": intake.first_error(artefacts) or "no stored work found"}
 
-    if intake.is_unassessable(manifest, content):
-        # The deliverable exists; we could not open it. Scoring it anyway is an
-        # assertion about work nobody read — the fabrication rule, pointed the
-        # other way. Leave the row untouched and say so plainly, so the learner
-        # is asked for a description rather than handed a mark they didn't earn.
-        print(f"[REGRADE] submission {submission_id}: deliverable present but "
-              f"unreadable ({intake.substantive_words(content)} words of answer) "
-              f"— row untouched")
-        if previous_grade is None:
-            _tell_student_why(tenant, submission_id, (
-                "You submitted a file or link, but we could not open it. "
-                "No marks given yet. If it is a link that only opens in a "
-                "browser (like a Claude artifact link), also add a "
-                "screenshot of your work, or the HTML file, or a few lines "
-                "about what you built. If it is a file, upload it again "
-                "(image, PDF or Word). Then click Submit."))
-        return {"success": False, "skipped": "unassessable_deliverable",
-                "submissionId": submission_id,
-                "previousGrade": previous_grade,
-                "artefacts": inventory,
-                "detail": ("The work was submitted as a link or file we could not "
-                           "open, and there is no written answer to judge. Ask the "
-                           "learner to add a few lines describing what they made "
-                           "and how, then re-review.")}
-
     # Ranjana's ruling, 22 Aug (Day 04): when the DELIVERABLE is the published
     # page itself, a typed paragraph beside a link that will not open is a
     # description OF the work, not the work. 21 rows were marked 0.0-4.7 while
@@ -872,6 +847,31 @@ def re_review_assignment(
                            "submitted never opened — it asks visitors to sign "
                            "in. No mark: the work was never seen. The learner "
                            "must publish the page and resubmit the public link.")}
+
+    if intake.is_unassessable(manifest, content):
+        # The deliverable exists; we could not open it. Scoring it anyway is an
+        # assertion about work nobody read — the fabrication rule, pointed the
+        # other way. Leave the row untouched and say so plainly, so the learner
+        # is asked for a description rather than handed a mark they didn't earn.
+        print(f"[REGRADE] submission {submission_id}: deliverable present but "
+              f"unreadable ({intake.substantive_words(content)} words of answer) "
+              f"— row untouched")
+        if previous_grade is None:
+            _tell_student_why(tenant, submission_id, (
+                "You submitted a file or link, but we could not open it. "
+                "No marks given yet. If it is a link that only opens in a "
+                "browser (like a Claude artifact link), also add a "
+                "screenshot of your work, or the HTML file, or a few lines "
+                "about what you built. If it is a file, upload it again "
+                "(image, PDF or Word). Then click Submit."))
+        return {"success": False, "skipped": "unassessable_deliverable",
+                "submissionId": submission_id,
+                "previousGrade": previous_grade,
+                "artefacts": inventory,
+                "detail": ("The work was submitted as a link or file we could not "
+                           "open, and there is no written answer to judge. Ask the "
+                           "learner to add a few lines describing what they made "
+                           "and how, then re-review.")}
 
     # Rule 2, extended: reading LESS than the stored review saw is a fetch
     # problem, not a performance change — refuse to replace a mark earned on
