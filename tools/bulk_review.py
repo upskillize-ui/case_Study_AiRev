@@ -343,6 +343,55 @@ def keep_below(pending: list, threshold: float) -> list:
 
 # ── CLI ───────────────────────────────────────────────────────────────────
 
+# ---------------------------------------------------------------------------
+# AUTO-ABORT — stop a bad run at ten students, not three hundred.
+#
+# Day 03 (assignment 20) ran for three hours and marked ~174 learners under an
+# invented rubric before Ranjana stopped it by hand. Day 05 produced a wall of
+# zeros and finished. Nothing in the tool noticed either time, because nothing
+# was watching.
+#
+# A sweep that is going wrong says so in its first ten results. These rules are
+# deliberately blunt: they fire on shapes no healthy cohort produces, so a
+# genuinely weak batch is never stopped for being weak.
+# ---------------------------------------------------------------------------
+
+ABORT_MIN_SAMPLE = 10          # never judge a run on fewer than this
+ABORT_FAIL_RATE = 0.5          # half the attempts erroring is an outage
+ABORT_ZERO_RATE = 0.8          # four in five at zero is a broken marker
+
+
+def abort_reason(results: list, min_sample: int = ABORT_MIN_SAMPLE) -> str:
+    """Should this run stop now? Pure. Returns the reason, or "".
+
+    `results` is the Result list so far. Skips are excluded from every ratio:
+    a skip is the system working — it refused to mark something it could not
+    read, which is the correct outcome, not a failure.
+    """
+    judged = [r for r in results if not r.skipped]
+    if len(judged) < max(1, min_sample):
+        return ""
+
+    failed = [r for r in judged if not r.ok]
+    if len(failed) / len(judged) >= ABORT_FAIL_RATE:
+        return (f"{len(failed)} of the first {len(judged)} reviews FAILED. "
+                f"That is an outage or a broken deploy, not a weak cohort")
+
+    scored = [r for r in judged if r.ok and r.score is not None]
+    if len(scored) >= max(1, min_sample):
+        zeros = [r for r in scored if float(r.score) <= 0]
+        if len(zeros) / len(scored) >= ABORT_ZERO_RATE:
+            return (f"{len(zeros)} of the first {len(scored)} marks are ZERO. "
+                    f"A cohort does not score like that — the marker is "
+                    f"reading something other than the work")
+        distinct = {round(float(r.score), 1) for r in scored}
+        if len(distinct) == 1:
+            return (f"the first {len(scored)} marks are all identical "
+                    f"({distinct.pop()}). The marker is not discriminating "
+                    f"between submissions")
+    return ""
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Bulk-trigger AiRev reviews (dry run by default).")
     ap.add_argument("--type", choices=["assignment", "casestudy", "both"], default="assignment")
@@ -366,6 +415,11 @@ def main() -> None:
                          "mark and cost nothing — the targeted final pass after "
                          "a rule fix, when high scores are already fair and "
                          "only the low/ungraded rows are suspect.")
+    ap.add_argument("--check", action="store_true",
+                    help="CANARY: review only the first 10, then stop so you "
+                         "can read them before releasing the rest")
+    ap.add_argument("--no-abort", action="store_true",
+                    help="do not stop the run automatically (not recommended)")
     ap.add_argument("--bill-students", action="store_true",
                     help="charge each student's credits (default: staff run, no charge)")
     args = ap.parse_args()
@@ -441,6 +495,13 @@ def main() -> None:
     #
     # The order is stable (newest submission first), so the windows do not
     # overlap and nothing is missed between runs.
+    # CANARY. Ranjana's rule after Day 03 ran three hours on a broken rubric:
+    # ten students first, read them yourself, then release the rest. --check
+    # exists so nobody has to remember the number.
+    if args.check:
+        args.limit = min(args.limit, ABORT_MIN_SAMPLE)
+        print(f"\nCANARY: reviewing {args.limit} students only. Read their "
+              f"marks before releasing the rest.")
     batch = ready[args.offset:args.offset + args.limit]
     # --redo-below spares rows INSIDE the window (never by shrinking the
     # list): the full list stays stable between runs, so offset windows tile
@@ -478,6 +539,15 @@ def main() -> None:
             res = fut.result()
             results.append(res)
             p = res.pending
+            stop = "" if args.no_abort else abort_reason(results)
+            if stop:
+                for pending_fut in futures:
+                    pending_fut.cancel()
+                print(f"\n  !! RUN STOPPED after {len(results)}: {stop}.")
+                print(f"  !! Nothing further was reviewed. The marks already "
+                      f"written are in {args.out} — check them before "
+                      f"re-running.")
+                break
             if res.ok:
                 ai = res.extra.get("ai")
                 print(f"  [{i}/{len(batch)}] OK   item {p.item_id} student {p.student_id} "
@@ -509,6 +579,17 @@ def main() -> None:
     failed = len(results) - ok - len(skipped)
     print(f"\nDone: {ok} reviewed, {len(skipped)} skipped, {failed} failed, "
           f"{int(time.time() - started)}s total. Log: {args.out}")
+    if args.check and ok:
+        marks = sorted(float(r.score) for r in results
+                       if r.ok and r.score is not None)
+        if marks:
+            mid = marks[len(marks) // 2]
+            print(f"\n  Canary spread: lowest {marks[0]}, middle {mid}, "
+                  f"highest {marks[-1]} (out of 100).")
+        print(f"  Read these {ok} in the LMS. If the marks look like marks you "
+              f"would give, release the rest with:")
+        item = args.assignment_id or args.case_study_id or "ID"
+        print(f"      reviewday {item}")
 
     unreadable = [r for r in skipped if r.skipped == "unassessable_deliverable"]
     if unreadable:

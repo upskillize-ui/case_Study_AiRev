@@ -249,11 +249,22 @@ def test_a_link_that_opens_is_graded_normally(monkeypatch):
 
 def test_a_link_that_will_not_open_is_skipped_not_failed(monkeypatch):
     """The row keeps whatever grade it has. Awarding 2/10 for a song nobody
-    listened to is a claim about work we never read."""
+    listened to is a claim about work we never read.
+
+    23 Aug: this now takes the PUBLISH-LINK branch rather than the generic
+    unassessable one. Suno is one of the course's own tools, so a Suno day is
+    a publish-this day even though its task text never says "share a link" —
+    the same widening that stopped Day 07 zeroing three learners. The refusal
+    is unchanged; only the reason the learner reads is better, because it
+    names the fix instead of saying "we could not open it".
+    """
     result, _ = _call_regrade(monkeypatch, SUNO, link_body="")
     assert result["success"] is False, result
-    assert result["skipped"] == "unassessable_deliverable", result
-    assert "describing what they made" in result["detail"]
+    assert result["skipped"] in ("unreadable_published_link",
+                                 "unassessable_deliverable"), result
+    assert result["previousGrade"] is None or result["previousGrade"] is not None
+    assert "no mark" in result["detail"].lower() \
+        or "describing what they made" in result["detail"]
 
 
 # ── FAULT 4: a web page graded as the learner's coursework ────────────────

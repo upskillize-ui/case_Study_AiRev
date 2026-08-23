@@ -102,7 +102,9 @@ def test_both_routes_carry_the_rule_and_name_the_fix():
     import inspect
     from app.routes import assignment_review as ar
     src = inspect.getsource(ar)
-    assert src.count("link_is_the_deliverable") == 2, \
+    # Three uses now: the submit path's wrong-link branch (Day 07), the
+    # submit path's publish rule, and the regrade path's publish rule.
+    assert src.count("link_is_the_deliverable") >= 2, \
         "submit AND regrade must both refuse; one path alone leaves the hole"
     assert "unreadable_published_link" in src
     # The wording moved to student_notices (23 Aug) so submit and regrade
@@ -178,3 +180,70 @@ def test_the_essay_days_are_still_left_alone():
         "if useful.",
     ):
         assert intake.link_is_the_deliverable(text) is False, text
+
+
+# ── a caption is not the deliverable (Day 07, student 220) ─────────────────
+#
+# only_unreadable_links() lets ANY readable artefact rescue the row, including
+# the learner's own typed description. Student 220 pasted a Gemini link we
+# could not open and typed 6,622 characters about their dashboard. The link
+# was refused, the caption remained, the rule did not fire — and they were
+# marked 0.0/10 on prose about work nobody had seen.
+
+def _typed(readable=True):
+    return Artefact(kind="typed text", label="answer box",
+                    text="I built a dashboard showing quarterly revenue."
+                    if readable else "")
+
+
+def _pdf(readable=True):
+    return Artefact(kind="document", label="dashboard.pdf", confirmed=True,
+                    text="Q3 revenue 6.8 crore, fee income flat" if readable else "")
+
+
+def test_a_typed_caption_does_not_rescue_an_unseen_page():
+    assert intake.link_deliverable_unseen([_link(False), _typed()]) is True
+
+
+def test_a_screenshot_still_rescues_it():
+    """A screenshot IS the work in another form — that learner showed us."""
+    assert intake.link_deliverable_unseen([_link(False), _file(True)]) is False
+
+
+def test_an_exported_pdf_still_rescues_it():
+    assert intake.link_deliverable_unseen([_link(False), _pdf(True)]) is False
+
+
+def test_an_unreadable_file_beside_a_dead_link_does_not_rescue():
+    assert intake.link_deliverable_unseen([_link(False), _file(False)]) is True
+
+
+def test_a_link_that_opened_is_still_never_caught():
+    assert intake.link_deliverable_unseen([_link(True), _typed()]) is False
+
+
+def test_a_submission_with_no_link_is_still_never_caught():
+    assert intake.link_deliverable_unseen([_typed(), _file(True)]) is False
+    assert intake.link_deliverable_unseen([]) is False
+
+
+def test_one_working_link_among_dead_ones_still_rescues():
+    assert intake.link_deliverable_unseen(
+        [_link(False), _link(True), _typed()]) is False
+
+
+def test_student_220s_exact_row_is_now_withheld_instead_of_zeroed():
+    """A Gemini link that opened the tool's own page, plus a long caption."""
+    row = [_link(False), _typed()]
+    assert (intake.link_is_the_deliverable(DAY04) and
+            intake.link_deliverable_unseen(row))
+
+
+def test_both_routes_use_the_stricter_rule():
+    import inspect
+    from app.routes import assignment_review as ar
+    src = inspect.getsource(ar)
+    assert src.count("link_deliverable_unseen") == 2, \
+        "submit AND regrade must both use it, or one path still zeroes captions"
+    assert "only_unreadable_links" not in src, \
+        "the looser rule must not survive anywhere a mark is decided"

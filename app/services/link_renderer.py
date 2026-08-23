@@ -468,6 +468,72 @@ def forget_pages() -> None:
     _seen_pages.clear()
 
 
+# ---------------------------------------------------------------------------
+# THE LINK CACHE — open each page once per run, not once per student.
+#
+# Two learners pasting the same class link meant opening it twice. A dead link
+# was re-opened on every sweep, and Day 05 was swept three times. The browser
+# is the slowest thing in the system and the one most likely to be rate
+# limited, so every avoided visit is both time and a smaller chance of being
+# blocked on the visits that matter.
+#
+# Process-lifetime with a TTL: long enough that one cohort sweep opens a page
+# once, short enough that a learner who publishes their page and resubmits an
+# hour later is not told about yesterday's sign-in wall.
+# ---------------------------------------------------------------------------
+
+LINK_CACHE_TTL_S = float(os.getenv("LINK_CACHE_TTL_S", "3600"))
+_link_cache: dict = {}                 # url -> (stored_at, text, why)
+
+
+def cache_lookup(cache: dict, url: str, now: float,
+                 ttl: float = LINK_CACHE_TTL_S) -> Optional[Tuple[str, str]]:
+    """The remembered (text, why) for this url, or None. Pure.
+
+    A zero or negative TTL disables the cache entirely — the honest way to
+    turn it off, rather than a second flag to forget about.
+    """
+    if ttl <= 0:
+        return None
+    entry = cache.get(url)
+    if not entry:
+        return None
+    stored_at, text, why = entry
+    if now - stored_at > ttl:
+        return None
+    return text, why
+
+
+def cache_store(cache: dict, url: str, now: float, text: str, why: str) -> None:
+    """Remember what this url gave us. Not pure (mutates `cache`)."""
+    cache[url] = (now, text, why)
+
+
+def forget_links() -> None:
+    """Drop every cached page. For tests, and for a sweep that wants a fresh
+    look at links it was told about yesterday."""
+    _link_cache.clear()
+
+
+# Reasons that describe US, not the learner's page. Never cached: the next
+# read must get a real answer, not a rerun of our bad minute.
+_OUR_FAULT_MARKERS = ("busy with another page", "not rendered", "timed out",
+                      "timeout", "the browser", "playwright", "browser is not "
+                      "installed", "render failed", "could not start")
+
+
+def our_failure(why: str) -> bool:
+    """Is this reason about our reach rather than the page? Pure."""
+    low = (why or "").lower()
+    return any(m in low for m in _OUR_FAULT_MARKERS)
+
+
+def _remember(url: str, text: str, why: str) -> Tuple[str, str]:
+    """Cache one verdict and return it, so no exit path can forget to."""
+    cache_store(_link_cache, url, time.monotonic(), text, why)
+    return text, why
+
+
 def read_rendered_link(url: str) -> Tuple[str, str]:
     """(reviewable_text, why_empty) — the one call intake makes.
 
@@ -475,24 +541,36 @@ def read_rendered_link(url: str) -> Tuple[str, str]:
     outline) is carried by its own words for free; a visual page's screenshot
     goes through the same OCR the uploaded-image path trusts.
     """
+    hit = cache_lookup(_link_cache, url, time.monotonic())
+    if hit is not None:
+        print(f"[link] cache hit: {url}")
+        return hit
+
     rendered, why = render_link(url)
     if rendered is None:
-        return "", why
+        # OUR failures are not facts about the page. Caching "the browser was
+        # busy" would hand our timeout to every later student who pasted the
+        # same link, and an hour later we would still be reporting it. Only
+        # verdicts ABOUT THE PAGE are worth remembering.
+        if our_failure(why):
+            print(f"[link] not cached (our side): {why}")
+            return "", why
+        return _remember(url, "", why)
     if not rendered.text.strip() and not rendered.screenshot_b64:
-        return "", "the page rendered empty"
+        return _remember(url, "", "the page rendered empty")
 
     # Before any vision money is spent: is this the work, or a gate? A
     # Notion compatibility error is not a submission, and describing it in
     # detail would only make the fabrication more convincing.
     blocked = interstitial_reason(rendered.title, rendered.text)
     if blocked:
-        return "", blocked
+        return _remember(url, "", blocked)
 
     # A page identical to one already served for a different link is the
     # site's own shell, whatever it says. Checked before vision spend.
     shell = note_page(url, rendered.text)
     if shell:
-        return "", shell
+        return _remember(url, "", shell)
 
     ocr_text = ""
     if needs_vision(rendered):
@@ -503,5 +581,5 @@ def read_rendered_link(url: str) -> Tuple[str, str]:
 
     text = compose_submission_text(rendered, ocr_text)
     if len(text.split()) < 8:
-        return "", "the page rendered but showed almost nothing"
-    return text, ""
+        return _remember(url, "", "the page rendered but showed almost nothing")
+    return _remember(url, text, "")

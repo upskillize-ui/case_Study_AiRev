@@ -665,7 +665,24 @@ _PUBLISHED_DELIVERABLE = re.compile(
     r"publish(?:ed|ing)?\b|\bpublic link\b|\bas a website\b|"
     r"\bartifacts?\b|\bartefacts?\b|\bnotion\b|\bnotebooklm\b|"
     r"\bnotebook\b|\bgamma\b|\blovable\b|\bdeploy(?:ed)?\b|"
-    r"\blive (?:page|site|link|url)\b", re.I)
+    r"\blive (?:page|site|link|url)\b|"
+    # THE TOOL NAME IS THE TELL, when the task text never mentions links.
+    #
+    # Day 07 (assignment 24, 23 Aug) reads only "Create a Dashboard from a
+    # data set using Gemini Canvas". No "share", no "publish", no "link" — so
+    # this pattern returned False, both publish rules stayed dead, and three
+    # learners were marked 0.0/10 on links nobody could use. The task never
+    # asked for a link; the TOOL only hands you one.
+    #
+    # So the course's own tools are named here. Each of these produces a
+    # shareable artifact as its normal output, which is what the learner will
+    # paste. Kept to whole words and multi-word names so ordinary prose ("the
+    # canvas of Indian fintech") cannot trip it.
+    r"\bgemini canvas\b|\bcanva\b|\bsuno\b|\bmidjourney\b|"
+    r"\bheygen\b|\brunway\b|\bdescript\b|\bjulius\b|"
+    r"\bpower bi\b|\bcustom gpts?\b|\bclaude artifacts?\b|"
+    r"\bchatgpt agent\b|\bmanus\b|\bn8n\b|\bzapier\b|\blindy\b",
+    re.I)
 
 
 def link_is_the_deliverable(task_text: str) -> bool:
@@ -688,6 +705,42 @@ def only_unreadable_links(artefacts) -> bool:
     if not links or any(a.readable for a in links):
         return False
     return not any(a.readable for a in artefacts if a.kind != "link")
+
+
+def link_deliverable_unseen(artefacts) -> bool:
+    """The published page was the work, and we never saw it. Pure.
+
+    only_unreadable_links() lets ANY readable artefact rescue the row,
+    including the learner's own typed caption. On a publish-this task that is
+    wrong, and Day 07 showed why: student 220 pasted a Gemini link we could
+    not open and typed 6,622 characters describing their dashboard. The link
+    was refused, the caption remained, the rule did not fire — and they were
+    marked 0.0/10 on a description of work nobody had seen.
+
+    A CAPTION IS NOT THE DELIVERABLE. A screenshot is, a PDF export is, an
+    uploaded file is — those are the work in another form, and they still
+    rescue the row. Prose about the work is not the work.
+
+    True when: links were submitted, none opened, and nothing the learner
+    PRODUCED was readable either.
+    """
+    links = [a for a in artefacts if a.kind == "link"]
+    if not links or any(a.readable for a in links):
+        return False
+    # Everything except typed prose counts as the work in another form.
+    return not any(a.readable for a in artefacts
+                   if a.kind not in ("link", "typed text"))
+
+
+def deliverable_is_only_links(artefacts) -> bool:
+    """Everything the learner PRODUCED is a link. Pure.
+
+    Typed prose does not count as a produced deliverable — the same reasoning
+    as link_deliverable_unseen(). True when at least one link was submitted
+    and no file, image or document came with it.
+    """
+    produced = [a for a in artefacts if a.kind not in ("typed text",)]
+    return bool(produced) and all(a.kind == "link" for a in produced)
 
 
 def unreadable_deliverable(manifest: str) -> bool:

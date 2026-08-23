@@ -90,6 +90,11 @@ CODE_EXTS  = {".py", ".sql", ".js", ".ts", ".jsx", ".tsx", ".java", ".c",
 # .htm was previously in NO set at all, so an .htm upload fell through to the
 # unknown-ext sniff, hit the login-page guard, and was refused as NOT_A_FILE.
 HTML_EXTS = {".html", ".htm", ".xhtml"}
+# A "Web Page, Complete" save from Internet Explorer/Edge: one MIME
+# multipart file holding the page and every image it referenced.
+# Student 357 submitted one on Day 05 and it read as nothing at all,
+# because .mht fell through to the byte sniffer and looked like mail.
+MHTML_EXTS = {".mht", ".mhtml"}
 SHEET_MAX_ROWS  = 300     # per sheet — enough for any coursework workbook
 SHEET_MAX_COLS  = 40
 SHEET_MAX_CHARS = 60000   # whole-workbook render cap; truncation is stated
@@ -214,7 +219,10 @@ def extract_text_from_url(file_url: str, file_name: str = "") -> Tuple[str, str]
         logger.warning("refused fetch of %r: %s", file_url[:120], why)
         return "", why
 
-    data, why = _download_file(safe_url)
+    # The ceiling follows the FILE, not the default: media is allowed
+    # its own, larger limit all the way through the download.
+    data, why = _download_file(safe_url,
+                               size_ceiling_for(file_name or file_url))
     if data is None:
         return "", why
 
@@ -291,7 +299,7 @@ def _extract_dispatch(data: bytes, file_name: str = "") -> Tuple[str, str]:
     # files this pipeline exists to read: a 10-minute NotebookLM Audio Overview
     # is 10-15 MB, a one-minute Runway clip larger still. Documents stay at the
     # tighter limit, because a 60 MB "PDF" is not a coursework document.
-    ceiling = MAX_MEDIA_BYTES if ext in MEDIA_EXTS else MAX_FILE_BYTES
+    ceiling = size_ceiling_for(file_name)
     if len(data) > ceiling:
         return "", (f"file too large ({len(data) // (1024 * 1024)} MB > "
                     f"{ceiling // (1024 * 1024)} MB)")
@@ -373,6 +381,8 @@ def _extract_dispatch(data: bytes, file_name: str = "") -> Tuple[str, str]:
         # Code / notebooks (capstones: "build a decisioning engine") -------
         if ext == ".ipynb":
             return _extract_ipynb(data)
+        if ext in MHTML_EXTS:
+            return _extract_mhtml(data)
         if ext in HTML_EXTS:
             return _extract_html(data)
         if ext in CODE_EXTS:
@@ -387,6 +397,11 @@ def _extract_dispatch(data: bytes, file_name: str = "") -> Tuple[str, str]:
         # Unknown ext -> sniff. Try PDF, DOCX, then image, then bytes-as-text.
         # HTML first: it is text, so the last-resort decode below would happily
         # hand a login page to the marker as the learner's essay.
+        # A saved page checked BEFORE looks_like_web_page: an .mht carries
+        # HTML inside it, so the web-page check would reject the whole
+        # archive as "not a file" — which is what happened to student 357.
+        if looks_like_mhtml(data):
+            return _extract_mhtml(data)
         if looks_like_web_page(data):
             return "", NOT_A_FILE
         for fn in (_extract_pdf, _extract_docx):
@@ -449,22 +464,40 @@ def _get_following_redirects(client, url: str):
                 continue
 
             declared = r.headers.get("content-length")
-            if declared and declared.isdigit() and int(declared) > MAX_FILE_BYTES:
+            if declared and declared.isdigit() and int(declared) > ceiling:
                 return None, (f"file too large ({int(declared) // 1024} KB > "
-                              f"{MAX_FILE_BYTES // 1024} KB)")
+                              f"{ceiling // 1024} KB)")
 
             buf = bytearray()
             for chunk in r.iter_bytes():
                 buf.extend(chunk)
-                if len(buf) > MAX_FILE_BYTES:
+                if len(buf) > ceiling:
                     # Content-Length can lie; this is the check that holds.
-                    return None, f"file exceeds {MAX_FILE_BYTES // 1024} KB"
+                    return None, f"file exceeds {ceiling // 1024} KB"
             return _Fetched(r.status_code, r.headers, bytes(buf)), ""
 
     return None, "download redirected too many times"
 
 
-def _download_file(file_url: str) -> Tuple[bytes, str]:
+def size_ceiling_for(file_name: str) -> int:
+    """The download ceiling for THIS file. Pure.
+
+    An Audio Overview or Video Overview is legitimately tens of megabytes,
+    and MAX_MEDIA_BYTES exists to allow that — but only the EXTRACTOR ever
+    consulted it. The downloader capped every file at MAX_FILE_BYTES, so
+    the bytes never arrived and the media ceiling was decorative.
+
+    Day 05 (22 Aug): every .m4a and .mp4 came back unreadable. Those are
+    NotebookLM's Audio and Video Overviews — the assignment's own
+    deliverable. The students who did the task best were the ones we could
+    not read.
+    """
+    name = (file_name or "").split("?")[0].strip().lower()
+    ext = "." + name.rsplit(".", 1)[-1] if "." in name else ""
+    return MAX_MEDIA_BYTES if ext in MEDIA_EXTS else MAX_FILE_BYTES
+
+
+def _download_file(file_url: str, ceiling: int = MAX_FILE_BYTES) -> Tuple[bytes, str]:
     """Returns (bytes, reason). bytes is None on failure.
 
     Retries transient failures with backoff. Cloudinary serves PDFs as
@@ -490,7 +523,8 @@ def _download_file(file_url: str) -> Tuple[bytes, str]:
             if attempt:
                 _time.sleep(1.5 * attempt)
             try:
-                r, hop_err = _get_following_redirects(client, file_url)
+                r, hop_err = _get_following_redirects(client, file_url,
+                                                      ceiling)
             except Exception as e:
                 last = f"download failed: {e}"
                 continue
@@ -836,6 +870,66 @@ def _extract_html(data: bytes) -> Tuple[str, str]:
     return (f"{head}\n[The page renders in the browser, so its source code is "
             f"shown — this source is the learner's built deliverable.]\n"
             + (f"Visible text: {visible}\n" if visible else "") + body, "")
+
+
+def looks_like_mhtml(data: bytes, sample: int = 2048) -> bool:
+    """Is this a saved-web-page archive? Pure.
+
+    An .mht is a MIME document, so it opens with mail headers. Checked on the
+    head only, and requires the multipart/related content type a browser
+    writes — an ordinary email forwarded as a file must not be mistaken for a
+    submission, and a page saved without the extension must still be read.
+    """
+    head = bytes(data[:sample]).lower()
+    return (b"mime-version:" in head
+            and (b"multipart/related" in head or b"content-location:" in head))
+
+
+def _mhtml_html_parts(data: bytes) -> list:
+    """Every HTML fragment inside the archive, decoded. Pure-ish (no I/O).
+
+    Images and stylesheets are skipped deliberately: a "Web Page, Complete"
+    save embeds every asset as base64, and one background image would spend
+    the whole text budget before the learner's own words were reached.
+    """
+    from email import policy
+    from email.parser import BytesParser
+
+    msg = BytesParser(policy=policy.default).parsebytes(data)
+    parts = []
+    for part in msg.walk():
+        if part.get_content_type() != "text/html":
+            continue
+        payload = part.get_payload(decode=True)
+        if not payload:
+            continue
+        charset = part.get_content_charset() or "utf-8"
+        try:
+            parts.append(payload.decode(charset, errors="ignore"))
+        except LookupError:                      # an encoding Python lacks
+            parts.append(payload.decode("utf-8", errors="ignore"))
+    return parts
+
+
+def _extract_mhtml(data: bytes) -> Tuple[str, str]:
+    """A saved web page (.mht/.mhtml) — read as the page the learner saw.
+
+    The archive is unwrapped to its HTML and handed to the ordinary HTML
+    reader, so a saved page and an uploaded page are judged by exactly the
+    same code. No second reading path, no second set of bugs.
+    """
+    try:
+        parts = _mhtml_html_parts(data)
+    except Exception as e:
+        return "", f"the saved web page could not be unpacked ({type(e).__name__})"
+    if not parts:
+        return "", "the saved web page contained no readable page inside it"
+
+    text, why = _extract_html("\n".join(parts).encode("utf-8", errors="ignore"))
+    if not text:
+        return "", why or "the saved web page had no readable content"
+    return text.replace("[WEB PAGE BUILT BY THE LEARNER",
+                        "[SAVED WEB PAGE SUBMITTED BY THE LEARNER", 1), ""
 
 
 def _extract_rtf(data: bytes) -> Tuple[str, str]:

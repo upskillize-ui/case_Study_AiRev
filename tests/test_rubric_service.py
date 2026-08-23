@@ -217,7 +217,9 @@ def test_stored_payload_carries_every_rendered_field():
     # Policy change 18 Aug: the rubric table is FACULTY-facing now — re-homed
     # under facultyView, never shown on the student card, never dropped.
     assert "rubricScores" not in p
-    assert p["facultyView"]["rubricScores"], "rubric detail lost, not re-homed"
+    # 23 Aug: the rubric is gone. What faculty read is the list of things the
+    # TASK asked for, in the task's own words.
+    assert p["facultyView"]["requirements"], "task detail lost, not re-homed"
     assert p["outOf"] == 10 and p["scoreMarks"] == 3.7
     assert p["scorePercent"] == 37
     assert p["reviewedBy"] == "ai"

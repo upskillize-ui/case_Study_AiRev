@@ -204,18 +204,58 @@ def save_assignment_submission(
     return {"submissionId": submission_id, "attemptNumber": 1}
 
 
-def update_assignment_submission_with_ai_results(tenant: Tenant, submission_id: int,
-                                                result: dict, max_marks: int = 100):
-    """Persist the review. `grade` is written in the ASSIGNMENT's own marks
-    scale, not as a raw 0-100 percentage.
+def _criteria_rows(result: dict) -> list:
+    """Wherever this writer put the per-criterion table. Pure.
 
-    The rubric engine always works in percent; the assignment may be out of 10.
-    Writing 100-scale numbers into a 10-mark field showed learners "0/100" on a
-    10-mark task and would have shown "70" out of 10 for a good answer. The
-    percentage is kept in the feedback payload so the card can show both.
+    The pipeline files it under facultyView; the legacy path leaves it at the
+    top level. The guard must see it either way — a check that silently finds
+    nothing would pass everything.
     """
+    faculty = result.get("facultyView") or {}
+    return (faculty.get("requirements")
+            or faculty.get("rubricScores")      # pre-23-Aug writers
+            or result.get("rubricScores")
+            or [])
+
+
+def update_assignment_submission_with_ai_results(tenant: Tenant, submission_id: int,
+                                                result: dict, max_marks: int = 100,
+                                                manifest: str = "") -> bool:
+    """Persist the review, or refuse to. Returns True when a mark was written.
+
+    `grade` is written in the ASSIGNMENT's own marks scale, not as a raw 0-100
+    percentage. The rubric engine always works in percent; the assignment may
+    be out of 10. Writing 100-scale numbers into a 10-mark field showed
+    learners "0/100" on a 10-mark task and would have shown "70" out of 10 for
+    a good answer. The percentage is kept in the feedback payload so the card
+    can show both.
+
+    THE GUARD LIVES HERE, at the single chokepoint every marking path passes
+    through, because a rule enforced in the routes is a rule with as many
+    holes as there are routes. grade_guard decides whether a number may exist
+    at all; a refusal writes the learner an explanation instead of a mark.
+    """
+    from app.services import grade_guard, student_notices
+
+    allowed, why = grade_guard.may_write_grade(
+        criteria=_criteria_rows(result),
+        manifest=manifest,
+        proposed_score=result.get("totalScore"),
+        words_read=int(result.get("wordCount") or 0),
+        review=result,
+    )
+    if not allowed:
+        print(f"[GRADE GUARD] submission {submission_id}: NO MARK — {why}")
+        mark_not_graded(
+            tenant, submission_id,
+            "We could not complete a fair review of this attempt, so "
+            "no marks have been recorded. This is our side, not yours — "
+            "nothing you submitted is lost, and it will be reviewed again.")
+        return False
+
     awarded = scaled_marks(result.get("totalScore", 0), max_marks)
-    feedback_payload = review_payload.build(result, max_marks, awarded)
+    feedback_payload = review_payload.build(result, max_marks, awarded,
+                                            manifest=manifest)
     # Assignment-specific extras live here, not in the shared shape.
     feedback_payload["scoreEmoji"] = result.get("scoreEmoji")
 
@@ -232,6 +272,7 @@ def update_assignment_submission_with_ai_results(tenant: Tenant, submission_id: 
             submission_id,
         ),
     )
+    return True
 
 
 def mark_not_graded(tenant: Tenant, submission_id: int, message: str,

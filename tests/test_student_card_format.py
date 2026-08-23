@@ -46,8 +46,14 @@ RESULT = {
 def test_the_stored_review_has_no_student_facing_rubric_table():
     payload = review_payload.build(RESULT, max_marks=10, score_marks=8.0)
     assert "rubricScores" not in payload
-    assert payload["facultyView"]["rubricScores"] == RUBRIC_ROWS
-    assert payload["facultyView"]["howYouScored"] == "narrative"
+    rows = payload["facultyView"]["requirements"]
+    assert [r["requirement"] for r in rows] == [c["criteria"] for c in RUBRIC_ROWS]
+    assert [r["outOf"] for r in rows] == [c["maxScore"] for c in RUBRIC_ROWS]
+    assert payload["facultyView"]["howItWasScored"] == "narrative"
+    # The invariant Ranjana asked for, 23 Aug: the word "rubric" appears
+    # nowhere in a stored review. Not a key, not a label, not a version field.
+    import json
+    assert "rubric" not in json.dumps(payload).lower()
 
 
 def test_the_student_card_still_carries_everything_actionable():
@@ -69,7 +75,8 @@ def test_a_legacy_result_with_top_level_rubric_is_rehomed_not_dropped():
     legacy["rubricScores"] = RUBRIC_ROWS
     payload = review_payload.build(legacy, max_marks=10)
     assert "rubricScores" not in payload
-    assert payload["facultyView"] == {"rubricScores": RUBRIC_ROWS}
+    assert [r["requirement"] for r in payload["facultyView"]["requirements"]] \
+        == [c["criteria"] for c in RUBRIC_ROWS]
 
 
 def test_the_live_response_matches_the_stored_shape():

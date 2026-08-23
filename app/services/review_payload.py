@@ -12,11 +12,75 @@
 # of the payload itself.
 # ---------------------------------------------------------------------------
 
+import os
+from datetime import datetime, timezone
 from typing import Optional
 
 
+def audit_record(result: dict, manifest: str = "", word_count=None) -> dict:
+    """What this mark was made from — enough to reproduce or defend it.
+
+    Why (23 Aug 2026): a learner disputes a 2/10 and there is no way to show
+    what was judged. The submission text is already stored, but not WHICH task
+    wording, WHICH scoring rules, or WHICH model produced the number — so a
+    mark from before a rules change is indistinguishable from one after it,
+    and "we re-ran it and got something else" is the best answer available.
+
+    Cheap to store, and the only thing that makes an appeal answerable.
+    """
+    from app.services.rubric_service import RUBRIC_VERSION as REQUIREMENTS_VERSION
+    decisions = result.get("decisions") or {}
+    return {
+        "reviewedAt":     datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "model":          os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5"),
+        # The number that says WHICH RULES made this mark. Named for what
+        # it now tracks: how the task's requirements are read, not a rubric.
+        "rulesVersion":   REQUIREMENTS_VERSION,
+        "scoringPath":    decisions.get("scoringPath", ""),
+        "packVersion":    decisions.get("packVersion"),
+        "gatesHit":       decisions.get("gatesHit", []),
+        # What actually reached the marker, in the intake's own words. This is
+        # the line that answers "but my page WAS published".
+        "manifest":       (manifest or "")[:2000],
+        "wordsRead":      word_count if word_count is not None
+                          else result.get("wordCount"),
+    }
+
+
+def _faculty_view(result: dict) -> dict:
+    """What the task asked for, and how each requirement fared.
+
+    Reads whichever shape the writer used — the pipeline files its rows under
+    facultyView, the legacy path leaves them at the top level — and re-emits
+    them in one vocabulary. Nothing is invented here and nothing is dropped;
+    only the naming changes, so a mentor reading this sees the BRIEF, not a
+    scoring instrument that was never given to the learner.
+    """
+    faculty = dict(result.get("facultyView") or {})
+    rows = faculty.pop("rubricScores", None) or result.get("rubricScores") or []
+    requirements = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        requirements.append({
+            "requirement": r.get("criteria") or r.get("name") or "",
+            "scored":      r.get("scoreMarks", r.get("score")),
+            "outOf":       r.get("maxScoreMarks", r.get("maxScore")),
+            "percent":     r.get("percentage"),
+            "note":        r.get("judgment") or r.get("note") or "",
+            "evidence":    r.get("evidence") or [],
+        })
+    out = {k: v for k, v in faculty.items() if k != "howYouScored"}
+    if requirements:
+        out["requirements"] = requirements
+    narrative = (result.get("facultyView") or {}).get("howYouScored")
+    if narrative:
+        out["howItWasScored"] = narrative
+    return out
+
+
 def build(result: dict, max_marks: int = 100, score_marks: Optional[float] = None,
-          reviewed_by: str = "ai") -> dict:
+          reviewed_by: str = "ai", manifest: str = "") -> dict:
     """The review as it is stored and later re-rendered.
 
     Every field the review card can display must be here. If the UI shows it,
@@ -36,14 +100,14 @@ def build(result: dict, max_marks: int = 100, score_marks: Optional[float] = Non
 
         # ── The review body ──
         "summary":          result.get("summary", ""),
-        # Rubric framework is FACULTY-facing (policy, 18 Aug 2026): students
-        # see total marks + pointwise feedback; the per-criterion table and
-        # scoring narrative are stored under facultyView for staff surfaces.
-        # A result that still carries top-level rubricScores (legacy writers)
-        # is folded in rather than dropped — the data is kept, just re-homed.
-        "facultyView":      result.get("facultyView")
-                            or ({"rubricScores": result["rubricScores"]}
-                                if result.get("rubricScores") else {}),
+        # THE RUBRIC IS GONE (23 Aug 2026). Ranjana: "remove completely."
+        #
+        # What faculty see is no longer a rubric table — it is the list of
+        # things THIS TASK ASKED FOR, in the task's own words, with how each
+        # one fared. There is no framework behind it, invented or otherwise:
+        # requirements come from the brief, weight equally, and are scored
+        # one by one. The word "rubric" survives nowhere a person reads.
+        "facultyView":      _faculty_view(result),
         "strengths":        result.get("strengths", []),
         "improvements":     result.get("improvements", []),
         "feedbackPoints":   result.get("feedbackPoints", []),
@@ -54,6 +118,9 @@ def build(result: dict, max_marks: int = 100, score_marks: Optional[float] = Non
         "suggestedModules": result.get("suggestedModules", []),
         "encouragement":    result.get("encouragement", ""),
         "nextAction":       result.get("nextAction", "") or result.get("next_action", ""),
+
+        # ── Provenance: what this mark was made from ──
+        "audit":            audit_record(result, manifest),
 
         # ── Diagnostics ──
         "wordCount":        result.get("wordCount"),

@@ -30,6 +30,7 @@ from app.services import (
     prefilter_service,
     rubric_service,
     student_notices,
+    grade_guard,
 )
 
 _PIPELINE_ON = os.getenv("REVIEW_PIPELINE", "on").lower() == "on"
@@ -332,7 +333,7 @@ def submit_and_review_assignment(
     # same sitting: a publish-this task whose link never opened is not graded.
     if not req.storeOnly and intake.link_is_the_deliverable(
             f"{assignment.get('title', '')} {assignment.get('description', '')}"
-    ) and intake.only_unreadable_links(artefacts):
+    ) and intake.link_deliverable_unseen(artefacts):
         # The steps must match the tool THIS learner used. Sending Notion's
         # Share -> Publish to someone whose link was a Gemini share taught
         # them nothing and looked like we had not read their submission.
@@ -431,6 +432,34 @@ def submit_and_review_assignment(
                 gate_overrides=gate_overrides,
                 student_id=req.studentId,
             )
+            # THE WRONG LINK IS NOT A ZERO. Day 07: student 880 pasted
+            # their Day-06 Suno song and student 188 pasted Gemini's own
+            # advertisement page. The marker diagnosed both correctly — and
+            # then the garbage path awarded 0.00/10 to each. Policy (22 Aug)
+            # is that work we cannot judge gets NO grade and an explanation,
+            # so the learner can send the right link tonight. A zero teaches
+            # them nothing and cannot be undone from their side.
+            if (r is not None and r.get("isGarbage")
+                    and intake.link_is_the_deliverable(
+                        f"{assignment.get('title', '')} "
+                        f"{assignment.get('description', '')}")
+                    and intake.deliverable_is_only_links(artefacts)):
+                why = (r.get("garbageWarning") or "").strip()
+                print(f"[ASSIGNMENT] NOT GRADED (link is not this task's "
+                      f"work): {why[:120]} — no mark written")
+                return {
+                    "success": True,
+                    "status": "needs_input",
+                    "needsInput": True,
+                    "submission": submission,
+                    "feedback": _empty_feedback(
+                        student_notices.link_is_not_the_work(
+                            r.get("garbageReason")
+                            or r.get("garbage_reason") or "", 
+                            assignment.get("title", "")),
+                        helpful=True),
+                    "processingTimeMs": int((time.time() - start_time) * 1000),
+                }
             if r is not None and r.get("wrongTask", {}).get("declared"):
                 # Policy: wrong work is NOT graded — no score, low or
                 # otherwise. The row stays status='submitted' with no grade
@@ -456,10 +485,33 @@ def submit_and_review_assignment(
                 _remember_student_assignment(req, submission, r)
                 return _pipeline_assignment_response(
                     tenant, submission, r, word_count, start_time,
+                    manifest=manifest,
                     duplicate=any(f.get("flag") == "cohort_duplicate"
                                   for f in reflex.get("flags", [])),
                     max_marks=max_marks)
         except Exception as e:
+            # OUR OUTAGE MUST NOT BECOME THEIR GRADE. When the model never
+            # answered — rate limit, timeout, no structured result — the
+            # legacy marker often succeeds on the same input and writes a
+            # number nobody judged. Falling back is right for a SHAPE
+            # problem, never for an outage.
+            if grade_guard.is_transport_failure(e):
+                print(f"[ASSIGNMENT] NOT GRADED (reviewer unavailable): {e} — "
+                      f"no mark written, submission stored")
+                return {
+                    "success": True,
+                    "partialReview": True,
+                    "status": "needs_input",
+                    "submission": submission,
+                    "feedback": _empty_feedback(
+                        "Your work is saved. Our reviewer was unavailable just "
+                        "now, so no marks have been recorded — this is our "
+                        "side, not yours, and nothing you submitted is lost. "
+                        "Your review will run automatically and appear here.",
+                        helpful=True),
+                    "message": "Saved. The review will run shortly.",
+                    "processingTimeMs": int((time.time() - start_time) * 1000),
+                }
             print(f"[ASSIGNMENT] Pipeline failed, falling back to legacy: {e}")
 
     try:
@@ -811,7 +863,7 @@ def re_review_assignment(
     # still become a real score tonight; a recorded 2.5 cannot.
     task_text = f"{assignment.get('title', '')} {assignment.get('description', '')}"
     if (intake.link_is_the_deliverable(task_text)
-            and intake.only_unreadable_links(artefacts)):
+            and intake.link_deliverable_unseen(artefacts)):
         print(f"[REGRADE] submission {submission_id}: published link never "
               f"opened on a publish-this task — no mark, row untouched")
         if previous_grade is None:
@@ -920,7 +972,8 @@ def re_review_assignment(
     submission = {"submissionId": submission_id,
                   "attemptNumber": row.get("attempt_number") or 1}
     response = _pipeline_assignment_response(
-        tenant, submission, r, word_count, start_time, max_marks=max_marks)
+        tenant, submission, r, word_count, start_time, max_marks=max_marks,
+        manifest=manifest)
     response["reReviewed"] = True
     response["previousGrade"] = previous_grade
     response["artefacts"] = inventory
@@ -964,7 +1017,8 @@ def _remember_student_assignment(req, submission, r):
 
 
 def _pipeline_assignment_response(tenant, submission, r, word_count, start_time,
-                                  duplicate=False, max_marks: int = 100):
+                                  duplicate=False, max_marks: int = 100,
+                                  manifest: str = ""):
     """Persist + shape the assignment response from a pipeline result.
     Reuses _build_response for the envelope; adds the pipeline-only fields."""
     scores = r["scores"]
@@ -1009,7 +1063,8 @@ def _pipeline_assignment_response(tenant, submission, r, word_count, start_time,
     }
     try:
         assignment_db_service.update_assignment_submission_with_ai_results(
-            tenant, submission["submissionId"], result, max_marks)
+            tenant, submission["submissionId"], result, max_marks,
+            manifest=manifest)
     except Exception as db_err:
         print(f"[ASSIGNMENT] DB update failed after pipeline review: {db_err}")
 

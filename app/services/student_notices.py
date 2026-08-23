@@ -150,6 +150,21 @@ def wrong_task(what_it_is: str, task_title: str) -> str:
             f"against you. " + NO_MARK)
 
 
+def link_is_not_the_work(what_arrived: str, task_title: str) -> str:
+    """The link opened, and what it showed was not this task's deliverable.
+
+    Day 07: one learner sent their Day-06 Suno song, another sent Gemini's own
+    advertisement page. Both were marked 0.00/10. Both should have been told
+    what arrived, so they could send the right link the same evening.
+    """
+    arrived = (what_arrived or "").strip().rstrip(".")
+    saw = f" What we opened was {arrived[0].lower()}{arrived[1:]}." if arrived else ""
+    return (f"Your link opened, but it does not show the work this assignment "
+            f"asked for (\"{task_title}\").{saw} Send the link to the work "
+            f"itself — or attach a screenshot of it — and submit again. "
+            + NO_MARK)
+
+
 def media_not_transcribed(kind: str = "audio") -> str:
     """An Audio or Video Overview we could not turn into text."""
     return (f"Your {kind} file reached us but we could not turn it into text, so "
@@ -168,5 +183,6 @@ NOTICES = {
     "link_browser_only":  link_opens_only_in_a_browser,
     "link_missing":       link_missing_entirely,
     "wrong_task":         wrong_task,
+    "link_not_the_work":  link_is_not_the_work,
     "media_not_read":     media_not_transcribed,
 }
