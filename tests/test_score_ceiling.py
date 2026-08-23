@@ -203,7 +203,7 @@ def _call_regrade(monkeypatch, notes, file_path=None, link_body=""):
 
     opened = []
 
-    def fake_links(text, limit=6):
+    def fake_links(text, limit=6, **kw):
         for url in intake.find_urls(text):
             opened.append(url)
         return [intake.Artefact(kind="link", label=u, text=link_body, confirmed=True)

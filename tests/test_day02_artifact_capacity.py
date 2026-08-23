@@ -158,7 +158,7 @@ def test_submit_time_guard_asks_for_more_instead_of_scoring_a_url(monkeypatch):
     import app.database
     monkeypatch.setattr(app.database, "canonical_student_id",
                         lambda sid, space=None: sid)
-    monkeypatch.setattr(ar.intake, "from_links_in", lambda text, limit=5: [
+    monkeypatch.setattr(ar.intake, "from_links_in", lambda text, limit=5, **kw: [
         intake.Artefact(kind="link", label="https://claude.ai/public/artifacts/abc",
                         note="the page loads its content in the browser",
                         confirmed=True)])

@@ -243,7 +243,13 @@ def submit_and_review_assignment(
 
     if cleaned_typed:
         artefacts.append(intake.from_typed(cleaned_typed))
-        artefacts.extend(intake.from_links_in(cleaned_typed))
+        # The task text decides whether a link is WALKED (a built site, an
+        # app, a game) or merely read. Passing it here is what makes Lovable
+        # day judgeable on whether the thing works.
+        artefacts.extend(intake.from_links_in(
+            cleaned_typed,
+            task_text=f"{assignment.get('title', '')} "
+                      f"{assignment.get('description', '')}"))
 
     if not any(a.readable for a in artefacts):
         prior = assignment_db_service.get_latest_assignment_submission(
@@ -272,8 +278,19 @@ def submit_and_review_assignment(
         total_time = int((time.time() - start_time) * 1000)
         # One wording for this fault, everywhere it can happen — see
         # app/services/student_notices.py for why these left the routes.
-        msg = (student_notices.file_unreadable(file_error, req.fileName or "")
-               if file_error else student_notices.nothing_submitted())
+        # A recording that could not be transcribed is its own fault with its
+        # own fix — "re-attach the file" is useless advice when the file
+        # arrived intact and we simply could not turn it into words.
+        from app.services.submission_media import is_media
+        if file_error and is_media(req.fileName or ""):
+            kind = "video" if (req.fileName or "").lower().rsplit(".", 1)[-1] in \
+                ("mp4", "mov", "avi", "mkv", "webm", "m4v", "3gp", "wmv", "flv") \
+                else "audio"
+            msg = student_notices.media_not_transcribed(kind)
+        elif file_error:
+            msg = student_notices.file_unreadable(file_error, req.fileName or "")
+        else:
+            msg = student_notices.nothing_submitted()
         return {
             "success": True,
             # Explicit no-content signal (same contract as industry sessions):
@@ -431,6 +448,9 @@ def submit_and_review_assignment(
                 word_limit_max=word_max,
                 gate_overrides=gate_overrides,
                 student_id=req.studentId,
+                # What the learner MADE, as pictures — their uploads first,
+                # then anything we rendered on their behalf.
+                images=intake.images_for_judge(artefacts),
             )
             # THE WRONG LINK IS NOT A ZERO. Day 07: student 880 pasted
             # their Day-06 Suno song and student 188 pasted Gemini's own
@@ -826,7 +846,10 @@ def re_review_assignment(
             # the learner's prose — nothing to quote, every criterion pinned at
             # the no-evidence cap, a cohort that did the work told it scored
             # 2/10. Same call, same guards (url_guard, link budget) as submit.
-            artefacts.extend(intake.from_links_in(stored_notes))
+            artefacts.extend(intake.from_links_in(
+                stored_notes,
+                task_text=f"{assignment.get('title', '')} "
+                          f"{assignment.get('description', '')}"))
         manifest, content = intake.render(artefacts)
     word_count = count_words(content)
     inventory = ([{"kind": "stored", "label": "previously assembled submission",
@@ -937,6 +960,7 @@ def re_review_assignment(
         student_answer=f"{manifest}\n{content}".strip(), word_count=word_count,
         word_limit_min=word_min, word_limit_max=word_max,
         gate_overrides=gate_overrides, student_id=row["student_id"],
+        images=intake.images_for_judge(artefacts),
     )
     if r is None:
         raise HTTPException(status_code=503,

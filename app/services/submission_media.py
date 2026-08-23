@@ -61,6 +61,60 @@ FFPROBE_TIMEOUT = 30
 FFMPEG_TIMEOUT = int(os.getenv("MEDIA_FFMPEG_TIMEOUT", "300"))
 
 
+# ---------------------------------------------------------------------------
+# THE FRAMES THEMSELVES (Phase 3, 23 Aug 2026).
+#
+# _describe_frames turns sampled frames into prose so the marker can read
+# them. That was the only option while the judge took text alone. It is no
+# longer: the judge sees pictures now, and a described frame is a lossy
+# retelling of one. A HeyGen presenter's slide, a Runway shot, a NotebookLM
+# Video Overview — the marker should look at those, not read about them.
+#
+# Frames are stashed here during extraction, keyed by the submission's own
+# bytes, because the extraction happens several layers below the code that
+# assembles what the marker receives and threading them back would mean
+# changing four signatures for one optional extra. Bounded and locked, the
+# same shape as the renderer's screenshot store, for the same reason: reviews
+# run concurrently and a nice-to-have must never take a review down.
+# ---------------------------------------------------------------------------
+
+import hashlib
+import threading
+
+_FRAME_KEEP = int(os.getenv("MEDIA_FRAME_KEEP", "4"))
+_frames_lock = threading.Lock()
+_last_frames: dict = {}          # content hash -> [(media_type, b64)]
+
+
+def media_key(data: bytes) -> str:
+    """Identify a submission by its own bytes. Pure."""
+    return hashlib.sha1(data or b"").hexdigest()
+
+
+def _keep_frames(key: str, frames: list) -> None:
+    if not frames:
+        return
+    with _frames_lock:
+        while len(_last_frames) >= _FRAME_KEEP:
+            try:
+                _last_frames.pop(next(iter(_last_frames)))
+            except StopIteration:
+                break
+        _last_frames[key] = frames
+
+
+def frames_for(data: bytes) -> list:
+    """[{'image': b64, 'media_type': ...}] for media already extracted, else []."""
+    with _frames_lock:
+        frames = _last_frames.get(media_key(data), [])
+    return [{"image": b64, "media_type": mt} for mt, b64 in frames]
+
+
+def forget_frames() -> None:
+    with _frames_lock:
+        _last_frames.clear()
+
+
 def is_media(file_name: str) -> bool:
     return _ext(file_name) in MEDIA_EXTS
 
@@ -106,7 +160,7 @@ def transcribe_and_describe(data: bytes, file_name: str) -> Tuple[str, str]:
             parts.append(f"WHAT IS SAID: no speech could be transcribed ({why}).")
 
         if is_video:
-            shots, why_frames = _describe_frames(src, workdir)
+            shots, why_frames = _describe_frames(src, workdir, key=media_key(data))
             if shots:
                 parts.append("WHAT IS SHOWN (still frames sampled across the "
                              "video, described factually):\n" + shots)
@@ -172,7 +226,7 @@ def _transcribe(src: str, workdir: str) -> Tuple[str, str]:
     return (joined, "") if joined else ("", "the recording carries no speech")
 
 
-def _describe_frames(src: str, workdir: str) -> Tuple[str, str]:
+def _describe_frames(src: str, workdir: str, key: str = "") -> Tuple[str, str]:
     """Sample frames evenly and have vision describe them.
 
     Evenly spaced, not the first N seconds — a title card repeated six times
@@ -208,6 +262,11 @@ def _describe_frames(src: str, workdir: str) -> Tuple[str, str]:
                 images.append(("image/jpeg", base64.b64encode(fh.read()).decode()))
         except Exception:
             continue
+    # Keep the frames themselves for the marker to LOOK at. The described
+    # version below is still produced: a description names things a still
+    # cannot show on its own, and the two together are what a person gets.
+    if key:
+        _keep_frames(key, images)
     if not images:
         return "", "frames could not be read"
 

@@ -457,23 +457,62 @@ def _report_usage(model: str, usage) -> None:
         print(f"[usage] report skipped: {e}")
 
 
+# Media types the vision model accepts. Anything else is a bug upstream, not
+# something to pass through and let the API reject mid-review.
+IMAGE_MEDIA_TYPES = ("image/png", "image/jpeg", "image/gif", "image/webp")
+
+
+def _content_block(b: dict) -> dict:
+    """One request block from one caller block. Pure.
+
+    Raises on an unusable image rather than silently dropping it: a marker
+    that thinks it saw the work when it did not is the failure this whole
+    system keeps making.
+    """
+    if b.get("image"):
+        media_type = b.get("media_type") or "image/png"
+        if media_type not in IMAGE_MEDIA_TYPES:
+            raise ValueError(f"cannot show the marker a {media_type}")
+        return {"type": "image",
+                "source": {"type": "base64", "media_type": media_type,
+                           "data": b["image"]}}
+    part = {"type": "text", "text": b["text"]}
+    if b.get("cache"):
+        part["cache_control"] = {"type": "ephemeral"}
+    return part
+
+
 def call_structured(blocks: list, schema: dict, tier: str = "default",
                     max_tokens: int = 3000, thinking_budget: int = 0,
                     system: str = SYSTEM_MSG_CLAUDE) -> dict:
     """Guaranteed-schema completion via forced tool use.
 
-    blocks: [{"text": str, "cache": bool}] — cache=True marks a block as a
-    stable prefix (knowledge pack, rubric) for Anthropic prompt caching.
+    blocks: a list of either
+      {"text": str, "cache": bool}                     — a text block
+      {"image": b64, "media_type": "image/png", ...}   — the work ITSELF
+
+    THE SECOND SHAPE IS THE POINT (23 Aug 2026). Until now every submission was
+    flattened to text before it was judged: a poster became OCR'd words, a
+    website became its visible headings, a mind map became a list. The marker
+    never SAW anything — it read a description of the work and scored the
+    description. Ranjana: "make it read and understand songs, music, artifacts,
+    games, see video and other things and like a human based on work, quality
+    do scoring."
+
+    A picture of the learner's site tells the marker what OCR cannot: whether
+    it looks finished, whether the layout holds, whether it is a real thing or
+    a template with the placeholder text still in it.
+
+    cache=True marks a block as a stable prefix (knowledge pack, requirements)
+    for Anthropic prompt caching. Images are never cached — they differ per
+    learner, and a cache miss on a large block costs more than it saves.
+
     Returns the validated dict. Raises on failure — callers own fallback.
     """
     model = MODEL_TIERS.get(tier, MODEL_TIERS["default"])()
-
-    content = []
-    for b in blocks:
-        part = {"type": "text", "text": b["text"]}
-        if b.get("cache"):
-            part["cache_control"] = {"type": "ephemeral"}
-        content.append(part)
+    content = [_content_block(b) for b in blocks if b]
+    if not any(p.get("type") == "text" for p in content):
+        raise ValueError("call_structured needs at least one text block")
 
     # sonnet-5 (Claude 4.6 gen) emits extended-thinking blocks by default, and
     # forced tool_choice ({"type":"tool"}) is INCOMPATIBLE with thinking — it
@@ -483,7 +522,11 @@ def call_structured(blocks: list, schema: dict, tier: str = "default",
     tool_instruction = ("\n\nYou MUST call the emit_result tool exactly once "
                         "with your COMPLETE evaluation filling every required field. "
                         "Do not answer in plain text.")
-    content[-1] = {**content[-1], "text": content[-1]["text"] + tool_instruction}
+    # Append to the last TEXT block. Appending to an image block would drop the
+    # instruction silently and the model would answer in prose.
+    last_text = max(i for i, p in enumerate(content) if p.get("type") == "text")
+    content[last_text] = {**content[last_text],
+                          "text": content[last_text]["text"] + tool_instruction}
 
     kwargs = {
         "model": model,

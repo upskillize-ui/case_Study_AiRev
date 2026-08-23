@@ -266,6 +266,27 @@ def extract_upload(file_data: str = None, file_url: str = None,
     return "", "no file provided"
 
 
+def upload_bytes(file_data: str = None, file_url: str = None) -> bytes:
+    """The raw bytes of an attachment, however it arrived. Never raises.
+
+    Used when something beyond the text is wanted — currently the picture the
+    marker looks at. Callers gate on the file EXTENSION before calling, so a
+    50 MB PDF is never re-fetched just to discover it is not an image.
+    """
+    try:
+        if file_data:
+            payload = file_data.strip()
+            if payload.startswith("data:") and "," in payload:
+                payload = payload.split(",", 1)[1]
+            return base64.b64decode(payload, validate=False)
+        if file_url:
+            data, _why = _download_file(resolve_lms_url(file_url))
+            return data or b""
+    except Exception as e:
+        logger.warning("upload_bytes failed: %s", e)
+    return b""
+
+
 def extract_text_from_bytes(data: bytes, file_name: str = "") -> Tuple[str, str]:
     """Extract reviewable text from already-in-memory file bytes.
 
@@ -283,6 +304,86 @@ def extract_text_from_bytes(data: bytes, file_name: str = "") -> Tuple[str, str]
     """
     text, reason = _extract_dispatch(data, file_name)
     return _cap(text), reason
+
+
+# ---------------------------------------------------------------------------
+# THE FORMAT REGISTRY (Phase 4, 23 Aug 2026).
+#
+# Adding a format used to mean a fresh investigation: find the ladder below,
+# work out where in it the new branch had to sit, and hope nothing above it
+# claimed the file first. That is how .mht reached a learner as "not a file",
+# and how audio spent weeks refused outright — and it is why the agent was
+# permanently one tool behind a syllabus that adds one every day.
+#
+# One table instead. A new format is ONE ENTRY and ONE TEST.
+#
+# The ladder below still runs for the genuinely conditional cases — a PDF that
+# may or may not need OCR, a legacy Office file that gets an explanation
+# rather than a reader, the sniffing of a file with no usable extension.
+# Those are decisions, not lookups, and flattening them into the table would
+# hide them.
+#
+# supported_formats() exists so the agent can TELL a learner what it reads.
+# That sentence was hand-written in three places and all three were wrong the
+# day audio landed.
+# ---------------------------------------------------------------------------
+
+
+def _ext_of(name: str) -> str:
+    lowered = (name or "").lower().split("?")[0]
+    return "." + lowered.rsplit(".", 1)[-1] if "." in lowered else ""
+
+
+def _read_text(data: bytes, name: str) -> Tuple[str, str]:
+    body = _clean(data.decode("utf-8", errors="ignore"))
+    return (body, "") if body else ("", "the file was empty")
+
+
+def _read_code(data: bytes, name: str) -> Tuple[str, str]:
+    body = _clean(data.decode("utf-8", errors="ignore"))[:SHEET_MAX_CHARS]
+    if not body:
+        return "", "code file was empty"
+    return f"[Code file: {name.rsplit('/', 1)[-1]}]\n{body}", ""
+
+
+def _read_media(data: bytes, name: str) -> Tuple[str, str]:
+    from app.services.submission_media import transcribe_and_describe
+    return transcribe_and_describe(data, name)
+
+
+READERS: dict = {}          # extension -> (reader, what a person calls it)
+
+
+def _register(exts, reader, label: str) -> None:
+    for ext in exts:
+        READERS[ext] = (reader, label)
+
+
+_register(TEXT_EXTS, _read_text, "text")
+_register({".rtf"}, lambda d, n: _extract_rtf(d), "rich text")
+_register({".docx"}, lambda d, n: _extract_docx(d), "Word document")
+_register(ODF_EXTS, lambda d, n: _extract_odf(d, _ext_of(n)), "OpenDocument")
+_register({".xlsx", ".xlsm", ".xltx"}, lambda d, n: _extract_xlsx(d), "Excel workbook")
+_register({".csv", ".tsv"}, lambda d, n: _extract_csv(d, _ext_of(n)), "spreadsheet")
+_register({".pptx", ".potx"}, lambda d, n: _extract_pptx(d), "slide deck")
+_register({".zip"}, lambda d, n: _extract_zip(d), "zip archive")
+_register({".ipynb"}, lambda d, n: _extract_ipynb(d), "notebook")
+_register(HTML_EXTS, lambda d, n: _extract_html(d), "web page")
+_register(MHTML_EXTS, lambda d, n: _extract_mhtml(d), "saved web page")
+_register(IMAGE_EXTS, lambda d, n: _extract_image(d, _ext_of(n)), "image")
+_register(CODE_EXTS, _read_code, "code")
+_register(MEDIA_EXTS, _read_media, "audio or video")
+
+
+def reader_for(file_name: str):
+    """The reader registered for this file, or None. Pure."""
+    entry = READERS.get(_ext_of(file_name))
+    return entry[0] if entry else None
+
+
+def supported_formats() -> list:
+    """Every format the agent can read, named as a person would. Pure."""
+    return sorted({label for _reader, label in READERS.values()})
 
 
 def _extract_dispatch(data: bytes, file_name: str = "") -> Tuple[str, str]:
@@ -326,6 +427,14 @@ def _extract_dispatch(data: bytes, file_name: str = "") -> Tuple[str, str]:
             if ocr:
                 return ocr, ""
             return (text, "") if text else ("", ocr_why or why)
+
+        # THE REGISTRY. Everything that is a straight extension -> reader
+        # lookup lives in READERS, so a new format is one entry and one test
+        # rather than a new rung on this ladder. PDF, legacy Office and the
+        # no-extension sniff stay below because they are decisions.
+        entry = READERS.get(ext)
+        if entry:
+            return entry[0](data, file_name)
 
         # Word ------------------------------------------------------------
         if ext == ".docx":
@@ -1008,6 +1117,30 @@ def _to_readable_image(data: bytes, ext: str) -> Tuple[bytes, str, str]:
                          f"re-upload.")
     except Exception as e:
         return b"", "", f"could not open this {ext} image: {type(e).__name__}"
+
+
+def image_for_judge(data: bytes, ext: str) -> Tuple[str, str]:
+    """(base64, media_type) of an upload the MARKER should look at. Pure-ish.
+
+    Returns ("", "") for anything that is not an image, or that could not be
+    converted into one of the four types the vision model accepts. Reuses
+    _to_readable_image, so HEIC from an iPhone and the other awkward formats
+    reach the marker exactly as they already reach OCR — one conversion path,
+    not two that drift.
+    """
+    if ext.lower() not in IMAGE_EXTS:
+        return "", ""
+    try:
+        ready, media_type, why = _to_readable_image(data, ext)
+    except Exception as e:
+        logger.warning("image_for_judge failed: %s", e)
+        return "", ""
+    if not ready or why:
+        return "", ""
+    from app.services.ai_service import IMAGE_MEDIA_TYPES
+    if media_type not in IMAGE_MEDIA_TYPES:
+        return "", ""
+    return base64.b64encode(ready).decode(), media_type
 
 
 def _extract_image(data: bytes, ext: str) -> Tuple[str, str]:

@@ -41,9 +41,10 @@ import base64
 import ipaddress
 import hashlib
 import os
+import re
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Tuple
 from urllib.parse import urlparse
 
@@ -80,6 +81,58 @@ LINK_RENDER_LOCK_WAIT_S = float(os.getenv("LINK_RENDER_LOCK_WAIT_S", "120"))
 # Above this many words the page is long enough to be real work, and a
 # stray "sign in" in a student's own text must not be read as a gate.
 LINK_INTERSTITIAL_MAX_WORDS = int(os.getenv("LINK_INTERSTITIAL_MAX_WORDS", "200"))
+
+# ---------------------------------------------------------------------------
+# THE WALKTHROUGH (Phase 2).
+#
+# A Lovable site, a Claude artifact game, any built app: the deliverable is a
+# thing that DOES something, and until now the agent judged it from one
+# screenshot of whatever sat above the fold. That is a photograph of a front
+# door standing in for a house.
+#
+# So: scroll the page and photograph each screen, then press the obvious
+# controls and photograph what happens, and keep every JavaScript error the
+# page throws. The marker then judges "four sections, working navigation, no
+# errors" instead of "the words HOME and ABOUT appear".
+#
+# Strictly bounded. The browser handles one page at a time and a cohort sweep
+# is already the slowest part of the day, so the whole walkthrough gets a
+# wall-clock budget and a hard cap on clicks. It is OFF unless the caller asks
+# for it, because most days do not submit apps.
+# ---------------------------------------------------------------------------
+WALKTHROUGH_MAX_SHOTS = int(os.getenv("WALKTHROUGH_MAX_SHOTS", "4"))
+WALKTHROUGH_MAX_CLICKS = int(os.getenv("WALKTHROUGH_MAX_CLICKS", "2"))
+WALKTHROUGH_BUDGET_S = float(os.getenv("WALKTHROUGH_BUDGET_S", "20"))
+WALKTHROUGH_SETTLE_MS = int(os.getenv("WALKTHROUGH_SETTLE_MS", "900"))
+
+# Controls worth pressing, in priority order. Deliberately conservative: a
+# marker must never destroy a learner's work by clicking Delete, and must
+# never post anything anywhere. Anything matching _NEVER_CLICK is skipped
+# even if it also matches here.
+_CLICK_CANDIDATES = (
+    "button:visible", "[role=button]:visible", "nav a:visible",
+    "a.btn:visible", "[data-testid*=start]:visible",
+)
+_NEVER_CLICK = re.compile(
+    r"delete|remove|clear|reset|sign\s*out|log\s*out|logout|buy|pay|purchase|"
+    r"checkout|subscribe|upgrade|submit|send|post|publish|share|download|"
+    r"export|print|confirm|save|upload|invite|report|flag",
+    re.I)
+
+
+def worth_clicking(label: str) -> bool:
+    """Is this control safe for a marker to press? Pure.
+
+    The rule is do-no-harm, not thoroughness. We are a visitor on a stranger's
+    published page: pressing Start or About tells us the app responds; pressing
+    Delete, Buy or Submit changes their world. When in doubt, do not touch it —
+    an unpressed button costs a little evidence, a pressed one can cost the
+    learner their work.
+    """
+    text = (label or "").strip()
+    if not text or len(text) > 40:
+        return False
+    return not _NEVER_CLICK.search(text)
 
 # Claimed browser identity. Playwright's headless UA says "HeadlessChrome",
 # which Notion answers with "Your browser is not compatible" — verified live
@@ -201,6 +254,13 @@ class Rendered:
     text: str                 # page + iframe innerText, joined
     screenshot_b64: str       # JPEG of the viewport, "" when capture failed
     final_url: str
+    # PHASE 2 (23 Aug 2026): what the page did when someone USED it.
+    # One screenshot of the fold is a photograph of a front door. A built
+    # site or an app is judged on whether it works, and that cannot be seen
+    # standing still.
+    shots: list = field(default_factory=list)   # [(caption, jpeg_b64)]
+    console_errors: list = field(default_factory=list)
+    steps: list = field(default_factory=list)   # plain-English walkthrough log
 
 
 def _flatten(text: str) -> str:
@@ -266,8 +326,12 @@ def _harvest_text(page) -> str:
     return "\n\n".join(texts)
 
 
-def _render_raw(url: str) -> Tuple[Optional[Rendered], str]:
-    """One browser, one page, one harvest. Runs under _render_lock."""
+def _render_raw(url: str, walk: bool = False) -> Tuple[Optional[Rendered], str]:
+    """One browser, one page, one harvest. Runs under _render_lock.
+
+    walk=True also USES the page — scrolls it, presses its safe controls and
+    photographs each step. See the walkthrough notes at the top of the file.
+    """
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -300,6 +364,15 @@ def _render_raw(url: str) -> Tuple[Optional[Rendered], str]:
                     "Object.defineProperty(navigator, 'webdriver', "
                     "{get: () => undefined})")
                 page = ctx.new_page()
+                # A site that throws on load is broken however good it looks.
+                # Collected always: it costs nothing and it is the single most
+                # objective quality signal a built page emits.
+                console: list = []
+                page.on("console", lambda m: (
+                    console.append(m.text[:200])
+                    if m.type == "error" and len(console) < 20 else None))
+                page.on("pageerror", lambda e: (
+                    console.append(str(e)[:200]) if len(console) < 20 else None))
                 page.route("**/*", lambda route: (
                     route.abort()
                     if _blocked_host(urlparse(route.request.url).hostname or "")
@@ -341,16 +414,98 @@ def _render_raw(url: str) -> Tuple[Optional[Rendered], str]:
                 except Exception:
                     pass                  # text alone can still carry a review
 
+                shots, steps = [], []
+                if walk:
+                    shots, steps = _walk_the_page(page, shot)
+
                 return Rendered(title=title, text=text,
                                 screenshot_b64=shot,
-                                final_url=page.url), ""
+                                final_url=page.url,
+                                shots=shots, steps=steps,
+                                console_errors=console[:10]), ""
             finally:
                 browser.close()
     except Exception as e:
         return None, f"the page could not be rendered ({type(e).__name__})"
 
 
-def render_link(url: str) -> Tuple[Optional[Rendered], str]:
+def _walk_the_page(page, first_shot: str) -> Tuple[list, list]:
+    """Scroll, press the safe controls, photograph each step.
+
+    Returns ([(caption, jpeg_b64)], [plain-English step log]). Never raises:
+    a walkthrough that goes wrong must degrade to the single screenshot the
+    caller already holds, not take down a review that had succeeded.
+
+    Every step is bounded by a wall-clock budget, because the browser handles
+    one page at a time and a cohort sweep is already the slowest part of a day.
+    """
+    shots, steps = [], []
+    if first_shot:
+        shots.append(("the page as it first loads", first_shot))
+    deadline = time.monotonic() + WALKTHROUGH_BUDGET_S
+
+    def snap(caption: str) -> None:
+        if len(shots) >= WALKTHROUGH_MAX_SHOTS or time.monotonic() > deadline:
+            return
+        try:
+            shots.append((caption, base64.b64encode(
+                page.screenshot(type="jpeg", quality=70)).decode()))
+        except Exception:
+            pass
+
+    # 1. See the whole page, not just the fold.
+    try:
+        height = page.evaluate("document.body.scrollHeight") or 0
+        viewport = page.evaluate("window.innerHeight") or 900
+        screens = max(0, min(WALKTHROUGH_MAX_SHOTS - 1,
+                             int(height // max(viewport, 1))))
+        for n in range(screens):
+            if time.monotonic() > deadline:
+                break
+            page.evaluate(f"window.scrollTo(0, {viewport * (n + 1)})")
+            page.wait_for_timeout(WALKTHROUGH_SETTLE_MS)
+            snap(f"after scrolling down {n + 1} screen(s)")
+        if screens:
+            steps.append(f"the page is about {screens + 1} screens tall")
+        else:
+            steps.append("the page fits on one screen")
+        page.evaluate("window.scrollTo(0, 0)")
+    except Exception as e:
+        steps.append(f"could not scroll the page ({type(e).__name__})")
+
+    # 2. Press what a visitor would press.
+    pressed = 0
+    for selector in _CLICK_CANDIDATES:
+        if pressed >= WALKTHROUGH_MAX_CLICKS or time.monotonic() > deadline:
+            break
+        try:
+            elements = page.locator(selector)
+            for i in range(min(elements.count(), 6)):
+                if pressed >= WALKTHROUGH_MAX_CLICKS or time.monotonic() > deadline:
+                    break
+                el = elements.nth(i)
+                label = (el.inner_text(timeout=1500) or "").strip()
+                if not worth_clicking(label):
+                    continue
+                before = page.url
+                el.click(timeout=2500, no_wait_after=True)
+                page.wait_for_timeout(WALKTHROUGH_SETTLE_MS)
+                pressed += 1
+                moved = page.url != before
+                steps.append(f'pressed "{label}"'
+                             + (" and the page changed" if moved
+                                else " and the page responded in place"))
+                snap(f'after pressing "{label}"')
+        except Exception:
+            continue          # a control that will not be pressed is not news
+
+    if not pressed:
+        steps.append("no control on this page was safe to press "
+                     "(nothing found, or everything was destructive)")
+    return shots, steps
+
+
+def render_link(url: str, walk: bool = False) -> Tuple[Optional[Rendered], str]:
     """Render one submitted link. Returns (Rendered, "") or (None, why).
 
     The SSRF check runs BEFORE any browser starts — a learner-supplied URL
@@ -375,7 +530,7 @@ def render_link(url: str) -> Tuple[Optional[Rendered], str]:
         if pause:
             time.sleep(pause)             # do not trip the host's rate limit
         try:
-            return _render_raw(url)
+            return _render_raw(url, walk=walk)
         finally:
             _last_visit[host] = time.monotonic()
     finally:
@@ -534,7 +689,132 @@ def _remember(url: str, text: str, why: str) -> Tuple[str, str]:
     return text, why
 
 
-def read_rendered_link(url: str) -> Tuple[str, str]:
+BUILT_THING = re.compile(
+    # Days whose deliverable is a thing that DOES something. Walking a page
+    # costs seconds on a browser that handles one at a time, so it runs only
+    # where the answer to "does it work?" is part of the mark.
+    r"\blovable\b|\bwebsite\b|\bweb\s?app\b|\bapp\b|\bgame\b|"
+    r"\bdashboard\b|\bartifacts?\b|\bprototype\b|\blanding page\b|"
+    r"\bdeploy(?:ed)?\b|\bbuild (?:a|an|your)\b|\bcustom gpts?\b",
+    re.I)
+
+
+def walkthrough_enabled() -> bool:
+    """Is the walkthrough switched on for this deployment?
+
+    OFF by default, deliberately. It is new code that presses buttons on
+    learners' published pages, and the first night it runs must be a night
+    somebody chose, not the night it happened to ship alongside a fix the
+    cohort was waiting for. Set WALKTHROUGH_ENABLED=1 to turn it on.
+    """
+    return os.getenv("WALKTHROUGH_ENABLED", "").strip().lower() \
+        in ("1", "true", "yes", "on")
+
+
+def task_wants_a_walkthrough(task_text: str) -> bool:
+    """Should the marker USE this page, not just look at it? Pure-ish.
+
+    True for built things — a site, an app, a game, a dashboard. False for a
+    Notion page or a shared doc, where scrolling and clicking tells you
+    nothing the text has not already said, and false everywhere while the
+    feature is switched off.
+    """
+    return walkthrough_enabled() and bool(BUILT_THING.search(task_text or ""))
+
+
+def walkthrough_notes(r) -> str:
+    """The walkthrough as a few plain lines for the marker. Pure.
+
+    Deliberately factual. It reports what happened when the page was used —
+    never whether that was good. The judgement stays with the marker, which
+    is the same rule the intake manifest follows.
+    """
+    if r is None:
+        return ""
+    lines = []
+    if getattr(r, "steps", None):
+        lines.append("WHAT HAPPENED WHEN THE PAGE WAS USED:")
+        lines += [f"- {step}" for step in r.steps]
+    errors = getattr(r, "console_errors", None) or []
+    if errors:
+        lines.append(f"THE PAGE REPORTED {len(errors)} JAVASCRIPT ERROR(S) "
+                     f"WHILE LOADING:")
+        lines += [f"- {e}" for e in errors[:3]]
+    elif getattr(r, "steps", None):
+        lines.append("The page reported no JavaScript errors.")
+    return "\n".join(lines)
+
+
+def read_rendered_page(url: str, walk: bool = False) -> Tuple[str, str, str, str]:
+    """(text, why_empty, screenshot_b64, walkthrough_notes).
+
+    A built page is DESIGNED. Its text tells you what it says; only the
+    picture tells you whether it looks finished, whether the layout holds,
+    or whether the template's placeholder blocks are still sitting there.
+    Lovable day is unmarkable without it.
+
+    The screenshot is returned even when the text carried the page on its
+    own, because those are different questions and the marker should have
+    both. It is "" when capture failed or the page was refused.
+    """
+    text, why = read_rendered_link(url, walk=walk)
+    if why:
+        return text, why, "", ""
+    return (text, why, _last_screenshot.get(url, ""),
+            _last_notes.get(url, ""))
+
+
+# The most recent screenshot per url, filled by read_rendered_link so the
+# picture does not have to be threaded back through every return path. Bounded
+# because a cohort sweep opens hundreds of pages and a JPEG is not small.
+_last_screenshot: dict = {}
+_SCREENSHOT_KEEP = int(os.getenv("LINK_SCREENSHOT_KEEP", "8"))
+_screenshot_lock = threading.Lock()
+
+
+def _keep_screenshot(url: str, b64: str) -> None:
+    """Remember one page picture, evicting the oldest. Thread-safe.
+
+    Reviews run concurrently. Without the lock, `len() >= KEEP` followed by
+    `pop(next(iter(...)))` is a race: another worker can empty the dict in
+    between and next() then raises StopIteration, which would break a review
+    that had already succeeded. A screenshot is a nice-to-have; taking a
+    working review down for one is not a trade worth making.
+    """
+    if not b64:
+        return
+    with _screenshot_lock:
+        while len(_last_screenshot) >= _SCREENSHOT_KEEP:
+            try:
+                _last_screenshot.pop(next(iter(_last_screenshot)))
+            except StopIteration:            # emptied under us; nothing to evict
+                break
+        _last_screenshot[url] = b64
+
+
+_last_notes: dict = {}
+
+
+def _keep_notes(url: str, notes: str) -> None:
+    """The walkthrough log, kept beside its screenshot and bounded the same way."""
+    if not notes:
+        return
+    with _screenshot_lock:
+        while len(_last_notes) >= _SCREENSHOT_KEEP:
+            try:
+                _last_notes.pop(next(iter(_last_notes)))
+            except StopIteration:
+                break
+        _last_notes[url] = notes
+
+
+def forget_screenshots() -> None:
+    with _screenshot_lock:
+        _last_screenshot.clear()
+        _last_notes.clear()
+
+
+def read_rendered_link(url: str, walk: bool = False) -> Tuple[str, str]:
     """(reviewable_text, why_empty) — the one call intake makes.
 
     Vision spend is decided here: a text-rich page (a Notion doc, a Gamma
@@ -546,7 +826,7 @@ def read_rendered_link(url: str) -> Tuple[str, str]:
         print(f"[link] cache hit: {url}")
         return hit
 
-    rendered, why = render_link(url)
+    rendered, why = render_link(url, walk=walk)
     if rendered is None:
         # OUR failures are not facts about the page. Caching "the browser was
         # busy" would hand our timeout to every later student who pasted the
@@ -571,6 +851,11 @@ def read_rendered_link(url: str) -> Tuple[str, str]:
     shell = note_page(url, rendered.text)
     if shell:
         return _remember(url, "", shell)
+
+    # Past every refusal: this really is the learner's page, so keep the
+    # picture for the marker to look at.
+    _keep_screenshot(url, rendered.screenshot_b64)
+    _keep_notes(url, walkthrough_notes(rendered))
 
     ocr_text = ""
     if needs_vision(rendered):

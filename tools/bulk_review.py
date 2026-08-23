@@ -217,7 +217,8 @@ def fetch_pending(conn, review_type: str, item_id: int | None,
 # ── Agent call ────────────────────────────────────────────────────────────
 
 def review_one(p: Pending, agent_url: str, api_key: str, timeout: int,
-               redo: bool = False, dry: bool = False) -> Result:
+               redo: bool = False, dry: bool = False,
+               force: bool = False) -> Result:
     """POST with empty answerText — the agent reads the STORED submission,
     exactly like a student clicking New Review. Retries transient failures.
 
@@ -234,8 +235,23 @@ def review_one(p: Pending, agent_url: str, api_key: str, timeout: int,
     # learner and grades their submission instead.
     if redo:
         endpoint = f"{cfg['regrade_endpoint']}/{p.submission_id}"
+        # force overrides the content-shrunk guard, which on 23 Aug correctly
+        # blocked every Day 07 re-review: the text HAD shrunk, because the
+        # Gemini shell that used to supply 120 words of Google's own page is
+        # now refused. The shrink IS the fix working. So force is right for
+        # exactly this case, and stays an explicit flag because the guard is
+        # right every other time.
+        #
+        # BOTH are QUERY parameters on the route, not body fields. Sent in the
+        # body they are silently ignored and the run does nothing — which is
+        # the shape of every bug that ships and changes nothing.
+        params = []
         if dry:
-            endpoint += "?dryRun=true"
+            params.append("dryRun=true")
+        if force:
+            params.append("force=true")
+        if params:
+            endpoint += "?" + "&".join(params)
         body = {}
     else:
         endpoint = cfg["endpoint"]
@@ -418,6 +434,10 @@ def main() -> None:
     ap.add_argument("--check", action="store_true",
                     help="CANARY: review only the first 10, then stop so you "
                          "can read them before releasing the rest")
+    ap.add_argument("--force", action="store_true",
+                    help="with --redo: re-score even when the text is now "
+                         "SHORTER than last time. Use after a fix that stops "
+                         "us counting a tool's own page as the learner's work")
     ap.add_argument("--no-abort", action="store_true",
                     help="do not stop the run automatically (not recommended)")
     ap.add_argument("--bill-students", action="store_true",
@@ -533,7 +553,7 @@ def main() -> None:
     started = time.time()
     with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
         futures = {pool.submit(review_one, p, agent_url, api_key, args.timeout,
-                               args.redo, False): p
+                               args.redo, False, args.force): p
                    for p in batch}
         for i, fut in enumerate(as_completed(futures), 1):
             res = fut.result()

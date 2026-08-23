@@ -42,7 +42,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -130,6 +130,20 @@ class Artefact:
     text: str = ""
     note: str = ""
     confirmed: bool = True
+    # THE WORK ITSELF, when it is something you look at (23 Aug 2026).
+    #
+    # Everything used to be flattened to text before judging: a poster became
+    # OCR'd words, a Lovable site became its headings, a mind map became a
+    # list of labels. The marker read a description and scored the
+    # description. Carrying the picture alongside the text lets it judge what
+    # OCR throws away — layout, finish, whether the placeholder text is still
+    # in there.
+    image_b64: str = ""
+    media_type: str = ""
+    # A video yields several frames. The first is the artefact's picture; the
+    # rest ride along here so images_for_judge can offer the whole sequence
+    # when there is room for it.
+    extra_images: list = field(default_factory=list)
 
     @property
     def readable(self) -> bool:
@@ -153,7 +167,47 @@ def from_upload(file_data: Optional[str], file_url: Optional[str],
     """The attachment on THIS request (inline bytes or a URL)."""
     label = file_name or file_url or "uploaded file"
     text, why = extract_upload(file_data, file_url, file_name)
-    return _finish_file(label, text, why, had_bytes=bool(file_data))
+    art = _finish_file(label, text, why, had_bytes=bool(file_data))
+    return _with_picture(art, file_data, file_url, file_name)
+
+
+def _with_picture(art: Artefact, file_data=None, file_url=None,
+                  file_name: str = "") -> Artefact:
+    """Attach the image itself when this upload is one, so the marker can LOOK.
+
+    Never raises and never changes the text: a picture the marker cannot be
+    shown simply is not attached, and the OCR that was already extracted
+    carries the review exactly as before.
+    """
+    try:
+        from app.utils.file_extractor import (IMAGE_EXTS, image_for_judge,
+                                              upload_bytes)
+        name = file_name or file_url or ""
+        ext = ("." + name.rsplit(".", 1)[-1].lower().split("?")[0]) if "." in name else ""
+        # Gate on the extension BEFORE reading: a 50 MB PDF must never be
+        # re-fetched just to discover it is not a picture.
+        from app.services.submission_media import MEDIA_EXTS, frames_for
+        if ext not in IMAGE_EXTS and ext not in MEDIA_EXTS:
+            return art
+        data = upload_bytes(file_data, file_url)
+        if not data:
+            return art
+        if ext in MEDIA_EXTS:
+            # A video was already sampled into frames while its audio was
+            # transcribed. Carry the first of those, so the marker LOOKS at
+            # the learner's video instead of reading a description of it.
+            frames = frames_for(data)
+            if frames:
+                art.image_b64 = frames[0]["image"]
+                art.media_type = frames[0]["media_type"]
+                art.extra_images = frames[1:]
+            return art
+        b64, media_type = image_for_judge(data, ext)
+        if b64:
+            art.image_b64, art.media_type = b64, media_type
+    except Exception as e:
+        logger.warning("could not attach picture for %s: %s", art.label, e)
+    return art
 
 
 def from_stored_file(file_url: str, file_name: str = "") -> Artefact:
@@ -184,7 +238,8 @@ def _finish_file(label: str, text: str, why: str, had_bytes: bool) -> Artefact:
                     confirmed=had_bytes or not unreachable)
 
 
-def from_links_in(text: str, limit: int = MAX_LINKS) -> List[Artefact]:
+def from_links_in(text: str, limit: int = MAX_LINKS,
+                  task_text: str = "") -> List[Artefact]:
     """Open every URL the learner pasted and read what is behind it.
 
     Published artifacts, hosted dashboards and shared docs are the deliverable
@@ -200,6 +255,7 @@ def from_links_in(text: str, limit: int = MAX_LINKS) -> List[Artefact]:
             out.append(Artefact(kind="link", label=url, confirmed=True,
                                 note="not opened — link-reading time budget spent"))
             continue
+        picture = ""
         body, why = fetch_link(url)
         if not body or _is_preview_only(body) or _is_thin_body(body):
             # The plain fetch saw nothing, only link-preview metadata, or so
@@ -210,13 +266,29 @@ def from_links_in(text: str, limit: int = MAX_LINKS) -> List[Artefact]:
             # unread record, exactly as before.
             from app.services import link_renderer
             if link_renderer.enabled():
-                rendered_text, render_why = link_renderer.read_rendered_link(url)
+                # On a build-a-thing day, USE the page: scroll it, press its
+                # safe controls, keep its JavaScript errors. On a reading day
+                # that spends seconds for nothing, so it stays off.
+                rendered_text, render_why, shot, notes = \
+                    link_renderer.read_rendered_page(
+                        url, walk=link_renderer.task_wants_a_walkthrough(task_text))
                 if rendered_text and _render_is_richer(rendered_text, body):
                     body, why = rendered_text, ""
                 elif not body:
                     why = render_why or why
+                # Kept even when the page's own text carried the review: what
+                # a built page SAYS and what it LOOKS LIKE are different
+                # questions, and a website day turns on the second one.
+                if shot and body:
+                    picture = shot
+                if notes and body:
+                    # Stated as OUR observation, never as the learner's words,
+                    # so the marker cannot mistake it for their writing.
+                    body = f"{body}\n\n{notes}"
         if body:
-            out.append(Artefact(kind="link", label=url, text=body, confirmed=True))
+            out.append(Artefact(kind="link", label=url, text=body,
+                                confirmed=True, image_b64=picture,
+                                media_type="image/jpeg" if picture else ""))
         else:
             # The link itself is still evidence the learner published SOMETHING;
             # we simply could not read it from here. Both facts go on the record.
@@ -741,6 +813,29 @@ def deliverable_is_only_links(artefacts) -> bool:
     """
     produced = [a for a in artefacts if a.kind not in ("typed text",)]
     return bool(produced) and all(a.kind == "link" for a in produced)
+
+
+# How many pictures one review may carry. Each is real money and real
+# latency; four covers a page, two screenshots and an upload, which is more
+# than almost any submission holds.
+MAX_JUDGE_IMAGES = int(os.getenv("MAX_JUDGE_IMAGES", "4"))
+
+
+def images_for_judge(artefacts, limit: int = MAX_JUDGE_IMAGES) -> list:
+    """The learner's work as pictures, ready for the marker. Pure.
+
+    Ordered as the learner's own uploads first, then anything we rendered on
+    their behalf: their file is the deliverable, our screenshot is a proxy
+    for it, and when the cap bites the proxy is what should fall off.
+    """
+    own = [a for a in artefacts if a.image_b64 and a.kind != "link"]
+    ours = [a for a in artefacts if a.image_b64 and a.kind == "link"]
+    out = []
+    for a in own + ours:
+        out.append({"image": a.image_b64,
+                    "media_type": a.media_type or "image/png"})
+        out.extend(a.extra_images or [])
+    return out[:max(0, limit)]
 
 
 def unreadable_deliverable(manifest: str) -> bool:

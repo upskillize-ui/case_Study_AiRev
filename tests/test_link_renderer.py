@@ -38,7 +38,7 @@ def test_off_means_inert(monkeypatch):
 def test_intake_never_touches_the_renderer_while_off(monkeypatch):
     monkeypatch.delenv("LINK_RENDER_ENABLED", raising=False)
     monkeypatch.setattr(lr, "_render_raw",
-                        lambda url: pytest.fail("browser started while off"))
+                        lambda url, **kw: pytest.fail("browser started while off"))
     monkeypatch.setattr(intake, "fetch_link", lambda url: ("", "browser-only"))
     arts = intake.from_links_in(ART)
     assert len(arts) == 1 and not arts[0].readable and arts[0].confirmed
@@ -51,7 +51,7 @@ def test_a_private_url_is_refused_without_launching(monkeypatch):
     monkeypatch.setattr(lr, "check_public_url",
                         lambda url: (False, "private address refused"))
     monkeypatch.setattr(lr, "_render_raw",
-                        lambda url: pytest.fail("browser launched for a private URL"))
+                        lambda url, **kw: pytest.fail("browser launched for a private URL"))
     rendered, why = lr.render_link("http://169.254.169.254/")
     assert rendered is None and "refused" in why
 
@@ -89,14 +89,14 @@ def test_read_rendered_link_ocrs_the_game_and_not_the_doc(monkeypatch):
                                               or ("A quiz with three questions "
                                                   "about EMI calculation", "")))
     monkeypatch.setattr(lr, "_render_raw",
-                        lambda url: (_rendered(text="Start Quiz"), ""))
+                        lambda url, **kw: (_rendered(text="Start Quiz"), ""))
     text, why = lr.read_rendered_link(ART)
     assert why == "" and "EMI Quiz" in text and "three questions" in text
     assert len(calls) == 1
 
     calls.clear()
     monkeypatch.setattr(lr, "_render_raw",
-                        lambda url: (_rendered(text="content " * 150), ""))
+                        lambda url, **kw: (_rendered(text="content " * 150), ""))
     text, why = lr.read_rendered_link(ART)
     assert why == "" and calls == []      # rich text -> no OCR money spent
 
@@ -113,7 +113,7 @@ def test_an_empty_render_reports_honestly(monkeypatch):
     monkeypatch.setenv("LINK_RENDER_ENABLED", "1")
     monkeypatch.setattr(lr, "check_public_url", lambda url: (True, ""))
     monkeypatch.setattr(lr, "_render_raw",
-                        lambda url: (lr.Rendered("", "", "", ART), ""))
+                        lambda url, **kw: (lr.Rendered("", "", "", ART), ""))
     text, why = lr.read_rendered_link(ART)
     assert text == "" and "empty" in why
 
@@ -124,7 +124,7 @@ def test_a_rendered_link_becomes_a_readable_artefact(monkeypatch):
     monkeypatch.setenv("LINK_RENDER_ENABLED", "1")
     monkeypatch.setattr(intake, "fetch_link", lambda url: ("", "browser-only"))
     monkeypatch.setattr(lr, "read_rendered_link",
-                        lambda url: ("[PUBLISHED PAGE OPENED IN A BROWSER]\n"
+                        lambda url, **kw: ("[PUBLISHED PAGE OPENED IN A BROWSER]\n"
                                      "My EMI quiz with three questions.", ""))
     arts = intake.from_links_in(ART)
     assert len(arts) == 1 and arts[0].readable
@@ -140,7 +140,7 @@ def test_the_render_replaces_a_preview_only_body(monkeypatch):
                                      "content is rendered in the browser...]"
                                      "\nTitle: Claude Artifact", ""))
     monkeypatch.setattr(lr, "read_rendered_link",
-                        lambda url: ("[PUBLISHED PAGE OPENED IN A BROWSER]\n"
+                        lambda url, **kw: ("[PUBLISHED PAGE OPENED IN A BROWSER]\n"
                                      "Full rendered quiz content here.", ""))
     arts = intake.from_links_in(ART)
     assert "Full rendered quiz content" in arts[0].text
@@ -150,7 +150,7 @@ def test_render_failure_keeps_the_old_honest_fallback(monkeypatch):
     monkeypatch.setenv("LINK_RENDER_ENABLED", "1")
     monkeypatch.setattr(intake, "fetch_link", lambda url: ("", ""))
     monkeypatch.setattr(lr, "read_rendered_link",
-                        lambda url: ("", "the page could not be rendered (TimeoutError)"))
+                        lambda url, **kw: ("", "the page could not be rendered (TimeoutError)"))
     arts = intake.from_links_in(ART)
     assert not arts[0].readable and arts[0].confirmed
     assert "rendered" in arts[0].note
@@ -182,7 +182,7 @@ def test_a_published_site_shell_is_opened_in_the_browser(monkeypatch):
     """The Day 04 failure mode: chrome long enough to pass for content."""
     monkeypatch.setenv("LINK_RENDER_ENABLED", "1")
     monkeypatch.setattr(intake, "fetch_link", lambda url: (SITE_CHROME, ""))
-    monkeypatch.setattr(lr, "read_rendered_link", lambda url: (REAL_WORK, ""))
+    monkeypatch.setattr(lr, "read_rendered_link", lambda url, **kw: (REAL_WORK, ""))
     arts = intake.from_links_in(NOTION)
     assert arts[0].readable
     assert "career plan" in arts[0].text          # the work, not the footer
@@ -195,7 +195,7 @@ def test_a_content_rich_fetch_never_starts_a_browser(monkeypatch):
     monkeypatch.setenv("LINK_RENDER_ENABLED", "1")
     monkeypatch.setattr(intake, "fetch_link", lambda url: (REAL_WORK, ""))
     monkeypatch.setattr(lr, "read_rendered_link",
-                        lambda url: pytest.fail("browser started for a rich page"))
+                        lambda url, **kw: pytest.fail("browser started for a rich page"))
     arts = intake.from_links_in(NOTION)
     assert arts[0].readable and "career plan" in arts[0].text
 
@@ -205,7 +205,7 @@ def test_a_thinner_render_never_replaces_a_better_fetch(monkeypatch):
     monkeypatch.setenv("LINK_RENDER_ENABLED", "1")
     monkeypatch.setattr(intake, "fetch_link", lambda url: (SITE_CHROME, ""))
     monkeypatch.setattr(lr, "read_rendered_link",
-                        lambda url: ("Loading...", ""))
+                        lambda url, **kw: ("Loading...", ""))
     arts = intake.from_links_in(NOTION)
     assert "cookies" in arts[0].text              # kept the better of the two
 
@@ -292,7 +292,7 @@ def test_an_interstitial_never_reaches_the_marker_and_never_buys_vision(monkeypa
     import app.utils.file_extractor as fe
     monkeypatch.setattr(fe, "_ocr_with_claude",
                         lambda images, kind: pytest.fail("paid to read an error page"))
-    monkeypatch.setattr(lr, "_render_raw", lambda url: (
+    monkeypatch.setattr(lr, "_render_raw", lambda url, **kw: (
         lr.Rendered(title="Notion", text=NOTION_INCOMPATIBLE,
                     screenshot_b64="x" * 100, final_url=ART), ""))
     text, why = lr.read_rendered_link(ART)
@@ -430,7 +430,7 @@ def test_a_worker_gives_up_on_a_busy_browser_instead_of_waiting_forever(monkeypa
     monkeypatch.setattr(lr, "check_public_url", lambda url: (True, ""))
     monkeypatch.setattr(lr, "LINK_RENDER_LOCK_WAIT_S", 0.05)
     monkeypatch.setattr(lr, "_render_raw",
-                        lambda url: pytest.fail("rendered while the lock was held"))
+                        lambda url, **kw: pytest.fail("rendered while the lock was held"))
     lr._render_lock.acquire()                      # another worker is mid-render
     try:
         rendered, why = lr.render_link(ART)
@@ -444,7 +444,7 @@ def test_the_lock_is_released_even_when_a_render_explodes(monkeypatch):
     monkeypatch.setenv("LINK_RENDER_ENABLED", "1")
     monkeypatch.setattr(lr, "check_public_url", lambda url: (True, ""))
 
-    def boom(url):
+    def boom(url, **kw):
         raise RuntimeError("chromium died")
 
     monkeypatch.setattr(lr, "_render_raw", boom)
@@ -457,7 +457,7 @@ def test_the_lock_is_released_even_when_a_render_explodes(monkeypatch):
 def test_the_host_gap_still_applies_when_the_lock_was_free(monkeypatch):
     monkeypatch.setenv("LINK_RENDER_ENABLED", "1")
     monkeypatch.setattr(lr, "check_public_url", lambda url: (True, ""))
-    monkeypatch.setattr(lr, "_render_raw", lambda url: (_rendered(text="x " * 200), ""))
+    monkeypatch.setattr(lr, "_render_raw", lambda url, **kw: (_rendered(text="x " * 200), ""))
     slept = []
     monkeypatch.setattr(lr.time, "sleep", lambda s: slept.append(s))
     lr._last_visit.clear()

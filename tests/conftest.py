@@ -14,9 +14,12 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _fresh_link_state():
-    from app.services import link_renderer
+    from app.services import link_renderer, submission_media
     link_renderer.forget_links()
     link_renderer.forget_pages()
+    link_renderer.forget_screenshots()
+    submission_media.forget_frames()
     yield
     link_renderer.forget_links()
     link_renderer.forget_pages()
+    link_renderer.forget_screenshots()

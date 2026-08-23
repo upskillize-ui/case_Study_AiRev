@@ -757,7 +757,8 @@ def review_with_knowledge(scope_type: str, scope_id: int, raw_source: dict,
                           rubric: dict, student_answer: str, word_count: int,
                           word_limit_min: int, word_limit_max: int,
                           background_tasks=None, student_id: int = 0,
-                          gate_overrides: Optional[dict] = None) -> Optional[dict]:
+                          gate_overrides: Optional[dict] = None,
+                          images: Optional[list] = None) -> Optional[dict]:
     """Shared entry for every review type: recall (or build) the knowledge
     pack, then run the gated pipeline. Returns the pipeline result, or None
     when no pack could be built (caller falls back to its legacy path).
@@ -779,6 +780,7 @@ def review_with_knowledge(scope_type: str, scope_id: int, raw_source: dict,
         rubric=rubric, student_answer=student_answer, word_count=word_count,
         word_limit_min=word_limit_min, word_limit_max=word_limit_max,
         student_id=student_id, gate_overrides_in=gate_overrides,
+        images=images,
         # The task's OWN words, for the wrong-task contradiction check — the
         # pack does not carry title/description (22 Aug defect, see
         # _task_text_for).
@@ -792,7 +794,7 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
                word_limit_min: int, word_limit_max: int,
                scope_id: int = 0, student_id: int = 0,
                gate_overrides_in: Optional[dict] = None,
-               task_text: str = "") -> dict:
+               task_text: str = "", images: Optional[list] = None) -> dict:
     """Full pipeline for one submission. Raises on AI failure — the route
     owns the fallback to the legacy path."""
     rubric_criteria = rubric.get("criteria", []) or []
@@ -870,9 +872,20 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
         + ((provenance + "\n\n") if provenance else "") \
         + ai_service.frame_student_text(learner_text)
 
+    # THE MARKER LOOKS AT THE WORK (23 Aug 2026). Pictures go BETWEEN the
+    # task and the learner's words: after the requirements, so the marker
+    # knows what it is looking for, and before the prose, so a caption cannot
+    # colour what it sees. Text-only submissions are byte-identical to before.
+    picture_blocks = list(images or [])
+    if picture_blocks:
+        print(f"[REVIEW] showing the marker {len(picture_blocks)} picture(s) "
+              f"of the learner's work")
+    judge_blocks = ([{"text": static_block, "cache": True}]
+                    + picture_blocks
+                    + [{"text": student_block, "cache": False}])
+
     review = normalise_review(ai_service.call_structured(
-        blocks=[{"text": static_block, "cache": True},
-                {"text": student_block, "cache": False}],
+        blocks=judge_blocks,
         schema=REVIEW_SCHEMA, tier="default", max_tokens=3500,
     ))
     scoring_path = "haiku-single"
@@ -880,8 +893,7 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
     if needs_escalation(review):
         print("ℹ️  Escalating to strong model (low confidence / garbage suspicion)")
         review = normalise_review(ai_service.call_structured(
-            blocks=[{"text": static_block, "cache": True},
-                    {"text": student_block, "cache": False}],
+            blocks=judge_blocks,
             schema=REVIEW_SCHEMA, tier="strong", max_tokens=3500,
             thinking_budget=int(os.getenv("THINKING_BUDGET", "2000")),
         ))
