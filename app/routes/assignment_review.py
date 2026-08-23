@@ -1085,12 +1085,35 @@ def _pipeline_assignment_response(tenant, submission, r, word_count, start_time,
         "plagiarismFlag":   "high" if duplicate else "low",
         **r["authorship"],
     }
+    # THE WRITER CAN REFUSE, AND THE ANSWER MUST SAY SO.
+    #
+    # grade_guard returns False when it will not let a mark exist. Ignoring
+    # that return value (as this did until 23 Aug) meant the route still
+    # answered success=True carrying result["totalScore"] = 0 — so the row was
+    # correctly left ungraded in the database while every consumer was told
+    # "scored 0". The bulk log printed "OK student 872 -> 0.0/10" for a
+    # student who had deliberately NOT been marked, in the very report used to
+    # decide whether to release a run to 183 people.
+    written = True
     try:
-        assignment_db_service.update_assignment_submission_with_ai_results(
+        written = assignment_db_service.update_assignment_submission_with_ai_results(
             tenant, submission["submissionId"], result, max_marks,
             manifest=manifest)
     except Exception as db_err:
         print(f"[ASSIGNMENT] DB update failed after pipeline review: {db_err}")
+    if written is False:
+        return {
+            "success": True,
+            "status": "not_graded",
+            "notGraded": True,
+            "needsInput": True,
+            "submission": submission,
+            "feedback": _empty_feedback(
+                "We could not complete a fair review of this attempt, so no "
+                "marks have been recorded. Nothing you submitted is lost — "
+                "it will be reviewed again.", helpful=True),
+            "processingTimeMs": int((time.time() - start_time) * 1000),
+        }
 
     print(f"[ASSIGNMENT] ✅ Pipeline review: score={scores['totalScore']} grade={grade} "
           f"path={r['decisions']['scoringPath']} gates={len(scores['gatesHit'])}")

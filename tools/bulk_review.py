@@ -298,6 +298,12 @@ def review_one(p: Pending, agent_url: str, api_key: str, timeout: int,
                           extra={"words": data.get("wordCount"),
                                  "was": data.get("previousGrade"),
                                  "outOf": data.get("outOf")})
+        if data.get("notGraded") or data.get("status") == "not_graded":
+            # The guard refused to let a mark exist. This is NOT a zero, and
+            # printing it as one is how "OK student 872 -> 0.0/10" appeared
+            # beside a row that had deliberately not been marked.
+            return Result(p, False, ms=ms, skipped="not_graded",
+                          detail="refused — no mark written, student told why")
         if data.get("status") == "wrong_task":
             # A ruling, not a failure: the row was read and judged to be a
             # different task's work — no mark written, student told what
