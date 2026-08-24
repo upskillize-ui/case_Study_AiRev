@@ -41,8 +41,14 @@ def verdict(ok: bool, message: str) -> None:
 
 
 def describe_progress(p: dict) -> str:
+    """`p` is the STATUS BODY ITSELF. The counters are top-level fields of
+    GET /api/review/jobs/{id} — total, done, skipped, failed, pending — not a
+    nested "progress" object. The first version of this file read
+    body["progress"], which does not exist, so every counter defaulted to
+    zero and the check timed out at 300s against a Space that was working."""
     return (f"{p.get('done', 0)} done, {p.get('skipped', 0)} skipped, "
-            f"{p.get('failed', 0)} failed, {p.get('pending', 0)} still queued")
+            f"{p.get('failed', 0)} failed, {p.get('pending', 0)} still queued "
+            f"(of {p.get('total', 0)})")
 
 
 def main() -> None:
@@ -131,21 +137,26 @@ def main() -> None:
                 body = s.json()
             except Exception:
                 continue
-            progress = body.get("progress") or {}
-            line = describe_progress(progress)
+            line = describe_progress(body)
             if line != last:
-                print(f"    {int(time.time() - started):>3}s  {line}")
+                print(f"    {int(time.time() - started):>3}s  {line} "
+                      f"[{body.get('state', '?')}]")
                 last = line
-            if progress.get("pending", 1) == 0:
+            # total==0 means the item row is not visible yet, NOT "drained".
+            if body.get("total", 0) > 0 and body.get("pending", 1) == 0:
                 elapsed = int(time.time() - started)
                 verdict(True, f"the queue drained in {elapsed}s")
+                for row in body.get("attention") or []:
+                    print(f"    NEEDS ATTENTION  submission "
+                          f"{row.get('submissionId')}: {row.get('state')} — "
+                          f"{row.get('detail')}")
                 print(f"\nRESULT: live auto-review WORKS on this Space.")
                 print(f"  A learner presses Submit, waits ~{took_ms} ms, and "
                       f"closes the page.")
                 print(f"  Their feedback appears about {elapsed} seconds later.")
                 print("\nStill to switch on for real submissions:")
                 print("  LMS:   AIREV_AUTO_REVIEW=1")
-                print("  LMS:   AIREV_AUTO_REVIEW_COURSES=<this course's id>")
+                print("  LMS:   AIREV_AUTO_REVIEW_COURSES=55")
                 print("  LMS:   deploy the student.js that calls /jobs/enqueue")
                 return
 
