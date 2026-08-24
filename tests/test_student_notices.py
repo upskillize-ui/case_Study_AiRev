@@ -146,7 +146,7 @@ def test_the_registry_covers_every_public_notice():
     plain_reason and publish_steps are excluded on purpose: they build PART
     of a message, they are never sent alone.
     """
-    helpers = {"publish_steps", "plain_reason", "urlparse"}
+    helpers = {"publish_steps", "plain_reason", "bot_protected_host", "urlparse"}
     public = {n for n in dir(sn)
               if not n.startswith("_") and callable(getattr(sn, n))
               and n not in helpers}

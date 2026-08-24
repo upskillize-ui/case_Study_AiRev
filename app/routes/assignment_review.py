@@ -368,8 +368,15 @@ def submit_and_review_assignment(
         }
 
     if not req.storeOnly and intake.is_unassessable(manifest, content):
-        msg = student_notices.link_opens_only_in_a_browser(
-            next((a.label for a in artefacts if a.kind == "link"), ""))
+        first_link = next((a.label for a in artefacts if a.kind == "link"), "")
+        # A site's own bot protection is not a private link. Telling a learner
+        # to "publish" a page that IS published is how they conclude the
+        # system is broken and stop trying.
+        blocked = any("human-check" in (a.note or "").lower()
+                      or "security check" in (a.note or "").lower()
+                      for a in artefacts if a.kind == "link")
+        msg = (student_notices.link_blocked_by_the_site(first_link) if blocked
+               else student_notices.link_opens_only_in_a_browser(first_link))
         print(f"[ASSIGNMENT] NOT SCORED (unassessable deliverable): "
               f"{word_count} words beside an unreadable link/file — no review run")
         return {

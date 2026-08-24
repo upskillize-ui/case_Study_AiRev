@@ -241,6 +241,57 @@ def wrong_task(what_it_is: str, task_title: str) -> str:
             f"against you. " + NO_MARK)
 
 
+# Hosts whose bot protection refuses a server outright. Nothing we can do
+# from our side, and nothing the learner did wrong — so the notice must ask
+# for a different FORM of the work rather than a "public" link they have
+# already made public.
+#
+# Verified live 24 Aug 2026: two published gamma.app decks, both returning
+# Cloudflare's human-check to the agent's browser. Day 09's own brief told
+# 76 learners to submit "a Gamma share link only (no PDFs or file uploads)",
+# which made their work unreadable by instruction.
+_BOT_PROTECTED = {
+    "gamma.app":   ("Gamma", "In Gamma use Share -> Export -> PDF, and upload "
+                             "that file with your link"),
+    "canva.com":   ("Canva", "In Canva use Share -> Download -> PDF, and upload "
+                             "that file with your link"),
+    "figma.com":   ("Figma", "Export your frames as PNG or PDF and upload them "
+                             "with your link"),
+}
+
+
+def bot_protected_host(url: str) -> tuple:
+    """(tool name, what to attach instead) for a host that refuses servers.
+
+    Returns ("", "") for everything else. Pure.
+    """
+    host = (urlparse(str(url or "")).hostname or "").lower().lstrip(".")
+    for known, (name, how) in _BOT_PROTECTED.items():
+        if host == known or host.endswith("." + known):
+            return name, how
+    return "", ""
+
+
+def link_blocked_by_the_site(url: str = "") -> str:
+    """The site's own bot protection refused us. Not the learner's doing.
+
+    This must never read like the "make your link public" notice: their link
+    IS public, and telling them to publish something already published is how
+    a learner concludes the system is broken and stops trying.
+    """
+    name, how = bot_protected_host(url)
+    if name:
+        return (f"Your link opened for people, but {name}'s security check "
+                f"blocks automated readers, so our reviewer could not see your "
+                f"work. This is not something you did wrong and your link is "
+                f"fine. {how}, then submit again — we will mark it from that. "
+                + NO_MARK)
+    return ("Your link opened for people, but the site's security check blocks "
+            "automated readers, so our reviewer could not see your work. This "
+            "is not something you did wrong. Please also attach a PDF export "
+            "or a few screenshots of your work and submit again. " + NO_MARK)
+
+
 def link_is_not_the_work(what_arrived: str, task_title: str) -> str:
     """The link opened, and what it showed was not this task's deliverable.
 
@@ -277,5 +328,6 @@ NOTICES = {
     "queued":             queued_for_review,
     "still_reviewing":    still_being_reviewed,
     "link_not_the_work":  link_is_not_the_work,
+    "link_blocked":       link_blocked_by_the_site,
     "media_not_read":     media_not_transcribed,
 }
