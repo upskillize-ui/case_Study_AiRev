@@ -99,6 +99,10 @@ SHEET_MAX_ROWS  = 300     # per sheet — enough for any coursework workbook
 SHEET_MAX_COLS  = 40
 SHEET_MAX_CHARS = 60000   # whole-workbook render cap; truncation is stated
 ZIP_MAX_FILES   = 25
+# Images inside a zip go through vision, which costs money — so the
+# number read is bounded and whatever is skipped is NAMED in the output.
+# Eight covers a slide deck exported as PNGs, which is what this is for.
+ZIP_MAX_IMAGES  = int(os.getenv("ZIP_MAX_IMAGES", "8"))
 ZIP_MAX_TOTAL   = 60 * 1024 * 1024   # unpacked-bytes bomb guard
 
 # Hard ceiling on returned text, enforced ONCE in extract_text_from_bytes().
@@ -1335,6 +1339,19 @@ def _extract_zip(data: bytes) -> Tuple[str, str]:
     if sum(i.file_size for i in infos) > ZIP_MAX_TOTAL:
         return "", f"zip unpacks beyond {ZIP_MAX_TOTAL // (1024*1024)}MB — too large to review"
 
+    # IMAGES INSIDE A ZIP ARE THE DELIVERABLE, NOT AN ATTACHMENT (24 Aug 2026).
+    #
+    # Student 312, Day 09: eight slides exported as PNGs and zipped —
+    # 1_Data-Science.png ... 8_Advantages-and-Challenges.png — and the row read
+    # "zip contained no readable files". Their whole deck was in there. A zip
+    # of images IS how people hand over a presentation, and refusing it told a
+    # learner who did the work that they had submitted nothing.
+    #
+    # Vision costs money, so it is bounded: only the first ZIP_MAX_IMAGES are
+    # read, and what is skipped is named in the output rather than silently
+    # dropped. That is the same trade the PDF path makes one line above.
+    images_read = 0
+
     out, skipped = [], []
     for info in infos[:ZIP_MAX_FILES]:
         inner_name = info.filename
@@ -1347,6 +1364,12 @@ def _extract_zip(data: bytes) -> Tuple[str, str]:
         except Exception:
             skipped.append(inner_name)
             continue
+        if inner_ext in IMAGE_EXTS:
+            if images_read >= ZIP_MAX_IMAGES:
+                skipped.append(f"{inner_name} (beyond the "
+                               f"{ZIP_MAX_IMAGES}-image limit for one zip)")
+                continue
+            images_read += 1
         text, why = _extract_inner(inner, inner_name, inner_ext)
         if text:
             out.append(f"===== FILE: {inner_name} =====\n{text}")
@@ -1381,6 +1404,8 @@ def _extract_inner(data: bytes, name: str, ext: str) -> Tuple[str, str]:
     if ext in TEXT_EXTS or ext in CODE_EXTS:
         body = _clean(data.decode("utf-8", errors="ignore"))[:SHEET_MAX_CHARS]
         return (body, "") if body else ("", "empty")
+    if ext in IMAGE_EXTS:
+        return _extract_image(data, ext)
     return "", f"unsupported inside zip ({ext or 'no extension'})"
 
 
