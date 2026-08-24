@@ -115,15 +115,46 @@ def test_fallback_off_without_a_gateway_never_means_no_claude(monkeypatch):
     assert [p.name for p in ai.providers()] == ["anthropic"]
 
 
-def test_the_final_provider_gets_no_retry_loop(monkeypatch):
-    """Retries exist to keep spend in the cheap seat. The last link keeps its
-    single attempt — its caller owns any further fallback (HuggingFace)."""
+def test_the_final_provider_ALSO_retries_a_transient_failure(monkeypatch):
+    """REVERSED 24 Aug 2026, by a live failure.
+
+    This test used to assert the opposite — "the last link keeps its single
+    attempt, its caller owns any further fallback (HuggingFace)". That
+    reasoning was wrong in two ways, and the second one cost a student their
+    review at 02:35:
+
+      1. call_structured has no HuggingFace fallback. The legacy analyze_answer
+         path does. So for every review that matters, the "caller owns the
+         fallback" premise was simply untrue — the exception reached the route
+         and became a 500.
+
+      2. PROVIDER_FALLBACK=off makes the gateway the ONLY provider, so the
+         SOLE provider is also the FINAL one. The setting chosen to control
+         cost silently removed every retry from every call.
+
+    Retries are about transience, not about having somewhere else to go. A
+    provider that says "temporarily unavailable, please retry later" should be
+    retried — most of all when there is nowhere else."""
     monkeypatch.delenv("STARTUPAPI_API_KEY", raising=False)
     monkeypatch.delenv("STARTUPAPI_BASE_URL", raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "direct-key")
     calls = []
     monkeypatch.setattr(ai, "_client_for",
                         lambda p: _FakeClient([_Err(503)], calls, p.name))
+    with pytest.raises(_Err):
+        ai.create_message(_sleeper=lambda s: None, model="m", messages=[])
+    assert calls == ["anthropic"] * (1 + ai.GATEWAY_RETRIES)
+
+
+def test_a_permanent_failure_on_the_final_provider_still_fails_fast(monkeypatch):
+    """The half of the old test that was right: waiting cannot cure a bad key,
+    and burning four attempts on it only delays the honest error."""
+    monkeypatch.delenv("STARTUPAPI_API_KEY", raising=False)
+    monkeypatch.delenv("STARTUPAPI_BASE_URL", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "direct-key")
+    calls = []
+    monkeypatch.setattr(ai, "_client_for",
+                        lambda p: _FakeClient([_Err(401)], calls, p.name))
     with pytest.raises(_Err):
         ai.create_message(_sleeper=lambda s: None, model="m", messages=[])
     assert calls == ["anthropic"]

@@ -315,10 +315,26 @@ def create_message(_sleeper=None, **kwargs):
     last_error = None
     for index, provider in enumerate(chain):
         remaining = chain[index + 1:]
-        # Only a provider with someone behind it earns retries — it is the
-        # cheap seat we are trying to keep the spend in. The final provider
-        # gets one attempt, as before; its caller owns any further fallback.
-        tries = 1 + (GATEWAY_RETRIES if remaining else 0)
+        # RETRIES ARE ABOUT TRANSIENCE, NOT ABOUT HAVING A FALLBACK.
+        #
+        # This used to read `GATEWAY_RETRIES if remaining else 0` — retries
+        # only for a provider with someone behind it. That reasoning held
+        # while a fallback existed: the retry was there to keep spend in the
+        # cheap seat rather than to survive an outage.
+        #
+        # Then PROVIDER_FALLBACK=off made the gateway the ONLY provider, and
+        # `remaining` became empty — so the configuration chosen to control
+        # cost silently removed every retry. 24 Aug 02:35, mid-run:
+        #
+        #     503 - Provider capacity is temporarily unavailable.
+        #           Please retry later.
+        #
+        # The provider ASKED us to retry. We raised a 500 instead and the
+        # student's review failed, on a blip that clears in seconds.
+        #
+        # A sole provider needs retries MORE than a chained one, not less:
+        # there is nowhere else to go.
+        tries = 1 + GATEWAY_RETRIES
         for attempt in range(tries):
             try:
                 response = _client_for(provider).messages.create(**kwargs)
