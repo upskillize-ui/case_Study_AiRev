@@ -189,11 +189,16 @@ def enqueue_one(req: EnqueueRequest, tenant: Tenant = Depends(get_tenant),
             raise HTTPException(status_code=400,
                                 detail="Send submissionId or studentId.")
         from app.database import DUAL_ID_MATCH
+        # DUAL_ID_MATCH binds the learner's id THREE times — students.id,
+        # users.id, and the mapping between them. Binding it twice is a
+        # parameter-count mismatch, which MySQL answers with an error and
+        # FastAPI turns into a 500. Every other caller passes it three times;
+        # this one did not, and the enqueue route 500'd on its first real use.
         rows = tquery(
             tenant,
             f"SELECT id FROM assignment_submissions WHERE assignment_id = %s "
             f"AND ({DUAL_ID_MATCH}) ORDER BY submitted_at DESC, id DESC LIMIT 1",
-            (req.assignmentId, req.studentId, req.studentId))
+            (req.assignmentId, req.studentId, req.studentId, req.studentId))
         if not rows:
             raise HTTPException(
                 status_code=404,
