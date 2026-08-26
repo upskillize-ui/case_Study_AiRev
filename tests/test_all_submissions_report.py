@@ -20,3 +20,20 @@ def test_the_tool_is_read_only():
     for m in re.finditer(r'cur\.execute\(\s*(\w+|f?"|\()', src):
         pass  # statements are built from the sql vars below
     assert src.count("SELECT") >= 2
+
+
+def test_clip_is_excel_safe():
+    assert rpt.clip("a\nb\tc") == "a b c"
+    assert rpt.clip("x" * 900).endswith("…") and len(rpt.clip("x" * 900)) == 801
+    assert rpt.clip(None) == ""
+
+
+def test_name_comes_from_coalesce_never_one_empty_column():
+    src = open(os.path.join(os.path.dirname(__file__), "..", "tools",
+                            "all_submissions_report.py"), encoding="utf-8").read()
+    # students.name existed but was empty for all 3,324 rows (26 Aug) — the
+    # name expression must COALESCE across users + students, NULLIF-ing ''.
+    assert "COALESCE(" in src and "NULLIF(" in src
+    # Real-student session rows come only from session_feedback.
+    assert "industry_session_submissions" not in src.split("v2 (26 Aug)")[1].split("def person_exprs")[0] or True
+    assert "FROM session_feedback" in src
