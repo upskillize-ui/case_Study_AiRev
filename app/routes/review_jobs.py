@@ -79,7 +79,12 @@ def select_rows(tenant, assignment_id: int, below: float | None) -> list:
                COALESCE(s.file_path, '')           AS file_ref
         FROM assignment_submissions s
         WHERE s.assignment_id = %s
+          AND COALESCE(s.status, '') <> 'draft'
         ORDER BY s.submitted_at DESC, s.id DESC""", (assignment_id,)) or []
+    # 'draft' rows are NOT submissions: the LMS creates one the moment a
+    # student merely OPENS an assignment (to hold time-spent). They carry no
+    # student work and are silently excluded — never reviewed, never zeroed,
+    # never messaged (Ranjana, 26 Aug).
 
     latest: dict = {}
     for r in rows:
@@ -197,7 +202,8 @@ def enqueue_one(req: EnqueueRequest, tenant: Tenant = Depends(get_tenant),
         rows = tquery(
             tenant,
             f"SELECT id FROM assignment_submissions WHERE assignment_id = %s "
-            f"AND ({DUAL_ID_MATCH}) ORDER BY submitted_at DESC, id DESC LIMIT 1",
+            f"AND ({DUAL_ID_MATCH}) AND COALESCE(status, '') <> 'draft' "
+            f"ORDER BY submitted_at DESC, id DESC LIMIT 1",
             (req.assignmentId, req.studentId, req.studentId, req.studentId))
         if not rows:
             raise HTTPException(

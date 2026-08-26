@@ -61,6 +61,11 @@ def read_one(path: str) -> bool:
     """End to end on a real file — the only check that proves the whole chain."""
     if not os.path.exists(path):
         return _row(f"read {path}", False, "no such file")
+    if os.path.isdir(path):
+        # pytest passes its own "tests" argument into sys.argv, and opening a
+        # directory raises PermissionError on Windows — the recurring local
+        # test failure of 26 Aug.
+        return _row(f"read {path}", False, "a folder, not a media file")
     from app.services.submission_media import frames_for, transcribe_and_describe
 
     with open(path, "rb") as fh:

@@ -183,7 +183,10 @@ def fetch_pending(conn, review_type: str, item_id: int | None,
         FROM {cfg['table']} s
         JOIN {cfg['item_table']} i ON i.id = s.{cfg['item_fk']}
         WHERE {grade_filter}
+          AND COALESCE(s.status, '') <> 'draft'
     """
+    # 'draft' rows are created when a student merely OPENS an assignment —
+    # they hold time-spent, not work. Never reviewed, never zeroed.
     params: list = []
     if item_id:
         sql += f" AND s.{cfg['item_fk']} = %s"

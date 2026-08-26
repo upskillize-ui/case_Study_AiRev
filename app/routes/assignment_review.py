@@ -785,6 +785,15 @@ def re_review_assignment(
             status_code=404,
             detail=f"Submission {submission_id} not found in tenant '{tenant.id}'")
 
+    # A 'draft' row is not a submission — the LMS creates one when a student
+    # merely OPENS an assignment. Skip silently: no review, no zero, no
+    # message to the student (Ranjana, 26 Aug).
+    if (row.get("status") or "") == "draft":
+        return {"success": False, "skipped": "draft",
+                "submissionId": submission_id,
+                "detail": "This row is an unsubmitted draft (the student only "
+                          "opened the assignment). Nothing to review."}
+
     assignment = assignment_db_service.get_assignment_by_id(tenant, row["assignment_id"])
     if not assignment:
         raise HTTPException(
