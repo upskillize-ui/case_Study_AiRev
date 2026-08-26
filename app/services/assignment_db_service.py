@@ -192,8 +192,14 @@ def save_assignment_submission(
            ON DUPLICATE KEY UPDATE
              id           = LAST_INSERT_ID(id),
              notes        = VALUES(notes),
-             file_path    = VALUES(file_path),
-             file_name    = VALUES(file_name),
+             -- COALESCE: this upsert shares the row with the LMS Coursework
+             -- writer, which stores the upload's URL FIRST. The agent's
+             -- storeOnly call historically carried no fileUrl, so a plain
+             -- VALUES() here overwrote that URL with NULL seconds after it
+             -- was saved — the source of every "text but no stored file"
+             -- row. A NULL from any writer must never erase a stored file.
+             file_path    = COALESCE(VALUES(file_path), file_path),
+             file_name    = COALESCE(VALUES(file_name), file_name),
              status       = 'submitted',
              submitted_at = NOW(),
              grade        = NULL,

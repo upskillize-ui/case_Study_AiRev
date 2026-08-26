@@ -104,7 +104,16 @@ def test_the_prompt_forbids_the_model_from_weighting():
 def test_the_schema_gives_the_model_no_weight_field():
     props = rs.REQUIREMENTS_SCHEMA["properties"]["requirements"]["items"]["properties"]
     assert "maxScore" not in props and "weight" not in props
-    assert set(props) == {"name", "what_earns_it", "evidenceable"}
+    # "role" is a classification (core vs supporting), not a number — the
+    # 70/30 arithmetic stays in Python, so the model still sets no weights.
+    # "brief_marks" is a COPY of marks the faculty printed in the brief's own
+    # grading table — copying is not deciding, so the no-invented-weights
+    # rule stands.
+    assert set(props) == {"name", "what_earns_it", "evidenceable", "role",
+                          "brief_marks"}
+    assert set(props["role"]["enum"]) == {"core", "supporting"}
+    assert "brief_marks" not in rs.REQUIREMENTS_SCHEMA[
+        "properties"]["requirements"]["items"]["required"]
 
 
 def test_the_version_bumped_so_cached_invented_rubrics_re_derive():

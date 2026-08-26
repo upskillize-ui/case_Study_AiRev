@@ -62,7 +62,7 @@ _TABLE = "derived_rubrics"
 #       task asks for, in the task's own words; weighting is arithmetic
 #       (requirements_to_criteria) and unprovable requirements are
 #       excluded from scoring instead of failed by the whole cohort.
-RUBRIC_VERSION = 6
+RUBRIC_VERSION = 7
 # Per-tenant: one tenant's CREATE TABLE must never suppress another's.
 _tables_ready: set = set()
 
@@ -126,8 +126,12 @@ REQUIREMENTS_SCHEMA = {
                                       "description": "One sentence: what the submitted text or files must contain for this requirement to be fully done. Must be answerable from the submission alone."},
                     "evidenceable": {"type": "boolean",
                                      "description": "TRUE if a marker holding only the student's text and files could tell whether this was done. FALSE for anything the finished work cannot show: which tool or model made it, which settings were toggled, the order steps were taken in, posting to WhatsApp or a group, attendance, or whether a link is live."},
+                    "role": {"type": "string", "enum": ["core", "supporting"],
+                             "description": "core = the main thing the task tells the learner to BUILD or CREATE (the app, the website, the deck, the written piece itself). supporting = evidence and notes AROUND that main thing: research screenshots, process write-ups, extra screenshots of the built thing, 'what went wrong' stories. Most tasks have exactly ONE core item."},
+                    "brief_marks": {"type": "integer", "minimum": 0, "maximum": 100,
+                                    "description": "ONLY when the task text ITSELF states marks for this item (a grading table like 'Design & Presentation - 2 marks'): copy that number exactly. Omit when the brief states no marks for it. Never invent a number."},
                 },
-                "required": ["name", "what_earns_it", "evidenceable"],
+                "required": ["name", "what_earns_it", "evidenceable", "role"],
             },
         },
         "word_min": {"type": "integer", "minimum": 0, "maximum": 2000,
@@ -152,8 +156,9 @@ Your only source is the task text below. Read it and write down what it tells th
 RULES:
 1. EVERY REQUIREMENT COMES FROM THE TASK'S OWN WORDS. If the task says "create a dashboard from a data set using Gemini Canvas", the requirements are the dashboard and the data set. Use the task's vocabulary so a student who read the brief recognises every line.
 2. NEVER ADD A REQUIREMENT THE TASK DOES NOT STATE. No "depth of analysis", no "structure and clarity", no "critical reasoning", no "sources cited", no "iterative refinement" — unless the task asks for it in those terms. A requirement the brief never mentioned fails students for a rule they were never given, and that is the single worst thing this system can do.
+2b. OPTIONAL IS NEVER A REQUIREMENT. Anything the brief marks as optional — "optional", "not mandatory", "you may", "if you wish", "if you want", "can also", or an equivalent — carries NO marks: leave it out of requirements entirely. It may be mentioned in feedback as coaching, never scored. Likewise, PREPARATION STEPS ARE NOT DELIVERABLES: when the brief tells the learner to research, brainstorm, or gather ideas (on Perplexity, ChatGPT, or anywhere) AS A WAY TO PRODUCE the deliverable, that step is a means, not a thing to submit — do not require a research write-up, notes, or process narrative unless the brief explicitly asks for one to be SUBMITTED. (Live failure this rule exists to prevent: a brief said "research ideas, build an app with Replit Agent, publish and share the link" — research was optional ideation, yet it became an equal-weight requirement, and learners who submitted exactly what was asked, a working published app, lost a full share of the marks for notes nobody asked them to hand in.)
 3. A SHORT TASK HAS FEW REQUIREMENTS. One sentence asking for one thing yields ONE requirement. Do not pad to look thorough. Two honest requirements beat six invented ones.
-4. DO NOT ASSIGN WEIGHTS. You list what was asked; the system weights every requirement equally. This is deliberate — you are not permitted to decide that one part of the brief is worth more than another.
+4. DO NOT ASSIGN WEIGHTS. You list what was asked; the system does the weighting. This is deliberate — you are not permitted to decide that one part of the brief is worth more than another. ONE EXCEPTION: when the task text ITSELF assigns marks to items (a grading table such as "Design & Presentation - 2 marks, Use of Canva AI - 2 marks"), copy each stated number into brief_marks exactly — the faculty's own numbers ARE the weights and they override everything. Copying is not deciding; inventing a number the brief does not state is forbidden.
 5. MARK evidenceable=false FOR ANYTHING THE FINISHED WORK CANNOT SHOW. A finished artifact carries no record of which AI made it, which mode was enabled, or in what order the steps were taken. Nor can the marker see WhatsApp, attendance, the LMS, or open a live URL. Those requirements are real instructions to the learner but unmarkable evidence, so they are excluded from scoring rather than failed by everyone.
    - "Use Gemini Canvas to build it"      -> evidenceable=false (a dashboard does not name its maker)
    - "A dashboard is present"             -> evidenceable=true
@@ -161,6 +166,7 @@ RULES:
    - "A published link is provided"       -> evidenceable=true (visible in the submission)
 6. REQUIREMENTS MUST BE INDEPENDENT. Each names a DIFFERENT thing the task asked for. Never split one thing into two lines — a single shortcoming must never be chargeable twice.
 7. HOW WELL each requirement was done is judged later, by a different step, on a 0-100 scale. Your job is only to say WHAT was asked. So write requirements that can be done well or badly, and do not smuggle a quality bar into the wording unless the task states one.
+8. MARK EACH REQUIREMENT'S ROLE. role="core" is the main thing the task tells the learner to BUILD or CREATE — the app, the website, the presentation, the written piece itself. role="supporting" is everything asked AROUND it: research screenshots, "3 lines about your idea", extra screenshots of the built thing, "what went wrong and how you fixed it" stories. Most tasks have exactly ONE core item. The system gives core the large majority of the marks, because a learner who built the real thing must never fail on paperwork around it — and paperwork alone must never pass a learner who built nothing.
 
 Also report word_min/word_max for the written part and the primary form of the deliverable. When the deliverable is an image, file, link or artifact, the written part is a caption: set word_min low (0-40)."""
 
@@ -363,6 +369,39 @@ def requirements_to_criteria(requirements: list) -> list:
     if dropped:
         print("ℹ️  requirements: excluded from scoring (a finished submission "
               f"cannot show these) {[str(r.get('name'))[:50] for r in dropped]}")
+
+    # FACULTY MARKS FIRST: when the brief itself publishes a marks table,
+    # those numbers are the weights — they override core/supporting and
+    # equal split alike. An item the table missed gets the table's average
+    # so it is neither free nor fatal. normalise() rescales to 100.
+    stated = [_as_int(r.get("brief_marks")) for r in keepable
+              if _as_int(r.get("brief_marks")) > 0]
+    if stated:
+        avg = max(1, round(sum(stated) / len(stated)))
+        return normalise([{"name": r["name"],
+                           "maxScore": _as_int(r.get("brief_marks")) or avg,
+                           "what_earns_it": r.get("what_earns_it", "")}
+                          for r in keepable])
+
+    # CORE-DOMINANT weighting (fixed arithmetic, never the model's choice):
+    # when the task has both a core deliverable and supporting items, core
+    # items share 70 and supporting items share 30 — a learner who built the
+    # real thing lands above 60% before any paperwork is counted, and the
+    # paperwork alone can never pass a learner who built nothing. When roles
+    # are missing or uniform, weighting stays equal (the pre-v7 behaviour).
+    core = [r for r in keepable if r.get("role") == "core"]
+    # Anything not explicitly core counts as supporting — a missing or
+    # misspelled role must never make a requirement vanish from scoring.
+    supporting = [r for r in keepable if r not in core]
+    if core and supporting:
+        # Core first: normalise() keeps at most 6 criteria, so if the brief
+        # lists more, the supporting tail is what gets clipped — never core.
+        raw = ([{"name": r["name"], "maxScore": round(7000 / len(core)),
+                 "what_earns_it": r.get("what_earns_it", "")} for r in core]
+               + [{"name": r["name"], "maxScore": round(3000 / len(supporting)),
+                   "what_earns_it": r.get("what_earns_it", "")}
+                  for r in supporting])
+        return normalise(raw)
 
     # Equal weights in, normalise() splits the 100 and absorbs the rounding.
     return normalise([{"name": r["name"], "maxScore": 100,

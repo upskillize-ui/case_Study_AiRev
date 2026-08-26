@@ -93,13 +93,17 @@ def test_a_resubmit_clears_the_stale_grade_and_feedback(monkeypatch):
 
 
 def test_the_new_content_replaces_the_old_on_every_column_we_write(monkeypatch):
-    """A resubmit that kept the old file_path would review last week's
-    upload against this week's notes."""
+    """A resubmit WITH a new file still replaces last week's upload (COALESCE
+    lets a non-NULL value win). But a NULL must no longer erase a stored file:
+    the LMS writer stores the upload URL first and the agent's storeOnly call
+    historically carried no fileUrl — plain VALUES() wiped the URL seconds
+    after it was saved, growing the "text but no stored file" count daily."""
     calls, _ = _save(monkeypatch)
     _, sql, _ = calls[0]
     update_clause = sql.split("ON DUPLICATE KEY UPDATE", 1)[1]
-    for col in ("notes", "file_path", "file_name"):
-        assert re.search(rf"{col}\s*=\s*VALUES\({col}\)", update_clause), col
+    assert re.search(r"notes\s*=\s*VALUES\(notes\)", update_clause)
+    for col in ("file_path", "file_name"):
+        assert f"COALESCE(VALUES({col}), {col})" in update_clause, col
 
 
 def test_none_answer_text_is_stored_as_empty_string_not_null(monkeypatch):
