@@ -115,6 +115,40 @@ MAX_LIST_ITEMS = int(os.getenv("FEEDBACK_MAX_LIST_ITEMS", "3"))
 MAX_CONCEPTS = int(os.getenv("FEEDBACK_MAX_CONCEPTS", "4"))
 
 
+_JARGON = [
+    # Grading-machinery words banned from student-facing text (judge rule 17).
+    # The prompt forbids them, but a prompt is a request, not a guarantee —
+    # live 26 Aug: "The rubric asks for 3 lines" reached a student card. This
+    # scrub is deterministic, so the words can never reach a student again.
+    (re.compile(r"\bthe rubric\b", re.I), "the task"),
+    (re.compile(r"\brubrics\b", re.I), "task requirements"),
+    (re.compile(r"\brubric\b", re.I), "task"),
+    (re.compile(r"\bcriteria\b", re.I), "points"),
+    (re.compile(r"\bcriterion\b", re.I), "point"),
+    (re.compile(r"\bdeliverables\b", re.I), "work"),
+    (re.compile(r"\bdeliverable\b", re.I), "work"),
+    (re.compile(r"\bsubmission manifest\b", re.I), "submission"),
+    (re.compile(r"\bmanifest\b", re.I), "submission"),
+    (re.compile(r"\bnarrative\b", re.I), "story"),
+]
+
+
+def simple_english(text: str) -> str:
+    """Scrub grading jargon out of one student-facing sentence. Pure.
+
+    Word-level replacement only — sentence meaning, casing of the rest of
+    the line, and everything else stay untouched.
+    """
+    def _keep_case(plain):
+        # "The rubric asks" -> "The task asks", not "the task asks".
+        def sub(m):
+            return plain[0].upper() + plain[1:] if m.group(0)[0].isupper() else plain
+        return sub
+    for pattern, plain in _JARGON:
+        text = pattern.sub(_keep_case(plain), text)
+    return text
+
+
 def _tidy(text: str, limit: int) -> str:
     """Trim to a SENTENCE boundary under `limit`, and strip markdown emphasis.
 
@@ -985,14 +1019,15 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
                      for c in review.get("criteria", []) if c.get("note")][:6]
     if not fb_points:
         fb_points = [p for p in (review.get("improvements") or []) if p]
-    hard_truth = (review.get("hard_truth") or "").strip()
+    hard_truth = simple_english((review.get("hard_truth") or "").strip())
+    fb_points = [simple_english(p) for p in fb_points]
 
     return {
         "scores": scores,
         "howYouScored": build_how_you_scored(scores, pack, review["concepts_missing"]),
         "languageReport": review["language_report"],
-        "strengths": review["strengths"],
-        "improvements": review["improvements"],
+        "strengths": [simple_english(p) for p in (review["strengths"] or [])],
+        "improvements": [simple_english(p) for p in (review["improvements"] or [])],
         "feedbackPoints": fb_points,
         "hardTruth": hard_truth,
         # detailedFeedback kept for any older UI: points joined + hard truth.
