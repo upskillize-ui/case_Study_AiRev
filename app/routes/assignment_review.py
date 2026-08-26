@@ -770,6 +770,7 @@ def re_review_assignment(
     submission_id: int,
     dryRun: bool = False,
     force: bool = False,
+    allowLower: bool = False,
     tenant: Tenant = Depends(get_tenant),
     x_admin_key: str = Header(default=""),
 ):
@@ -1005,6 +1006,27 @@ def re_review_assignment(
                            f"Grade cleared per policy — wrong work is not "
                            f"graded. The learner should resubmit the correct "
                            f"deliverable.")}
+
+    # GRADE FLOOR (Ranjana, 26 Aug): a re-review must not quietly LOWER a
+    # mark a student already has — batch re-runs exist to correct unfair LOW
+    # scores, and a surprise drop erodes trust faster than an inflated mark.
+    # Pass allowLower=true for a deliberate downward correction.
+    new_pct = (r.get("scores") or {}).get("totalScore")
+    if (previous_grade is not None and new_pct is not None and not allowLower):
+        new_marks = round(float(new_pct) * max_marks / 100, 1)
+        if new_marks < float(previous_grade):
+            print(f"[REGRADE] submission {submission_id}: new mark "
+                  f"{new_marks} < existing {previous_grade} — existing grade "
+                  f"kept (allowLower not set)")
+            return {"success": False, "skipped": "kept_higher_previous_grade",
+                    "submissionId": submission_id,
+                    "previousGrade": previous_grade,
+                    "wouldHaveBeen": new_marks,
+                    "artefacts": inventory,
+                    "detail": (f"Re-review scored {new_marks}/{max_marks}, "
+                               f"below the existing {previous_grade}. The "
+                               f"existing grade stands. Pass allowLower=true "
+                               f"to apply the lower mark deliberately.")}
 
     # Same persistence the normal path uses, pointed at the EXISTING row.
     # attemptNumber is echoed from the row so nothing downstream invents a

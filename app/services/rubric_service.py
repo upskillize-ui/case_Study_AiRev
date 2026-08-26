@@ -360,6 +360,15 @@ def requirements_to_criteria(requirements: list) -> list:
     if not clean:
         return [dict(c) for c in FALLBACK_CRITERIA]
 
+    # A "Total" line is table arithmetic, not a task item. Copied as a
+    # requirement it doubles the marks pool (Canva day: 2+2+2+2+1+1 plus a
+    # phantom "Total 10" halves every real item), so it is dropped by NAME —
+    # deterministic, no model judgement involved.
+    _sum_row = re.compile(r"^\s*(grand\s+)?(total|overall|sum)\b", re.I)
+    clean = [r for r in clean if not _sum_row.match(str(r.get("name", "")))]
+    if not clean:
+        return [dict(c) for c in FALLBACK_CRITERIA]
+
     keepable = [r for r in clean if r.get("evidenceable", True)]
     dropped = [r for r in clean if not r.get("evidenceable", True)]
     if not keepable:
@@ -389,9 +398,19 @@ def requirements_to_criteria(requirements: list) -> list:
     # real thing lands above 60% before any paperwork is counted, and the
     # paperwork alone can never pass a learner who built nothing. When roles
     # are missing or uniform, weighting stays equal (the pre-v7 behaviour).
-    core = [r for r in keepable if r.get("role") == "core"]
-    # Anything not explicitly core counts as supporting — a missing or
-    # misspelled role must never make a requirement vanish from scoring.
+    # Evidence-about-the-work can never BE the work: an item named
+    # screenshot / research / notes / write-up / "N lines" is supporting by
+    # definition, whatever the model tagged it. This guard stops a mis-tag
+    # from handing 70% of the marks to "2 screenshots of your app" while the
+    # app itself splits the 30.
+    _never_core = re.compile(
+        r"screenshot|research|notes?\b|write[- ]?up|\b\d+\s*lines?\b|"
+        r"what went wrong|debug", re.I)
+    core = [r for r in keepable
+            if r.get("role") == "core"
+            and not _never_core.search(str(r.get("name", "")))]
+    # Anything not core counts as supporting — a missing or misspelled role
+    # must never make a requirement vanish from scoring.
     supporting = [r for r in keepable if r not in core]
     if core and supporting:
         # Core first: normalise() keeps at most 6 criteria, so if the brief

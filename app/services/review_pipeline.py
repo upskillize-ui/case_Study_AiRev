@@ -130,6 +130,11 @@ _JARGON = [
     (re.compile(r"\bsubmission manifest\b", re.I), "submission"),
     (re.compile(r"\bmanifest\b", re.I), "submission"),
     (re.compile(r"\bnarrative\b", re.I), "story"),
+    # Second-generation machinery-speak, added 26 Aug before it appears live.
+    (re.compile(r"\bmarking scheme\b", re.I), "task"),
+    (re.compile(r"\b(grading|evaluation|assessment) criteria\b", re.I),
+     "task points"),
+    (re.compile(r"\bthe grader\b", re.I), "the reviewer"),
 ]
 
 
