@@ -665,9 +665,22 @@ def names_this_task(what_it_is: str, task_text: str) -> bool:
 # run on X alone, the part that says what the work IS: matching against the
 # negation clause would void every verbose ruling, including the legitimate
 # ones (the Asian Paints deck's ruling also ends "...not a 5-year plan").
+# Where the identification stops describing THE SUBMISSION and starts
+# describing THE TASK. Only the first part may be tested for overlap with the
+# task text — the second part quotes the task by definition, so testing it
+# concludes "they did the task" from the model's own restatement of the brief.
+#
+# Live 28 Aug, Day 15: "A photograph or AI-generated image of a jewelry shop
+# storefront. The task requires a 60-90 second video" — the words "video" and
+# "60-90" come from the SECOND sentence, the ruling was voided on them, and a
+# storefront photo was scored 0.3/10 instead of returned unmarked with a
+# reason. Policy for wrong work is NO grade, not a low grade.
 _NEGATION_SPLIT = re.compile(
     r",?\s+(?:not\s|rather than\s|instead of\s|as opposed to\s|with no\b|"
-    r"no evidence of\s|without\s|lacking\s|unrelated to\s|—\s*not\s)", re.I)
+    r"no evidence of\s|without\s|lacking\s|unrelated to\s|—\s*not\s)|"
+    r"[.;]\s+(?:the|this)\s+(?:task|assignment|brief|question)\b|"
+    r"\s+(?:but|whereas|while|however)\s+the\s+(?:task|assignment|brief)\b",
+    re.I)
 
 # Career-choice exclusion in the judge's own words — the reasoning Ranjana's
 # 21 Aug ruling forbids outright ("any career counts"). Live 22 Aug: "falls

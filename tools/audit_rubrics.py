@@ -62,8 +62,35 @@ from app.services.rubric_service import (  # noqa: E402
 
 RULE = "─" * 78
 
-# The same eight the course runs on, smallest first.
-COURSE_ASSIGNMENTS = [23, 22, 21, 14, 19, 20, 18, 17]
+# Every ACTIVE assignment of the 30-day course (course 55), in day order.
+#
+# This list was eight ids and went stale the moment Days 07-15 were added —
+# so `--course` silently audited a third of the cohort and reported "all
+# clear" for days it had never looked at. Day 11 was one of them, and its
+# rubric caps a perfect submission at 8.5/10.
+#
+# Confirm against `python tools/list_assignments.py` whenever days are added:
+# an audit that quietly skips a day is worse than no audit, because it is
+# believed.
+COURSE_ASSIGNMENTS = [
+    14,  # Day 01  ChatGPT AI Agent
+    17,  # Day 01  Yourself in 5 years
+    18,  # Day 02  Claude artifact
+    19,  # Day 03  Fintech
+    20,  # Day 03  AI Transformation
+    21,  # Day 04  Notion
+    22,  # Day 05  Gemini Notebook
+    23,  # Day 06  Suno
+    24,  # Day 07  Gemini Canvas
+    25,  # Day 08  Lovable
+    26,  # Day 09  Gamma
+    27,  # Day 10  Nano Banana
+    28,  # Day 11  Yoodli
+    29,  # Day 12  Replit Agent
+    30,  # Day 13  Canva
+    31,  # Day 14  Figma
+    32,  # Day 15  ElevenLabs
+]
 
 # A written answer can be as long as it likes. A caption cannot, and a length
 # minimum above this on an artefact task is a penalty on doing as you were told.

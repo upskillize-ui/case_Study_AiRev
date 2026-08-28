@@ -430,3 +430,63 @@ def test_the_other_two_voiders_are_untouched():
     assert "PERSONAL plan" in rp.wrong_task_void_reason(plan, DAY15)
     domain = "An infographic that falls entirely outside the FinTech domain"
     assert "domain-exclusion" in rp.wrong_task_void_reason(domain, DAY15)
+
+
+# ── The void read the model's restatement of the BRIEF (28 Aug 2026) ───────
+# wrong_task_void_reason tests the identification for word overlap with the
+# task text. But the model often writes two sentences: what the learner SENT,
+# then what the task ASKED. Testing the second concludes "they did the task"
+# from the brief quoted back at us.
+#
+# Live, Day 15: "A photograph or AI-generated image of a jewelry shop
+# storefront. The task requires a 60-90 second video" — voided on "video" and
+# "60-90", both from the second sentence, and a storefront photo was scored
+# 0.3/10. Policy for wrong work is NO grade with a reason, never a low grade;
+# a 0.3 tells the student their work was poor when it was simply not this task.
+
+from app.services.review_pipeline import wrong_task_void_reason
+
+DAY15 = ("Day 15: ElevenLabs Assignment Create a 60-90 second video for a "
+         "business using ChatGPT and ElevenLabs")
+
+
+def test_the_task_restatement_cannot_void_the_ruling():
+    reason = wrong_task_void_reason(
+        "A photograph or AI-generated image of a jewelry shop storefront. "
+        "The task requires a 60-90 second video", DAY15)
+    assert reason == "", f"voided on the brief quoted back at us: {reason}"
+
+
+@pytest.mark.parametrize("tail", [
+    "But the task asks for a 60-90 second video.",
+    "However the assignment requires a video with a voiceover.",
+    "The assignment brief asks for a 60-90 second business video.",
+    "While the task expects a video, this is a still image.",
+])
+def test_every_way_the_model_pivots_to_the_brief(tail):
+    reason = wrong_task_void_reason(
+        f"A photograph of a jewelry shop storefront. {tail}", DAY15)
+    assert reason == "", f"voided by the pivot {tail!r}: {reason}"
+
+
+def test_course_material_is_still_not_the_learners_work():
+    assert wrong_task_void_reason(
+        "This is a teaching aid or assignment instruction sheet for Day 15, "
+        "not the learner's work", DAY15) == ""
+
+
+# ── the protections that must survive ──────────────────────────────────────
+# Un-grading a REAL attempt is far worse than grading a wrong one, so the
+# voiders that stop over-eager wrong_task rulings must keep firing.
+
+def test_a_genuine_submission_is_never_un_graded():
+    reason = wrong_task_void_reason(
+        "A 60-90 second promotional video for a gold loan business with an "
+        "ElevenLabs voiceover", DAY15)
+    assert reason, "a real attempt at this task would have been un-graded"
+
+
+def test_a_career_choice_is_never_grounds():
+    assert wrong_task_void_reason(
+        "A personal 5-year career plan as a lawyer",
+        "Day 01 Create an image of yourself in 5 years and list 5 steps")

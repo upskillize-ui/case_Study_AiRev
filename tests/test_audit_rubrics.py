@@ -165,3 +165,34 @@ def test_a_topic_running_through_every_criterion_is_not_a_duplicate():
     ]
     assert ar.overlapping_pairs(rubric) == [], (
         "the assignment's own topic was mistaken for a duplicated measure")
+
+
+# ── The list that went stale (28 Aug 2026) ─────────────────────────────────
+# COURSE_ASSIGNMENTS held eight ids and was never updated when Days 07-15 were
+# added, so `--course` audited a third of the cohort and reported all clear for
+# days it had never opened. Day 11 was one of them — its rubric caps a perfect
+# submission at 8.5/10, and nobody knew until a canary produced six zeros.
+#
+# An audit that silently skips a day is worse than no audit, because it is
+# believed. These tests do not pin exact ids (days will be added); they pin the
+# properties that make the list trustworthy.
+
+def test_the_course_list_covers_every_day_currently_running():
+    from tools.audit_rubrics import COURSE_ASSIGNMENTS
+    assert len(COURSE_ASSIGNMENTS) >= 17, (
+        "COURSE_ASSIGNMENTS has fallen behind list_assignments.py again — "
+        "--course is auditing fewer days than the cohort is running")
+
+
+def test_no_day_is_audited_twice():
+    """A duplicate wastes nothing but hides a missing id in the count."""
+    from tools.audit_rubrics import COURSE_ASSIGNMENTS
+    assert len(COURSE_ASSIGNMENTS) == len(set(COURSE_ASSIGNMENTS))
+
+
+def test_the_days_that_caused_this_are_covered():
+    """Day 11 (28) capped at 8.5; Days 09, 10, 12, 13 carried most of the
+    orphaned files. All were outside the old eight."""
+    from tools.audit_rubrics import COURSE_ASSIGNMENTS
+    for missed in (24, 25, 26, 27, 28, 29, 30, 31, 32):
+        assert missed in COURSE_ASSIGNMENTS, f"assignment {missed} not audited"
