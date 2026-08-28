@@ -633,7 +633,8 @@ def submit_and_review_assignment(
 
     try:
         assignment_db_service.update_assignment_submission_with_ai_results(
-            tenant, submission["submissionId"], result, max_marks
+            tenant, submission["submissionId"], result, max_marks,
+            course_id=assignment.get("courseId")
         )
     except Exception as db_err:
         print(f"[ASSIGNMENT] DB update failed after AI review: {db_err}")
@@ -1150,7 +1151,7 @@ def _pipeline_assignment_response(tenant, submission, r, word_count, start_time,
     try:
         written = assignment_db_service.update_assignment_submission_with_ai_results(
             tenant, submission["submissionId"], result, max_marks,
-            manifest=manifest)
+            manifest=manifest, course_id=assignment.get("courseId"))
     except Exception as db_err:
         print(f"[ASSIGNMENT] DB update failed after pipeline review: {db_err}")
     if written is False:

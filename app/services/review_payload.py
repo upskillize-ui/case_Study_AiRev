@@ -79,8 +79,38 @@ def _faculty_view(result: dict) -> dict:
     return out
 
 
+# ── Authorship visibility ───────────────────────────────────────────────────
+# The human/AI estimate is advisory and never touched a score. On a course
+# whose SUBJECT IS AI TOOLS, it is also meaningless: students are told to use
+# ChatGPT, Claude and Gemini, the assignment asks for AI-generated work, and
+# then the card reports a high AI share as if that were a finding. It reads as
+# an accusation for doing exactly what was taught.
+#
+# Ranjana's ruling, 28 Aug 2026: remove it for the 30 Days 30 AI Tools course
+# (55). Courses where authorship IS a fair signal keep it.
+#
+# Suppressed at the PAYLOAD, not in the card, so the estimate is never stored
+# and never travels — a value that does not exist cannot be rendered by any
+# future screen or export.
+AUTHORSHIP_HIDDEN_COURSES = {
+    int(c) for c in os.getenv("AUTHORSHIP_HIDDEN_COURSES", "55").split(",")
+    if c.strip().lstrip("-").isdigit()
+}
+
+
+def authorship_visible(course_id) -> bool:
+    """Should this course's cards carry the human/AI estimate? Pure."""
+    if course_id is None:
+        return True                      # unknown course — behave as before
+    try:
+        return int(course_id) not in AUTHORSHIP_HIDDEN_COURSES
+    except (TypeError, ValueError):
+        return True
+
+
 def build(result: dict, max_marks: int = 100, score_marks: Optional[float] = None,
-          reviewed_by: str = "ai", manifest: str = "") -> dict:
+          reviewed_by: str = "ai", manifest: str = "",
+          show_authorship: bool = True) -> dict:
     """The review as it is stored and later re-rendered.
 
     Every field the review card can display must be here. If the UI shows it,
@@ -134,8 +164,15 @@ def build(result: dict, max_marks: int = 100, score_marks: Optional[float] = Non
         "garbageWarning":   result.get("garbageWarning", ""),
 
         # ── Authorship: advisory only, never part of the score ──
-        "aiLikelihoodPercent":    result.get("aiLikelihoodPercent"),
-        "humanLikelihoodPercent": result.get("humanLikelihoodPercent"),
-        "aiDetectionReason":      result.get("aiDetectionReason", ""),
-        "aiVerdict":              result.get("aiVerdict", ""),
+        # None (not absent) when hidden: the card's guards read
+        # `!= null`, so a null cleanly removes the line, while the key
+        # staying present keeps "is this an agent review?" checks working.
+        "aiLikelihoodPercent":    (result.get("aiLikelihoodPercent")
+                                   if show_authorship else None),
+        "humanLikelihoodPercent": (result.get("humanLikelihoodPercent")
+                                   if show_authorship else None),
+        "aiDetectionReason":      (result.get("aiDetectionReason", "")
+                                   if show_authorship else ""),
+        "aiVerdict":              (result.get("aiVerdict", "")
+                                   if show_authorship else ""),
     }

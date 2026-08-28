@@ -140,3 +140,55 @@ def test_link_only_build_submission_loses_no_marks_for_length():
                        word_limit_min=wmin, word_limit_max=wmax)
     assert scores["wordCountPenalty"] == 0
     assert scores["totalScore"] == 100
+
+
+# ── Authorship visibility (28 Aug, Ranjana) ────────────────────────────────
+# "remove ai and human factor bcz we are teaching ai tools and assignments
+# also on that" — on a course ABOUT AI tools the estimate reads as an
+# accusation for doing what was taught. Suppressed at the payload so the value
+# is never stored and no future screen or export can render it.
+from app.services import review_payload
+
+
+def test_the_ai_tools_course_carries_no_authorship_estimate():
+    assert review_payload.authorship_visible(55) is False
+
+
+def test_other_courses_keep_it():
+    assert review_payload.authorship_visible(46) is True
+    assert review_payload.authorship_visible(47) is True
+
+
+def test_an_unknown_course_behaves_as_before():
+    """Never silently strip a signal because a caller forgot to pass the id."""
+    assert review_payload.authorship_visible(None) is True
+    assert review_payload.authorship_visible("not-a-number") is True
+
+
+def _result():
+    return {"totalScore": 70, "grade": "B", "aiLikelihoodPercent": 72,
+            "humanLikelihoodPercent": 28, "aiDetectionReason": "generic phrasing",
+            "aiVerdict": "likely-ai"}
+
+
+def test_hidden_authorship_is_null_not_missing():
+    """The card guards on `!= null`, so null removes the line cleanly; the KEY
+    must stay so "is this an agent review?" checks still recognise the row."""
+    fb = review_payload.build(_result(), 10, 7.0, show_authorship=False)
+    for key in ("aiLikelihoodPercent", "humanLikelihoodPercent"):
+        assert key in fb and fb[key] is None
+    assert fb["aiVerdict"] == "" and fb["aiDetectionReason"] == ""
+
+
+def test_authorship_still_travels_where_it_is_wanted():
+    fb = review_payload.build(_result(), 10, 7.0, show_authorship=True)
+    assert fb["aiLikelihoodPercent"] == 72
+    assert fb["humanLikelihoodPercent"] == 28
+    assert fb["aiVerdict"] == "likely-ai"
+
+
+def test_hiding_authorship_never_touches_the_score():
+    shown = review_payload.build(_result(), 10, 7.0, show_authorship=True)
+    hidden = review_payload.build(_result(), 10, 7.0, show_authorship=False)
+    assert shown["totalScore"] == hidden["totalScore"] == 70
+    assert shown["scoreMarks"] == hidden["scoreMarks"] == 7.0

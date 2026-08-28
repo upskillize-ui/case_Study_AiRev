@@ -226,7 +226,8 @@ def _criteria_rows(result: dict) -> list:
 
 def update_assignment_submission_with_ai_results(tenant: Tenant, submission_id: int,
                                                 result: dict, max_marks: int = 100,
-                                                manifest: str = "") -> bool:
+                                                manifest: str = "",
+                                                course_id=None) -> bool:
     """Persist the review, or refuse to. Returns True when a mark was written.
 
     `grade` is written in the ASSIGNMENT's own marks scale, not as a raw 0-100
@@ -260,8 +261,9 @@ def update_assignment_submission_with_ai_results(tenant: Tenant, submission_id: 
         return False
 
     awarded = scaled_marks(result.get("totalScore", 0), max_marks)
-    feedback_payload = review_payload.build(result, max_marks, awarded,
-                                            manifest=manifest)
+    feedback_payload = review_payload.build(
+        result, max_marks, awarded, manifest=manifest,
+        show_authorship=review_payload.authorship_visible(course_id))
     # Assignment-specific extras live here, not in the shared shape.
     feedback_payload["scoreEmoji"] = result.get("scoreEmoji")
 
