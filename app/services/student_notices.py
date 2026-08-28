@@ -178,11 +178,38 @@ def nothing_submitted() -> str:
             "then submit again. " + NO_MARK)
 
 
+# Formats nothing on our side can open, and the one thing to do about each.
+# "Re-attach it" is useless advice for a .fig — the file will fail again. Name
+# the export that works, so the learner fixes it in one attempt.
+_FORMAT_FIX = {
+    "fig": "Export your screens from Figma as PNG or JPG and upload those.",
+    "psd": "Export as PNG or JPG and upload that.",
+    "ai": "Export as PNG or PDF and upload that.",
+    "sketch": "Export as PNG or JPG and upload that.",
+    "rar": "Upload a ZIP instead, or attach the files themselves.",
+    "7z": "Upload a ZIP instead, or attach the files themselves.",
+    "mht": "Save the page as a PDF and upload that.",
+    "mhtml": "Save the page as a PDF and upload that.",
+    "webarchive": "Save the page as a PDF and upload that.",
+    "exe": "Upload your work as a document, an image or a link.",
+}
+
+
+def format_fix(file_name: str = "") -> str:
+    """The one step that will actually work for this file type. Pure."""
+    ext = (file_name or "").rsplit(".", 1)[-1].lower() if "." in (file_name or "") else ""
+    return _FORMAT_FIX.get(ext, "")
+
+
 def file_unreadable(file_error: str = "", file_name: str = "") -> str:
     """A file arrived but no text came out of it."""
     plain = plain_reason(file_error)
     what = f" — {plain}" if plain else ""
     named = f" \"{file_name}\"" if file_name else ""
+    fix = format_fix(file_name)
+    if fix:
+        return (f"We received your file{named} but we cannot open that file type. "
+                f"{fix} Your work is safe — nothing you submitted is lost. " + NO_MARK)
     return (f"We received your file{named} but could not read any text from it{what}. "
             f"Check that it opens on your own computer, then re-attach it — or type "
             f"your answer in the box — and submit again. If it is a photo, make sure "

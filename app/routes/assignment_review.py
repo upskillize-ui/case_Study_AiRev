@@ -455,6 +455,37 @@ def submit_and_review_assignment(
     #
     # Gates + word limits both depend on the task's submission kind — one
     # decision, made once, in scoring_knobs() (shared with the regrade route).
+    # A8 — THE FILE WAS THE WORK AND IT NEVER OPENED (28 Aug 2026).
+    #
+    # The link half of this has been guarded since 19 Aug. The file half was
+    # not, and is_unassessable() stops applying the moment the typed answer
+    # passes MIN_GRADABLE_WORDS — so a learner who exported a .fig, uploaded
+    # it, and wrote 300 careful words about their design was scored on the
+    # WORDS and charged for the design nobody could see. That mark measures
+    # our reach, not their work: the same fault as Day 04's 21 rows, wearing a
+    # different file extension.
+    #
+    # Narrow on purpose, exactly like link_is_the_deliverable: only when THIS
+    # task asked the learner to produce something. On a written task an
+    # unopenable attachment is a supporting extra and the essay still stands.
+    if (adaptive.get("submissionKind") in intake.PRODUCED_KINDS
+            and intake.file_deliverable_unseen(artefacts)):
+        unread = next((a for a in artefacts
+                       if a.kind not in ("link", "typed text")), None)
+        msg = student_notices.file_unreadable(
+            getattr(unread, "note", ""), getattr(unread, "label", ""))
+        print(f"[ASSIGNMENT] NOT SCORED (the submitted file never opened): "
+              f"{word_count} words typed beside an unreadable "
+              f"{getattr(unread, 'kind', 'file')}")
+        return {
+            "success": True,
+            "status": "needs_input",
+            "needsInput": True,
+            "submission": submission,
+            "feedback": _empty_feedback(msg, helpful=True),
+            "processingTimeMs": int((time.time() - start_time) * 1000),
+        }
+
     gate_overrides, word_min, word_max = scoring_knobs(adaptive, deliverable)
 
     # ── Evidence-gated pipeline (primary path) ─────────────────────────────
@@ -983,6 +1014,39 @@ def re_review_assignment(
 
     adaptive = rubric_service.get_or_derive(
         tenant, "assignment", row["assignment_id"], assignment)
+    # A8 — THE FILE WAS THE WORK AND IT NEVER OPENED (28 Aug 2026).
+    #
+    # The link half of this has been guarded since 19 Aug. The file half was
+    # not, and is_unassessable() stops applying the moment the typed answer
+    # passes MIN_GRADABLE_WORDS — so a learner who exported a .fig, uploaded
+    # it, and wrote 300 careful words about their design was scored on the
+    # WORDS and charged for the design nobody could see. That mark measures
+    # our reach, not their work: the same fault as Day 04's 21 rows, wearing a
+    # different file extension.
+    #
+    # Narrow on purpose, exactly like link_is_the_deliverable: only when THIS
+    # task asked the learner to produce something. On a written task an
+    # unopenable attachment is a supporting extra and the essay still stands.
+    if (adaptive.get("submissionKind") in intake.PRODUCED_KINDS
+            and intake.file_deliverable_unseen(artefacts)):
+        unread = next((a for a in artefacts
+                       if a.kind not in ("link", "typed text")), None)
+        label = getattr(unread, "label", "")
+        print(f"[REGRADE] submission {submission_id}: the submitted file "
+              f"never opened ({label}) — row untouched")
+        if previous_grade is None:
+            _tell_student_why(tenant, submission_id,
+                              student_notices.file_unreadable(
+                                  getattr(unread, "note", ""), label))
+        return {"success": False, "skipped": "unassessable_deliverable",
+                "submissionId": submission_id,
+                "previousGrade": previous_grade,
+                "artefacts": inventory,
+                "detail": (f"The task asks the learner to produce something and "
+                           f"the file they uploaded ({label or 'unnamed'}) could "
+                           f"not be opened. No mark: the work was never seen. "
+                           f"They have been asked for a readable format.")}
+
     gate_overrides, word_min, word_max = scoring_knobs(
         adaptive, intake.has_deliverable(artefacts))
 

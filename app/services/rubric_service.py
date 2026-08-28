@@ -403,9 +403,21 @@ def requirements_to_criteria(requirements: list) -> list:
     # definition, whatever the model tagged it. This guard stops a mis-tag
     # from handing 70% of the marks to "2 screenshots of your app" while the
     # app itself splits the 30.
+    # PACKAGING IS NOT THE WORK (28 Aug 2026). A brief that says "export all
+    # three screens as PNG or JPG at high quality, upload to the LMS and share
+    # the link" describes how to HAND IN the deliverable, not what makes it
+    # good. _OFFPLATFORM_PATTERNS drops the pure logistics lines, but it
+    # requires an ACT plus an OBJECT ("uploaded to LMS"), so "export as PNG at
+    # high quality" survived as a criterion — and nothing here demoted it, so
+    # it could be scored as CORE. Live on the Day-14 Figma card: "Confirm the
+    # export and submission steps" came back to the learner as a shortfall on
+    # a design task. Format is a supporting item at most, never the mark.
     _never_core = re.compile(
         r"screenshot|research|notes?\b|write[- ]?up|\b\d+\s*lines?\b|"
-        r"what went wrong|debug", re.I)
+        r"what went wrong|debug|"
+        r"export(ed|ing)?\b|save[ds]?\s+as\b|file\s+format|"
+        r"high[- ]quality|resolution|\b(png|jpe?g|pdf|mp4|zip)\b|"
+        r"nam(e|ing)\s+convention|file\s+nam", re.I)
     core = [r for r in keepable
             if r.get("role") == "core"
             and not _never_core.search(str(r.get("name", "")))]

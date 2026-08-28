@@ -143,10 +143,11 @@ def test_the_registry_covers_every_public_notice():
     """Every notice a learner can receive is registered — so the sweep in
     test_no_developer_language.py cannot miss one that was added quietly.
 
-    plain_reason and publish_steps are excluded on purpose: they build PART
-    of a message, they are never sent alone.
+    plain_reason, publish_steps and format_fix are excluded on purpose: they
+    build PART of a message, they are never sent alone.
     """
-    helpers = {"publish_steps", "plain_reason", "bot_protected_host", "urlparse"}
+    helpers = {"publish_steps", "plain_reason", "bot_protected_host", "urlparse",
+               "format_fix"}
     public = {n for n in dir(sn)
               if not n.startswith("_") and callable(getattr(sn, n))
               and n not in helpers}

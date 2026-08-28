@@ -390,3 +390,43 @@ def test_void_reason_is_pure_and_names_its_grounds():
     assert rp.wrong_task_void_reason(
         "an investment analysis slide deck", t) == ""
     assert rp.wrong_task_void_reason("", t) == ""
+
+
+# ── our own handouts, submitted back to us (28 Aug 2026) ───────────────────
+# Live on Day 15: a learner uploaded a screenshot of the assignment sheet. The
+# judge identified it precisely — "a teaching aid or assignment instruction
+# sheet for Day 15, not the learner's work" — and the name-overlap voider
+# killed the ruling, because an instruction sheet for Day 15 necessarily
+# shares its words with Day 15's brief. The row scored 0.0/10, which tells the
+# learner their work was bad when the truth is they attached the wrong file.
+
+DAY15 = ("Day 15: ElevenLabs Assignment. Create a 60-90 second video for a "
+         "business using ChatGPT and ElevenLabs. Choose a real business, write "
+         "a script, generate two voices and select one.")
+
+
+@pytest.mark.parametrize("ident", [
+    "This is a teaching aid or assignment instruction sheet for Day 15, "
+    "not the learner's own work",
+    "A screenshot of the assignment brief for the ElevenLabs task",
+    "The task description handout, not a submission",
+    "A promotional poster advertising Day 14 of the 30 Days 30 AI Tools course",
+    "Course material for the ElevenLabs session",
+])
+def test_course_material_is_never_voided_by_word_overlap(ident):
+    assert rp.wrong_task_void_reason(ident, DAY15) == "", ident
+
+
+def test_a_real_attempt_is_still_protected_by_the_overlap_voider():
+    """The rule this narrowing must not break: work that IS this task's
+    deliverable can never be un-graded, however weak it is."""
+    ident = "A 70-second promotional video for a gold loan business with a "\
+            "generated voice-over"
+    assert rp.wrong_task_void_reason(ident, DAY15) != ""
+
+
+def test_the_other_two_voiders_are_untouched():
+    plan = "A personal career plan poster for becoming a lawyer"
+    assert "PERSONAL plan" in rp.wrong_task_void_reason(plan, DAY15)
+    domain = "An infographic that falls entirely outside the FinTech domain"
+    assert "domain-exclusion" in rp.wrong_task_void_reason(domain, DAY15)

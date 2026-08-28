@@ -779,6 +779,34 @@ def only_unreadable_links(artefacts) -> bool:
     return not any(a.readable for a in artefacts if a.kind != "link")
 
 
+# Submission kinds where the learner had to PRODUCE something. On a written
+# task an attached file is a supporting extra and its failure to open must
+# never withhold a mark from an essay typed in the box — the same narrowness
+# link_is_the_deliverable() exists for.
+PRODUCED_KINDS = {"image", "artifact_or_link", "file_or_workbook"}
+
+
+def file_deliverable_unseen(artefacts) -> bool:
+    """The uploaded file WAS the work, and it never opened. Pure.
+
+    The other half of link_deliverable_unseen. A .fig export, a .rar, a PSD, a
+    PDF over the size ceiling: the learner did the work, the format defeated
+    us, and is_unassessable() lets their typed caption rescue the row as soon
+    as it passes MIN_GRADABLE_WORDS. So a good design plus a good description
+    was scored on the description and marked down for the part nobody saw.
+
+    A CAPTION IS NOT THE DELIVERABLE — the same rule as links. A readable
+    link still rescues the row, because a published page IS the work in
+    another form. Typed prose about the work is not.
+
+    True when: file(s) were submitted, none opened, and no link opened either.
+    """
+    files = [a for a in artefacts if a.kind not in ("link", "typed text")]
+    if not files or any(a.readable for a in files):
+        return False
+    return not any(a.readable for a in artefacts if a.kind == "link")
+
+
 def link_deliverable_unseen(artefacts) -> bool:
     """The published page was the work, and we never saw it. Pure.
 

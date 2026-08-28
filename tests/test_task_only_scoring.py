@@ -131,3 +131,71 @@ def test_the_judge_may_not_score_against_anything_outside_the_requirements():
 def test_the_judge_receives_the_tasks_own_wording_not_just_a_label():
     src = open("app/services/review_pipeline.py", encoding="utf-8").read()
     assert "fully done when:" in src
+
+
+# ── A7: packaging is not the work (28 Aug 2026) ────────────────────────────
+# The Day-14 Figma card told a learner, as a shortfall on a DESIGN task:
+# "Confirm the export and submission steps: export all three screens as PNG or
+# JPG at high quality, upload to the LMS, and share via WhatsApp."
+#
+# _OFFPLATFORM_PATTERNS drops pure logistics, but it needs an ACT plus an
+# OBJECT ("uploaded to LMS"), so "export as PNG at high quality" survived as a
+# real criterion — and nothing demoted it, so the 70/30 split could hand it
+# CORE weight beside the design itself.
+
+import pytest
+
+from app.services.rubric_service import requirements_to_criteria
+
+
+def _share(criteria, exact_name):
+    """The marks held by the criterion with EXACTLY this name.
+
+    Matching on a fragment silently matched the wrong row here: "Screens
+    exported as PNG" and "Three screens designed in Figma" share the word
+    "screens", so a fragment lookup returned the design's own weight and the
+    assertion compared 70 against itself.
+    """
+    for c in criteria:
+        if c["name"].strip().lower() == exact_name.strip().lower():
+            return c["maxScore"]
+    raise AssertionError(f"no criterion named {exact_name!r} in "
+                         f"{[c['name'] for c in criteria]}")
+
+
+PACKAGING_NAMES = [
+    "Screens exported as PNG or JPG at high quality",
+    "Files saved as PDF",
+    "Export quality is high",
+    "Correct file format used",
+    "File naming convention followed",
+]
+
+
+@pytest.mark.parametrize("packaging", PACKAGING_NAMES)
+def test_packaging_never_outweighs_the_thing_that_was_built(packaging):
+    reqs = [
+        {"name": "Three screens designed in Figma", "what_earns_it": "...",
+         "evidenceable": True, "role": "core"},
+        {"name": packaging, "what_earns_it": "...",
+         "evidenceable": True, "role": "core"},
+    ]
+    out = requirements_to_criteria(reqs)
+    built = _share(out, "Three screens designed in Figma")
+    pack = _share(out, packaging)
+    assert built > pack, (
+        f"packaging ({pack}) is worth as much as the design ({built}): {out}")
+    assert built >= 65, f"the built thing must hold core weight: {out}"
+
+
+def test_the_design_still_wins_when_it_is_the_only_core_item():
+    reqs = [
+        {"name": "A working 3-screen prototype", "what_earns_it": "...",
+         "evidenceable": True, "role": "core"},
+        {"name": "Screens exported as PNG", "what_earns_it": "...",
+         "evidenceable": True, "role": "core"},
+        {"name": "2 screenshots of your work", "what_earns_it": "...",
+         "evidenceable": True, "role": "core"},
+    ]
+    out = requirements_to_criteria(reqs)
+    assert _share(out, "A working 3-screen prototype") == 70

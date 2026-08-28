@@ -658,6 +658,30 @@ _PERSONAL_PLAN = re.compile(
     r"career)\b", re.I)
 
 
+# OUR OWN TEACHING MATERIAL, handed back to us as a submission. Live 28 Aug,
+# Day 15: a learner uploaded a screenshot of the assignment sheet itself. The
+# judge identified it exactly — "a teaching aid or assignment instruction sheet
+# for Day 15, not the learner's work" — and the name-overlap voider then killed
+# the ruling, BECAUSE it names this task: an instruction sheet for Day 15
+# necessarily shares its words with Day 15's brief. The row scored 0.0/10.
+#
+# That is the wrong outcome twice over. Policy for wrong work is NO MARK and a
+# plain reason, never a near-zero; and a near-zero here reads to the learner as
+# "your work was bad" when the truth is "you attached the wrong file".
+#
+# Narrow by construction: course material is never a learner's deliverable, on
+# any task, so exempting it from the overlap voider cannot rescue a genuine
+# attempt. The other two voiders (personal plan, domain exclusion) still apply
+# in full — this only stops the OVERLAP rule from firing on our own handouts.
+_COURSE_MATERIAL = re.compile(
+    r"\b(instruction|assignment|task|question|worksheet|activity)\s+"
+    r"(sheet|paper|brief|description|handout)\b|"
+    r"\bteaching\s+(aid|material|resource)\b|"
+    r"\b(the\s+)?(assignment|task)\s+(brief|instructions|description)\b|"
+    r"\bcourse\s+material\b|\bsyllabus\b|\bquestion\s+paper\b|"
+    r"\bpromotional\s+(poster|material|flyer)\b", re.I)
+
+
 def wrong_task_void_reason(what_it_is: str, task_text: str) -> str:
     """Why this declaration carries no ruling — or "" when it stands. Pure.
 
@@ -670,7 +694,9 @@ def wrong_task_void_reason(what_it_is: str, task_text: str) -> str:
          domain") — the exact reasoning the any-career policy forbids.
     """
     ident = _NEGATION_SPLIT.split(what_it_is or "", 1)[0]
-    if names_this_task(ident, task_text):
+    # Course material shares this task's words BY DEFINITION — it is about
+    # this task. The overlap voider must not read that as "they did the task".
+    if names_this_task(ident, task_text) and not _COURSE_MATERIAL.search(ident):
         return "identification names this task's own deliverable"
     if _PERSONAL_PLAN.search(ident):
         return "identified as a PERSONAL plan — career choice is never grounds"
