@@ -42,6 +42,51 @@ GATES = {
     "low_confidence_escalate": True,
 }
 
+# Scopes where a knowledge pack IS the syllabus. There, "must-cover concepts"
+# are a real standard the learner was taught, and capping the total at 69 for
+# covering under half of them is fair.
+#
+# An ASSIGNMENT is not such a scope. Judge rule 0 says the criteria list is the
+# ENTIRE standard — the task's own words and nothing else. A cap sourced from
+# pack concepts is therefore a SECOND standard the brief never stated, applied
+# to the WHOLE score rather than one criterion, and invisible on the card: a
+# complete Day-14 submission sat at 6.9/10 with no reason a student could see.
+# This is the invented-rubric defect (A1) surviving inside a gate.
+# Ranjana's ruling, 28 Aug 2026: off for assignments; case studies keep it.
+CONCEPT_CAP_SCOPES = {"case_study", "capstone", "industry_session"}
+
+
+def concept_cap_for(scope_type: str, default: int) -> int:
+    """The total-score cap that may apply to this scope. Pure.
+
+    100 means "no cap" — the value aggregate() already uses as its ceiling.
+    """
+    return default if scope_type in CONCEPT_CAP_SCOPES else 100
+
+
+# Item kinds whose content was fully READ but cannot be QUOTED: an image's
+# description and an audio or video transcript are OUR words for the learner's
+# work, not the learner's own sentences. The zero-quote cap exists to stop the
+# judge scoring ungrounded prose; firing it on these media punishes the learner
+# for the format the task ASKED FOR, and caps the whole submission at 20%.
+#
+# This exact failure is already on the record for links (see the regrade route:
+# "nothing to quote, every criterion pinned at the no-evidence cap, a cohort
+# that did the work told it scored 2/10"). Opening links fixed the cause there;
+# the gate itself was never taught the difference. Rule 9a is the policy —
+# file content IS the submission — and this makes the arithmetic obey it.
+# Whitespace-tolerant for the same reason submission_intake's parser is:
+# stored rows do not all carry the exact spacing render() emitted.
+_NONTEXT_ITEM = re.compile(r"===\s*ITEM\s+\d+\s*:\s*(IMAGE|AUDIO|VIDEO)", re.I)
+
+
+def has_nontext_evidence(student_answer: str, images=None) -> bool:
+    """Did the learner's readable work arrive as picture, audio or video? Pure."""
+    if images:
+        return True
+    return bool(_NONTEXT_ITEM.search(student_answer or ""))
+
+
 # Criterion names whose score demands case-specific grounding.
 _SPECIFICITY_BOUND = ("evidence", "application", "analysis", "depth", "practical", "recommend")
 
@@ -391,7 +436,7 @@ NON-NEGOTIABLE METHOD:
 
 def apply_gates(criteria: list, rubric_criteria: list, concepts_missing: list,
                 concepts_covered: list, factual_errors: list,
-                gates: dict = None) -> dict:
+                gates: dict = None, nontext_evidence: bool = False) -> dict:
     """Apply deterministic caps. Returns per-criterion results + gate trace.
     `gates` allows bounded, DB-tuned overrides (consolidation service);
     defaults to the static GATES config. Pure function either way."""
@@ -406,7 +451,10 @@ def apply_gates(criteria: list, rubric_criteria: list, concepts_missing: list,
         pct = int(judged.get("score_pct", 0)) if judged else 0
         evidence = judged.get("evidence_quotes", []) if judged else []
 
-        if not evidence and pct > GATES_ACTIVE["no_evidence_cap"]:
+        # nontext_evidence: the work was read but is not quotable (image /
+        # audio / video). Grounding exists; verbatim quotes cannot. Capping
+        # here would mark the medium, not the work.
+        if not evidence and not nontext_evidence and pct > GATES_ACTIVE["no_evidence_cap"]:
             gates_hit.append({"gate": "no_evidence", "criterion": name,
                               "from": pct, "to": GATES_ACTIVE["no_evidence_cap"]})
             pct = GATES_ACTIVE["no_evidence_cap"]
@@ -433,7 +481,12 @@ def apply_gates(criteria: list, rubric_criteria: list, concepts_missing: list,
     must_total = len(concepts_missing) + len(concepts_covered)
     if must_total > 0:
         ratio = len(concepts_covered) / must_total
-        if ratio < GATES_ACTIVE["concept_min_ratio"]:
+        # Record the gate only when it actually BINDS. A scope whose cap is
+        # 100 (assignments — see CONCEPT_CAP_SCOPES) would otherwise log a
+        # "hit" that moved no marks, and a trace that reports changes it did
+        # not make is worse than no trace.
+        if (ratio < GATES_ACTIVE["concept_min_ratio"]
+                and GATES_ACTIVE["concept_total_cap"] < 100):
             total_cap = GATES_ACTIVE["concept_total_cap"]
             gates_hit.append({"gate": "concept_coverage", "criterion": "TOTAL",
                               "from": 100, "to": total_cap,
@@ -869,6 +922,14 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
         gate_overrides["generic_answer_cap"] = 100
         print("ℹ️  no specificity markers in pack — case-specificity gate off")
 
+    # The concept cap is a whole-score ceiling; it may only come from a scope
+    # whose pack is the syllabus (see CONCEPT_CAP_SCOPES).
+    _cap = concept_cap_for(scope_type, GATES["concept_total_cap"])
+    if _cap != GATES["concept_total_cap"]:
+        gate_overrides["concept_total_cap"] = _cap
+        print(f"ℹ️  concept total cap off for {scope_type} "
+              f"(task text is the whole standard)")
+
     # Caller overrides win: the review route knows things the nightly tuner
     # cannot, e.g. that this task has no case material for a "case specificity"
     # gate to be meaningful about.
@@ -952,7 +1013,9 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
     # supposed to touch wording only; this is where it reached into scoring.
     gated = apply_gates(review["criteria"], rubric_criteria,
                         review["concepts_missing"], review["concepts_covered"],
-                        review["factual_errors"], gates=gate_overrides)
+                        review["factual_errors"], gates=gate_overrides,
+                        nontext_evidence=has_nontext_evidence(student_answer,
+                                                              images))
 
     review = tidy_review(review)
     scores = aggregate(gated, word_count, word_limit_min, word_limit_max)

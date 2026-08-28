@@ -90,10 +90,11 @@ def captured(monkeypatch):
     return box
 
 
-def run(captured, answer, student_text, word_count=200):
+def run(captured, answer, student_text, word_count=200,
+        scope_type="assignment"):
     captured["answer"] = answer
     return rp.run_review(
-        scope_type="assignment", scope_id=14, pack=PACK, pack_version=1,
+        scope_type=scope_type, scope_id=14, pack=PACK, pack_version=1,
         rubric=RUBRIC, student_answer=student_text, word_count=word_count,
         word_limit_min=50, word_limit_max=500, student_id=1,
     )
@@ -154,7 +155,7 @@ def test_concept_trimming_does_not_change_the_mark(captured):
     out = run(captured,
               model_answer([90, 90, 90], [f"c{i}" for i in range(6)],
                            [f"m{i}" for i in range(20)]),
-              "Answer. " * 80)
+              "Answer. " * 80, scope_type="case_study")
     assert "concept_coverage" in gates_of(out), (
         "coverage gate did NOT fire at 23% real coverage — trimming reached "
         f"scoring and let the cap be skipped: {out['scores']['gatesHit']}")
@@ -165,7 +166,7 @@ def test_the_coverage_gate_still_fires_when_it_should(captured):
     """The guard must not have disabled the gate — only stopped it seeing a
     truncated list."""
     out = run(captured, model_answer([90, 90, 90], ["c1"], [f"m{i}" for i in range(9)]),
-              "Answer. " * 80)
+              "Answer. " * 80, scope_type="case_study")
     assert "concept_coverage" in gates_of(out), out["scores"]["gatesHit"]
     assert score_of(out) <= rp.GATES["concept_total_cap"]
 
@@ -373,3 +374,16 @@ def test_an_assembled_row_survives_whitespace_normalisation():
     assert content, "content was lost to whitespace normalisation"
     assert "NEXT 5 YEARS" in content
     assert intake.MANIFEST_HEADER not in content
+
+
+def test_an_assignment_is_never_capped_by_concept_coverage(captured):
+    """Ranjana's ruling, 28 Aug 2026. On an ASSIGNMENT the criteria list is the
+    entire standard (judge rule 0), so a whole-score cap sourced from pack
+    concepts must not fire — it held complete Day-14 work at 6.9/10 with no
+    reason the student could see. The same input on a case study still caps
+    (test above); only the scope changed.
+    """
+    out = run(captured, model_answer([90, 90, 90], ["c1"], [f"m{i}" for i in range(9)]),
+              "Answer. " * 80, scope_type="assignment")
+    assert "concept_coverage" not in gates_of(out)
+    assert score_of(out) == 90

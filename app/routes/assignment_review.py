@@ -50,7 +50,8 @@ from app.database import set_current_tenant
 router = APIRouter(prefix="/api/review", tags=["assignment-review"])
 
 
-def scoring_knobs(adaptive: dict) -> tuple[dict, int, int]:
+def scoring_knobs(adaptive: dict,
+                  has_deliverable: bool = False) -> tuple[dict, int, int]:
     """(gate_overrides, word_min, word_max) for this task's submission kind.
 
     Written/mixed tasks keep their derived word limits and every gate — an
@@ -65,8 +66,20 @@ def scoring_knobs(adaptive: dict) -> tuple[dict, int, int]:
     limit, we read a thorough deliverable and then charged her for its
     thoroughness. The generic-answer gate stays off for the same reason it
     always was (criterion-name matching misfires on non-written work).
+
+    A MIXED task that actually RECEIVED a file or a link is a deliverable task
+    for length purposes (28 Aug). Day-14 Figma derives as kind="mixed", so a
+    learner who published three screens and captioned them in one line was
+    still measured against a prose minimum and could lose up to 20 marks — the
+    exact contradiction of judge rule 14(c), "the deliverable is the mark".
+    The rubric's kind describes what was ASKED; has_deliverable describes what
+    ARRIVED, and what arrived decides whether the writing is a caption.
+
+    A purely WRITTEN task stays strict either way: an essay uploaded as a file
+    is still an essay, and its length limits are part of the brief.
     """
-    if adaptive.get("submissionKind") in ("written", "mixed"):
+    kind = adaptive.get("submissionKind")
+    if kind == "written" or (kind == "mixed" and not has_deliverable):
         return {}, adaptive["wordMin"], adaptive["wordMax"]
     return {"generic_answer_cap": 100}, 0, 999999
 
@@ -442,7 +455,7 @@ def submit_and_review_assignment(
     #
     # Gates + word limits both depend on the task's submission kind — one
     # decision, made once, in scoring_knobs() (shared with the regrade route).
-    gate_overrides, word_min, word_max = scoring_knobs(adaptive)
+    gate_overrides, word_min, word_max = scoring_knobs(adaptive, deliverable)
 
     # ── Evidence-gated pipeline (primary path) ─────────────────────────────
     if _PIPELINE_ON:
@@ -969,7 +982,8 @@ def re_review_assignment(
 
     adaptive = rubric_service.get_or_derive(
         tenant, "assignment", row["assignment_id"], assignment)
-    gate_overrides, word_min, word_max = scoring_knobs(adaptive)
+    gate_overrides, word_min, word_max = scoring_knobs(
+        adaptive, intake.has_deliverable(artefacts))
 
     r = review_pipeline.review_with_knowledge(
         scope_type="assignment", scope_id=row["assignment_id"],
