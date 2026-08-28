@@ -276,6 +276,30 @@ def submit_and_review_assignment(
                 artefacts.append(intake.from_stored_file(
                     prior_url, prior.get("file_name", "")))
             db_notes = clean_text(prior.get("notes") or "")
+            # THE 1126 NESTING RULE, on this path too (28 Aug 2026).
+            #
+            # Stored notes are usually a FINISHED ASSEMBLY — manifest plus
+            # labelled item blocks — because that is what every review path
+            # writes back. Appending that whole blob as "typed text" while
+            # ALSO re-extracting the attachment above hands the marker:
+            #
+            #     new manifest ("2 items: an IMAGE and TYPED TEXT")
+            #       ITEM 1 IMAGE        <- the OCR, extracted a second time
+            #       ITEM 2 TYPED TEXT   <- the ENTIRE previous assembly, our
+            #                              own instructions to the judge
+            #                              included, dressed up as the
+            #                              learner's own writing
+            #
+            # That is what took student 1126 from 6.8/10 to 1.2/10 on
+            # identical input. The regrade route has refused it since then;
+            # this route did not, and on 28 Aug it produced a cohort of 0.0s
+            # on Day 11 — including a Speaker Report Card that carried every
+            # element the brief asked for.
+            #
+            # Take only the learner's OWN typed blocks out of an assembly.
+            # Raw learner text (never assembled) passes through untouched.
+            if db_notes and intake.from_stored_submission(db_notes):
+                db_notes = intake.typed_text_from(db_notes)
             if db_notes:
                 # No link scan here. Stored notes are ALREADY-ASSEMBLED intake
                 # output from an earlier run — any link in them was opened then
