@@ -142,11 +142,22 @@ def _start_scheduler():
         from apscheduler.triggers.cron import CronTrigger
         from app.services.consolidation_service import run_all_tenants
 
+        from app.services.sweeper_service import sweep_all_tenants
+
         scheduler = AsyncIOScheduler()
         scheduler.add_job(run_all_tenants, CronTrigger(hour=21, minute=0),
                           id="nightly_consolidation", replace_existing=True)
+        # THE SAFETY NET. Runs BEFORE consolidation so the night's marks are
+        # in before the agent reflects on them, and every three hours besides:
+        # a learner who submits at 10am should not wait until 2:30am for the
+        # queue to have dropped their row. Cheap by construction — a healthy
+        # cohort finds nothing, and MAX_PER_RUN caps a bad night.
+        scheduler.add_job(sweep_all_tenants, CronTrigger(hour="*/3", minute=30),
+                          id="unreviewed_sweep", replace_existing=True)
         scheduler.start()
         print("   🌙 Nightly consolidation scheduled (21:00 UTC / 02:30 IST)")
+        print("   🧹 Unreviewed sweep scheduled (every 3h) — no submission "
+              "is left without a mark")
     except Exception as e:
         print(f"   ⚠️ Scheduler unavailable: {e} — use POST /api/admin/consolidate")
 

@@ -216,7 +216,34 @@ def _tidy(text: str, limit: int) -> str:
         idx = cut.rfind(stop)
         if idx > limit * 0.4:
             return cut[:idx + 1].strip()
-    return cut.rsplit(" ", 1)[0].rstrip(",;:") + "."
+    # LAST RESORT. The old branch cut at a word boundary and glued on a full
+    # stop, which produced sentences that LOOK finished and are not:
+    # "...which elements are sized larger, which are." — live on the Day-14
+    # cards. A reader cannot tell that was truncated, so it reads as a broken
+    # product rather than a long answer.
+    #
+    # Ranjana's ruling (28 Aug): govern length in the PROMPT, never by a
+    # clamp. So this ceiling should almost never be reached — and when it is,
+    # end at the last clause boundary and mark the cut honestly with an
+    # ellipsis instead of inventing a sentence the model never wrote.
+    for boundary in (";", ",", " — ", " - ", ":"):
+        idx = cut.rfind(boundary)
+        if idx > limit * 0.5:
+            return _mark_cut(cut[:idx])
+    return _mark_cut(cut.rsplit(" ", 1)[0])
+
+
+def _mark_cut(text: str) -> str:
+    """Close a truncated fragment honestly. Pure.
+
+    An ellipsis after a full stop ("...banking flow.…") looks like a typo, and
+    a clause that already ended cleanly needs no mark at all — the reader has
+    a whole sentence. Only an actually-dangling fragment gets the ellipsis.
+    """
+    clean = text.rstrip(" ,;:-—")
+    if not clean:
+        return ""
+    return clean if clean[-1] in ".!?" else clean + "…"
 
 
 def _chip(text: str, limit: int = 60) -> str:
@@ -429,6 +456,7 @@ NON-NEGOTIABLE METHOD:
 14. BUILT ARTIFACTS AND PUBLISHED LINKS. When the task's deliverable is something the learner BUILT — a web page, an app, an artifact, a slide deck: (a) whatever was READ from it IS the deliverable — extracted slide text, OCR of its screenshots, a page's visible text, or a page's SOURCE CODE all count in full; source code of a client-rendered page is that page, judge the built thing from its code exactly as you would from its screen. (b) A link the manifest confirms as submitted but unreadable from the server (browser-only pages such as Claude artifact links) is evidence the learner PUBLISHED a deliverable: it fully satisfies any criterion that asks for the artifact to be created, published, shared or linked. Judge the remaining quality criteria only from what IS readable — the screenshots, pasted content, and the learner's own description — and state plainly which parts could not be seen. Never charge a criterion for OUR inability to open the learner's published page (the same visibility rule as 9c and 11), and never rule wrong_task from a link you could not read. (c) THE DELIVERABLE IS THE MARK. When the built artifact is present and matches the brief, the absence of research notes, ideation history, tool choice explanations, or a process narrative the brief did not require — or marked optional — must never reduce the score, and a link-plus-short-caption submission is a COMPLETE submission for a build-and-share task, never "a statement of intent". Judge the built thing itself.
 15. THE BUILT THING CARRIES THE MARKS — AND ITS QUALITY DECIDES HOW MANY. When the task's main deliverable (the app, the website, the deck) was built, published, readable, and is about this task's topic, that relevance earns a BASE of around 40% overall — never an automatic pass. From there, QUALITY sets the mark: real effort, working features, thoughtful content, and care push it up toward full marks; a bare template, a copy-paste job, or a minimal one-screen effort stays near the base even though it technically "works". Judge what the built thing actually shows, not the fact that it exists. Missing supporting items (research screenshots, process notes) cost only their own small share. When a task has a single criterion, the same scale applies to the whole mark. The reverse also holds: supporting paperwork with no real build never earns a passing mark.
 16. QUALITY BANDS — FOR EVERY TASK, EVERY COURSE. The top of the scale is earned, never given: 90-100 is reserved for RARE, exceptional work that is genuinely useful and clearly thought through. Complete work of really good quality lands 80-90. Complete work that is ordinary — template-like, generic, visibly unchecked — lands 60-70 even when every asked item is present: completeness alone never buys the top bands. Partial work scales down from there per the criteria. The quality symptoms that hold work in the lower band are VISIBLE facts you can quote: generic filler text, errors nobody proofread, nothing personal or specific to the learner's own idea, content pasted without checking what it says. Deduct for those visible symptoms — never for AI use itself (authorship stays advisory, rule above). Someone who used AI and then checked, personalised, and improved the result did real work; someone who pasted without reading did not, and the pasted text itself shows it.
+17a. KEEP EVERY LINE SHORT. One idea per point, one sentence where one sentence does it, everyday words. Do not write paragraphs — a student reading on a phone skips them. Add a second sentence ONLY when the point cannot be understood without it; never to pad, never to restate. Do not use em-dashes: they are hard to read on a small screen. Aim for 25 words a point and never exceed 35.
 17. WRITE FOR THE STUDENT, IN SIMPLE ENGLISH. Every student-facing sentence (feedback points, strengths, improvements, summary) uses short sentences and everyday words. Say "your app", "your website", "your link", "your answer" — never "artifact", "deliverable", "rubric", "narrative", "criterion", "manifest", or "submission manifest". One idea per point. A 19-year-old reading on a phone must understand every line in one pass."""
 
 

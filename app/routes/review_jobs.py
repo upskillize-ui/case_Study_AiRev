@@ -222,6 +222,34 @@ def enqueue_one(req: EnqueueRequest, tenant: Tenant = Depends(get_tenant),
             "poll": f"/api/review/jobs/{job_id}"}
 
 
+@router.post("/sweep")
+def sweep_now(tenant: Tenant = Depends(get_tenant),
+              x_admin_key: str = Header(default=""),
+              limit: int | None = None):
+    """Review everything that has work and no mark, right now.
+
+    The same pass the scheduler runs every three hours. Use it after a deploy,
+    after a Space restart, or any time the pending count looks wrong: it reads
+    assignment_submissions directly, so it does not care WHY a row was missed.
+
+    Rows already carrying a notGraded verdict are skipped — they were a
+    decision, not a gap, and re-buying them nightly would spend real money to
+    reach the same conclusion for ever.
+    """
+    _require_enabled()
+    _require_staff(x_admin_key)
+    from app.services import sweeper_service
+    courses = [int(c) for c in
+               os.getenv("AIREV_AUTO_REVIEW_COURSES", "").split(",")
+               if c.strip().isdigit()] or None
+    result = sweeper_service.sweep(
+        tenant, make_review_one(tenant, x_admin_key), courses,
+        limit if limit and limit > 0 else sweeper_service.MAX_PER_RUN)
+    return {"success": True, **result,
+            "poll": f"/api/review/jobs/{result.get('jobId')}"
+                    if result.get("jobId") else None}
+
+
 @router.get("")
 def list_jobs(tenant: Tenant = Depends(get_tenant)):
     _require_enabled()
