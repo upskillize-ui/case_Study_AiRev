@@ -62,7 +62,13 @@ _TABLE = "derived_rubrics"
 #       task asks for, in the task's own words; weighting is arithmetic
 #       (requirements_to_criteria) and unprovable requirements are
 #       excluded from scoring instead of failed by the whole cohort.
-RUBRIC_VERSION = 7
+# v8 (28 Aug 2026): force_visible_deliverables. v7 cached rubrics in which
+# the DELIVERABLE ITSELF was marked unevidenceable because the criterion also
+# named the tool — Day 07 "Dashboard from a data set using Gemini Canvas" was
+# the only criterion on its task, so its ceiling was 0.0/10 for all 195
+# learners. Those rubrics are cached under the v7 hash and would survive the
+# code fix; the bump is what re-derives them.
+RUBRIC_VERSION = 8
 # Per-tenant: one tenant's CREATE TABLE must never suppress another's.
 _tables_ready: set = set()
 
@@ -160,7 +166,10 @@ RULES:
 3. A SHORT TASK HAS FEW REQUIREMENTS. One sentence asking for one thing yields ONE requirement. Do not pad to look thorough. Two honest requirements beat six invented ones.
 4. DO NOT ASSIGN WEIGHTS. You list what was asked; the system does the weighting. This is deliberate — you are not permitted to decide that one part of the brief is worth more than another. ONE EXCEPTION: when the task text ITSELF assigns marks to items (a grading table such as "Design & Presentation - 2 marks, Use of Canva AI - 2 marks"), copy each stated number into brief_marks exactly — the faculty's own numbers ARE the weights and they override everything. Copying is not deciding; inventing a number the brief does not state is forbidden.
 5. MARK evidenceable=false FOR ANYTHING THE FINISHED WORK CANNOT SHOW. A finished artifact carries no record of which AI made it, which mode was enabled, or in what order the steps were taken. Nor can the marker see WhatsApp, attendance, the LMS, or open a live URL. Those requirements are real instructions to the learner but unmarkable evidence, so they are excluded from scoring rather than failed by everyone.
-   - "Use Gemini Canvas to build it"      -> evidenceable=false (a dashboard does not name its maker)
+   THE TEST: does the criterion name a THING THE LEARNER PRODUCED? If yes it is ALWAYS evidenceable, even when it also names the tool that made it — the thing itself is the evidence, and how it was made is incidental. Only a claim about HOW or BY WHAT the work was made, containing no produced thing, is unevidenceable.
+   - "Use Gemini Canvas to build it"      -> evidenceable=false (no produced thing named; this is a method)
+   - "Dashboard from a data set using Gemini Canvas" -> evidenceable=TRUE (the dashboard is the deliverable and it is right there)
+   - "Gamma presentation on Data Science" -> evidenceable=TRUE (the presentation is the deliverable)
    - "A dashboard is present"             -> evidenceable=true
    - "Share the link in the WhatsApp group" -> evidenceable=false
    - "A published link is provided"       -> evidenceable=true (visible in the submission)
@@ -234,7 +243,7 @@ def _as_int(v) -> int:
 _OFFPLATFORM_PATTERNS = [
     # Getting the work into a system: "Submission uploaded to LMS"
     re.compile(r"\b(upload|uploaded|uploading|submit|submitted|submission)\b"
-               r".{0,25}\b(lms|portal|classroom|google\s+drive|google\s+form|dropbox)\b", re.I),
+               r".{0,45}\b(lms|portal|classroom|google\s+drive|google\s+form|dropbox)\b", re.I),
     # A criterion whose entire point is that the file arrived
     re.compile(r"^\s*(the\s+)?(submission|file|document|work|assignment|answer|deliverable)\s+"
                r"(is\s+|was\s+|has\s+been\s+)?(uploaded|submitted|shared|attached|received)\s*$", re.I),
@@ -244,8 +253,13 @@ _OFFPLATFORM_PATTERNS = [
                r"within the deadline|by the due date)\b", re.I),
     re.compile(r"\bdeadline\s+(met|compliance|adherence)\b", re.I),
     # Posting somewhere the reviewer cannot read — requires the ACT, not the noun
+    # "Post" as an IMPERATIVE only (start of the criterion) — an instruction
+    # reads "Post your deck in the group", while "blog post" and "LinkedIn
+    # post" are deliverables and must never be dropped.
+    re.compile(r"^\s*post\b.{0,45}\b(whatsapp|telegram|slack|discord|"
+               r"the\s+group|group\s+chat|community|forum|batch)\b", re.I),
     re.compile(r"\b(shared|share|posted|posting|published|circulated|forwarded)\b"
-               r".{0,25}\b(whatsapp|telegram|slack|discord|the\s+group|group\s+chat|"
+               r".{0,45}\b(whatsapp|telegram|slack|discord|the\s+group|group\s+chat|"
                r"community|forum|batch)\b", re.I),
     # Attendance as a fact to be checked, not as data to be analysed
     re.compile(r"\battendance\s+(is\s+|was\s+)?(marked|recorded|taken|maintained|met)\b", re.I),
@@ -343,6 +357,57 @@ def normalise(criteria: list) -> list:
 # more, they say so in the brief by asking for more of it.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# A PRODUCED THING IS ALWAYS VISIBLE (28 Aug 2026)
+#
+# Rule 5 tells the model to set evidenceable=false for anything the finished
+# work cannot show — "a dashboard does not name its maker". The model then
+# applied that to the DELIVERABLE ITSELF whenever the criterion happened to
+# mention the tool:
+#
+#   Day 07  "Dashboard from a data set using Gemini Canvas"   100 marks
+#   Day 09  "Gamma presentation on Data Science"               34 marks
+#
+# Day 07's was the ONLY criterion, so its ceiling fell to 0.0/10: every one of
+# 195 learners was mathematically unable to score, and 77 already carried a
+# mark from it. The dashboard is right there in the submission — "using Gemini
+# Canvas" is how it was MADE, not a separate claim to be proved.
+#
+# The distinction rule 5 wants is: a claim about HOW the work was made, with
+# no produced thing in it, cannot be evidenced ("Use Gemini Canvas to build
+# it", "ChatGPT assessment included"). A criterion whose SUBJECT is a thing
+# the learner produced always can be — the thing is the evidence.
+#
+# Prompts advise; code enforces. Same lesson as strip_offplatform and
+# cap_word_min. strip_offplatform still runs afterwards, so a genuine
+# logistics line that happens to name the artefact ("share the dashboard link
+# in the WhatsApp group") is still dropped there.
+# ---------------------------------------------------------------------------
+_PRODUCED_THING = re.compile(
+    r"\b(dashboard|presentation|deck|slides?|song|audio|video|image|picture|"
+    r"photo|poster|infographic|app|application|website|web\s*page|"
+    r"landing\s*page|portfolio|prototype|mock-?up|screens?|design|resume|cv|"
+    r"report\s*card|report|document|article|blog|script|notebook|chart|graph|"
+    r"logo|banner|artefact|artifact)\b", re.I)
+
+
+def force_visible_deliverables(requirements: list) -> list:
+    """Restore evidenceable on criteria whose subject is a produced thing.
+
+    Pure — returns new dicts, never mutates the input.
+    """
+    out = []
+    for r in requirements or []:
+        if (isinstance(r, dict) and not r.get("evidenceable", True)
+                and _PRODUCED_THING.search(str(r.get("name") or ""))):
+            r = {**r, "evidenceable": True}
+            print(f"ℹ️  requirements: keeping '{str(r.get('name'))[:50]}' — it "
+                  f"names something the learner PRODUCED, which the "
+                  f"submission shows")
+        out.append(r)
+    return out
+
+
 def requirements_to_criteria(requirements: list) -> list:
     """Task requirements -> equally weighted criteria totalling 100. Pure.
 
@@ -368,6 +433,10 @@ def requirements_to_criteria(requirements: list) -> list:
     clean = [r for r in clean if not _sum_row.match(str(r.get("name", "")))]
     if not clean:
         return [dict(c) for c in FALLBACK_CRITERIA]
+
+    # The deliverable itself can never be "unprovable" — see
+    # force_visible_deliverables for the day this rule cost 195 learners.
+    clean = force_visible_deliverables(clean)
 
     keepable = [r for r in clean if r.get("evidenceable", True)]
     dropped = [r for r in clean if not r.get("evidenceable", True)]

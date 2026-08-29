@@ -199,3 +199,124 @@ def test_the_design_still_wins_when_it_is_the_only_core_item():
     ]
     out = requirements_to_criteria(reqs)
     assert _share(out, "A working 3-screen prototype") == 70
+
+
+# ── The deliverable can never be "unprovable" (28 Aug 2026) ────────────────
+# Rule 5 asks the model to drop criteria a finished submission cannot show.
+# It applied that to the DELIVERABLE whenever the criterion also named the
+# tool that made it:
+#
+#   Day 07  "Dashboard from a data set using Gemini Canvas"  100 marks
+#   Day 09  "Gamma presentation on Data Science"              34 marks
+#
+# Day 07's was the ONLY criterion, so audit_rubrics reported a ceiling of
+# 0.0/10: 195 learners mathematically unable to score, 77 already holding a
+# mark from it. Prompts advise, code enforces.
+
+from app.services.rubric_service import (
+    force_visible_deliverables, requirements_to_criteria,
+)
+
+
+def _req(name, evidenceable=False, role="core"):
+    return {"name": name, "what_earns_it": "", "evidenceable": evidenceable,
+            "role": role}
+
+
+@pytest.mark.parametrize("name", [
+    "Dashboard from a data set using Gemini Canvas",
+    "Gamma presentation on Data Science",
+    "Song created with Suno",
+    "A 60-90 second video made with ElevenLabs",
+    "Portfolio website built in Lovable",
+    "Speaker Report Card image",
+])
+def test_a_thing_the_learner_produced_is_always_scoreable(name):
+    assert force_visible_deliverables([_req(name)])[0]["evidenceable"] is True
+
+
+@pytest.mark.parametrize("name", [
+    "Use Gemini Canvas to build it",
+    "ChatGPT assessment included",
+    "Yoodli practice session completed",
+    "Share the link in the WhatsApp group",
+    "Attendance marked for the session",
+])
+def test_a_claim_about_method_stays_unprovable(name):
+    """These name no produced thing, so nothing in the submission can show
+    them. Un-dropping these would fail every learner on a promise instead."""
+    assert force_visible_deliverables([_req(name)])[0]["evidenceable"] is False
+
+
+def test_the_input_is_never_mutated():
+    reqs = [_req("Dashboard built with Gemini Canvas")]
+    force_visible_deliverables(reqs)
+    assert reqs[0]["evidenceable"] is False, "caller's list was mutated"
+
+
+def test_day_07_can_now_be_passed():
+    """The whole task was one criterion, and it was excluded from scoring."""
+    criteria = requirements_to_criteria(
+        [_req("Dashboard from a data set using Gemini Canvas")])
+    assert sum(c["maxScore"] for c in criteria) == 100
+    assert "Dashboard" in criteria[0]["name"]
+
+
+def test_a_logistics_line_naming_the_artefact_is_still_dropped():
+    """force_visible_deliverables runs BEFORE strip_offplatform, which is what
+    keeps 'share the dashboard link on WhatsApp' out of scoring."""
+    from app.services.rubric_service import strip_offplatform
+    kept, dropped = strip_offplatform(
+        [{"name": "Share the dashboard link in the WhatsApp group",
+          "maxScore": 50, "whatEarnsIt": ""},
+         {"name": "Dashboard from a data set", "maxScore": 50,
+          "whatEarnsIt": ""}])
+    assert [c["name"] for c in kept] == ["Dashboard from a data set"]
+    assert len(dropped) == 1
+
+
+def test_the_version_bump_invalidates_the_cached_zero_ceiling_rubrics():
+    """The broken rubrics are CACHED under the v7 source hash. Without a bump
+    the code fix changes nothing for Day 07."""
+    from app.services.rubric_service import RUBRIC_VERSION
+    assert RUBRIC_VERSION >= 8
+
+
+# ── strip_offplatform's 25-character gap (28 Aug 2026) ─────────────────────
+# The off-platform patterns need an ACT and an OBJECT within N characters.
+# N was 25, and "Share the dashboard link in the WhatsApp group" is 26 — so a
+# pure logistics line survived as a scored criterion by one character.
+#
+# It mattered more after force_visible_deliverables: that line names a
+# dashboard, so it is now forced evidenceable, and strip_offplatform is the
+# only thing standing between it and 50 marks for something nobody can see.
+
+from app.services.rubric_service import strip_offplatform
+
+
+def _c(name):
+    return {"name": name, "maxScore": 50, "whatEarnsIt": ""}
+
+
+@pytest.mark.parametrize("logistics", [
+    "Share the dashboard link in the WhatsApp group",
+    "Submission uploaded to the LMS portal for review",
+    "Post your finished presentation in the batch group chat",
+])
+def test_logistics_are_dropped_however_wordy(logistics):
+    kept, dropped = strip_offplatform([_c(logistics), _c("Dashboard created")])
+    assert [c["name"] for c in kept] == ["Dashboard created"]
+    assert len(dropped) == 1
+
+
+@pytest.mark.parametrize("deliverable", [
+    "Write a blog post for the community website",
+    "LinkedIn post about your learning",
+    "Portfolio page published as a website",
+    "Blog post published",
+])
+def test_a_deliverable_is_never_mistaken_for_logistics(deliverable):
+    """Widening the gap and adding an imperative "Post" must not start
+    eating real work. Publishing a page IS the deliverable on Day 04."""
+    kept, dropped = strip_offplatform([_c(deliverable)])
+    assert [c["name"] for c in kept] == [deliverable], f"dropped: {dropped}"
