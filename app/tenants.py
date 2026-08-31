@@ -28,8 +28,11 @@
 #   7. On the new tenant's Netlify, set VITE_AGENT_API_KEY to its key
 # ---------------------------------------------------------------------------
 
+import logging
 import os
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 class Tenant:
@@ -128,7 +131,18 @@ def resolve_tenant_by_key(api_key: str) -> Tenant:
     """
     from fastapi import HTTPException
 
+    # A 401 in the access log is a dead end: "missing" and "wrong" need
+    # completely different fixes — one is a caller that forgot the header, the
+    # other is a stale key in a frontend build — and the log said neither.
+    # Live on 31 Aug: every student screen for one learner 401ing, with nothing
+    # to distinguish "the header never arrived" from "the header is out of date".
+    #
+    # The LENGTH is logged and the key never is. A truncated or empty value
+    # shows itself immediately, and a length that matches while the key does not
+    # points straight at a rotated secret.
     if not api_key:
+        logger.warning("[tenant] 401 — no x-api-key header on the request. The "
+                       "caller is not sending it at all.")
         raise HTTPException(status_code=401, detail="missing x-api-key header")
 
     api_key = api_key.strip()
@@ -143,6 +157,12 @@ def resolve_tenant_by_key(api_key: str) -> Tenant:
             # api_key env var not set for this tenant — skip it
             continue
 
+    configured = [t.id for t in TENANTS.values() if t.has_api_key()]
+    logger.warning(
+        "[tenant] 401 — x-api-key of length %d matches no tenant. Configured "
+        "here: %s. If the length looks right, the key has been rotated on one "
+        "side only: compare the caller's build-time key with LMS_API_KEY on "
+        "this Space.", len(api_key), configured or "NONE")
     raise HTTPException(status_code=401, detail="invalid x-api-key")
 
 
