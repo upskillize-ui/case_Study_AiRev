@@ -55,7 +55,23 @@ OCR_MODEL = os.getenv("OCR_MODEL", _HAIKU)
 # screenshot is bytes we pay to upload and tokens we pay to encode, for exactly
 # zero extra readability. Fitting first is cheaper AND more reliable.
 VISION_LONG_EDGE = int(os.getenv("VISION_LONG_EDGE", "1568"))
-VISION_B64_MAX   = int(os.getenv("VISION_B64_MAX", str(9 * 1024 * 1024)))  # under 10 MB
+VISION_B64_MAX   = int(os.getenv("VISION_B64_MAX", str(4 * 1024 * 1024)))
+# The ceiling that actually bit: 413 RequestTooLargeError on live submissions.
+#
+# The per-image cap was never the binding constraint. A request carries EVERY
+# image at once — two screenshots on one submission, up to five rasterised PDF
+# pages — and the gateway's request limit is far below the direct API's 32 MB.
+# Each picture was comfortably legal; the envelope was not.
+#
+# So the budget is on the REQUEST. Images are fitted, and if the batch is still
+# over, the whole batch is re-fitted smaller until it fits — and only then are
+# trailing pages dropped. Reading three pages of a five-page PDF beats reading
+# none of it, which is what a 413 gave us.
+VISION_REQUEST_B64_MAX = int(os.getenv("VISION_REQUEST_B64_MAX",
+                                       str(4 * 1024 * 1024)))
+# Below this the batch is not shrunk further — text stops being legible and a
+# picture the model cannot read is not worth sending at any size.
+VISION_MIN_LONG_EDGE = int(os.getenv("VISION_MIN_LONG_EDGE", "700"))
 
 
 def _b64_len(n: int) -> int:
@@ -63,7 +79,8 @@ def _b64_len(n: int) -> int:
     return ((n + 2) // 3) * 4
 
 
-def _fit_for_vision(data: bytes, media_type: str) -> Tuple[bytes, str]:
+def _fit_for_vision(data: bytes, media_type: str,
+                    long_edge: int = 0) -> Tuple[bytes, str]:
     """Make one image safe to send to the vision API.
 
     Returns the original bytes untouched when they are already within both
@@ -78,13 +95,14 @@ def _fit_for_vision(data: bytes, media_type: str) -> Tuple[bytes, str]:
     except ImportError:
         return data, media_type
 
+    edge = long_edge or VISION_LONG_EDGE
     try:
         with Image.open(io.BytesIO(data)) as probe:
             wide = max(probe.size)
     except Exception:
         return data, media_type          # not decodable here; let the API judge
 
-    if wide <= VISION_LONG_EDGE and _b64_len(len(data)) <= VISION_B64_MAX:
+    if wide <= edge and _b64_len(len(data)) <= VISION_B64_MAX:
         return data, media_type
 
     try:
@@ -92,12 +110,14 @@ def _fit_for_vision(data: bytes, media_type: str) -> Tuple[bytes, str]:
         # Animated formats: the API reads frame one anyway.
         img = img.convert("RGB")
         w, h = img.size
-        if max(w, h) > VISION_LONG_EDGE:
-            scale = VISION_LONG_EDGE / float(max(w, h))
+        if max(w, h) > edge:
+            scale = edge / float(max(w, h))
             img = img.resize((max(1, round(w * scale)), max(1, round(h * scale))),
                              Image.LANCZOS)
         # PNG first: screenshots and diagrams are what this cohort submits, and
-        # lossless keeps small text legible. JPEG only if PNG is still too big.
+        # lossless keeps small text legible. JPEG as soon as PNG costs too much —
+        # a 1568 px screenshot is often 1-3 MB as PNG and 200 KB as JPEG, and at
+        # quality 85 the difference is invisible to an OCR model.
         buf = io.BytesIO()
         img.save(buf, format="PNG", optimize=True)
         out = buf.getvalue()
@@ -1241,6 +1261,45 @@ def image_for_judge(data: bytes, ext: str) -> Tuple[str, str]:
     return base64.b64encode(ready).decode(), media_type
 
 
+def _fit_batch(images, budget=None, long_edge=None):
+    """Fit a whole REQUEST inside the transport's size limit. Pure-ish.
+
+    Takes [(media_type, b64)] and returns the same, small enough to send.
+
+    Order matters. Shrink every image first — a slightly smaller picture costs
+    nothing an OCR model can perceive. Only when the batch cannot fit at the
+    minimum readable size are trailing images dropped, and the caller is told
+    how many, because "we read three of your five pages" is a different fact
+    from "we read your work".
+    """
+    budget = budget or VISION_REQUEST_B64_MAX
+    edge = long_edge or VISION_LONG_EDGE
+    fitted = list(images)
+
+    def total(batch):
+        return sum(len(b64) for _, b64 in batch)
+
+    while True:
+        if total(fitted) <= budget or edge <= VISION_MIN_LONG_EDGE:
+            break
+        edge = max(VISION_MIN_LONG_EDGE, int(edge * 0.75))
+        out = []
+        for media_type, b64 in fitted:
+            try:
+                raw, mt = _fit_for_vision(base64.b64decode(b64), media_type,
+                                          long_edge=edge)
+                out.append((mt, base64.b64encode(raw).decode()))
+            except Exception:
+                out.append((media_type, b64))
+        fitted = out
+
+    dropped = 0
+    while len(fitted) > 1 and total(fitted) > budget:
+        fitted.pop()
+        dropped += 1
+    return fitted, dropped
+
+
 def _extract_image(data: bytes, ext: str) -> Tuple[str, str]:
     """OCR a single image (handwritten, printed, or AI-generated)."""
     data, media_type, why = _to_readable_image(data, ext)
@@ -1287,18 +1346,17 @@ def _ocr_with_claude(images: List[Tuple[str, str]], kind: str) -> Tuple[str, str
     # image, the pictures inside an OOXML file, and up to five rasterised PDF
     # pages in ONE request — and only the first went through a converter. One
     # choke point cannot drift out of step with the others.
-    content = []
+    prepared = []
     for media_type, b64 in images:
         try:
-            fitted, media_type = _fit_for_vision(base64.b64decode(b64), media_type)
-            b64 = base64.b64encode(fitted).decode()
+            raw, media_type = _fit_for_vision(base64.b64decode(b64), media_type)
+            b64 = base64.b64encode(raw).decode()
         except Exception:
             pass                          # send the original; the API will say why
-        content.append({
-            "type": "image",
-            "source": {"type": "base64", "media_type": media_type, "data": b64},
-        })
-    content.append({
+        prepared.append((media_type, b64))
+    budget = VISION_REQUEST_B64_MAX
+
+    text_block = {
         "type": "text",
         "text": (
             f"The image(s) above are a student's {kind} submitted as coursework. "
@@ -1314,26 +1372,51 @@ def _ocr_with_claude(images: List[Tuple[str, str]], kind: str) -> Tuple[str, str
             "TEXT:\n<transcription or NONE>\n\n"
             "VISUAL:\n<one short factual paragraph>"
         ),
-    })
+    }
 
     last = ""
     for p in chain:
-        try:
-            msg = _client_for(p).messages.create(
-                model=OCR_MODEL,
-                max_tokens=4000,
-                messages=[{"role": "user", "content": content}],
-            )
-        except Exception as e:
-            # The class name alone is useless. "BadRequestError" appeared on
-            # live submissions for days and nobody could tell whether the image
-            # was too large, too big on its long edge, or the key was wrong —
-            # because the one string that says so was discarded here.
-            detail = str(e).strip().replace("\n", " ")
-            last = f"OCR failed on {p.name}: {type(e).__name__}" + (
-                f": {detail[:240]}" if detail else "")
+        # We do not know this gateway's request limit and should not pretend to.
+        # Send at the configured budget; if it answers 413, halve and try again.
+        # Two attempts, then the next provider. Self-healing beats a constant
+        # that is wrong the day the gateway changes it.
+        for attempt in range(3):
+            sized, dropped = _fit_batch(list(prepared), budget=budget)
+            if dropped:
+                logger.warning("image batch too large for one request — sending "
+                               "%d of %d", len(sized), len(sized) + dropped)
+            content = [{"type": "image",
+                         "source": {"type": "base64", "media_type": mt,
+                                    "data": b64}}
+                        for mt, b64 in sized] + [text_block]
+            try:
+                msg = _client_for(p).messages.create(
+                    model=OCR_MODEL,
+                    max_tokens=4000,
+                    messages=[{"role": "user", "content": content}],
+                )
+                break
+            except Exception as e:
+                if "413" in str(e) or "TooLarge" in type(e).__name__:
+                    budget = max(400_000, budget // 2)
+                    logger.warning("%s refused the request size — retrying under "
+                                   "%d KB of base64", p.name, budget // 1024)
+                    continue
+                # Anything else is this provider's answer, not a size problem.
+                # Record it and let the NEXT provider try — the same failover
+                # every other Claude call gets.
+                detail = str(e).strip().replace("\n", " ")
+                last = f"OCR failed on {p.name}: {type(e).__name__}" + (
+                    f": {detail[:240]}" if detail else "")
+                logger.warning(last)
+                msg = None
+                break
+        else:
+            last = f"OCR failed on {p.name}: request too large even when shrunk"
             logger.warning(last)
-            continue                      # the next provider gets its turn
+            continue
+        if msg is None:
+            continue                      # this provider answered with an error
         try:
             text_parts = [b.text for b in msg.content if getattr(b, "type", "") == "text"]
             raw = _clean("\n".join(text_parts))

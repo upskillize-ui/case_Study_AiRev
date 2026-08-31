@@ -735,9 +735,18 @@ def re_review_assignment(
     response["reReviewed"] = True
     response["previousGrade"] = previous_grade
     response["artefacts"] = inventory
-    print(f"[REGRADE] submission {submission_id}: {previous_grade} -> "
-          f"{response['feedback'].get('scoreMarks')}/{max_marks} "
-          f"({word_count} words, {len(artefacts)} artefact(s))")
+    # Report what was STORED, not what was computed. The old line printed the
+    # response's scoreMarks even when the guard had refused the write, so the
+    # log read "None -> 0.0/100" for a submission that was correctly left
+    # ungraded — and anyone reading the log concluded a real essay had been
+    # zeroed.
+    if response.get("notGraded"):
+        print(f"[REGRADE] submission {submission_id}: {previous_grade} -> NOT GRADED "
+              f"(guard refused; {word_count} words, {len(artefacts)} artefact(s))")
+    else:
+        print(f"[REGRADE] submission {submission_id}: {previous_grade} -> "
+              f"{response['feedback'].get('scoreMarks')}/{max_marks} "
+              f"({word_count} words, {len(artefacts)} artefact(s))")
     return response
 
 
@@ -812,11 +821,40 @@ def _pipeline_assignment_response(tenant, submission, r, word_count, start_time,
         "plagiarismFlag":   "high" if duplicate else "low",
         **r["authorship"],
     }
+    # THE RETURN VALUE IS THE POINT. update_... runs grade_guard and answers
+    # False when it REFUSED to store a mark — the row is then stamped
+    # not-graded with an explanation for the learner.
+    #
+    # This call used to discard that answer and build the response from
+    # `result` regardless, so a guarded submission came back to the caller as
+    # a real score: `success: true`, `scoreMarks: 0.0`, a full feedback card.
+    # The database said "not graded, this is our side, not yours"; the API said
+    # "zero". On the live submit path that response IS the student's screen, so
+    # the guard protected the record and the learner saw the zero anyway —
+    # which is the complaint the guard exists to prevent, arriving by the one
+    # route the guard could not close.
+    #
+    # A refused mark must look refused everywhere.
+    wrote = False
     try:
-        assignment_db_service.update_assignment_submission_with_ai_results(
+        wrote = assignment_db_service.update_assignment_submission_with_ai_results(
             tenant, submission["submissionId"], result, max_marks)
     except Exception as db_err:
         print(f"[ASSIGNMENT] DB update failed after pipeline review: {db_err}")
+
+    if not wrote:
+        msg = ("We could not complete a fair review of this attempt, so no "
+               "marks have been recorded. This is our side, not yours — "
+               "nothing you submitted is lost, and it will be reviewed again.")
+        print(f"[ASSIGNMENT] ⛔ NOT GRADED: submission "
+              f"{submission['submissionId']} — response carries no score")
+        return {
+            "success": True,
+            "notGraded": True,
+            "submission": submission,
+            "feedback": _empty_feedback(msg, helpful=False),
+            "processingTimeMs": int((time.time() - start_time) * 1000),
+        }
 
     print(f"[ASSIGNMENT] ✅ Pipeline review: score={scores['totalScore']} grade={grade} "
           f"path={r['decisions']['scoringPath']} gates={len(scores['gatesHit'])}")
