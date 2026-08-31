@@ -85,6 +85,10 @@ _learned_budget = {"b64": 0}
 # Below this the batch is not shrunk further — text stops being legible and a
 # picture the model cannot read is not worth sending at any size.
 VISION_MIN_LONG_EDGE = int(os.getenv("VISION_MIN_LONG_EDGE", "700"))
+# No image is squeezed below this share of a request, however many there are:
+# past it the JPEG ladder is producing something no model can read, and a
+# dropped page is more honest than an illegible one.
+MIN_IMAGE_SHARE = int(os.getenv("VISION_MIN_IMAGE_B64", str(120 * 1024)))
 
 
 def _b64_len(n: int) -> int:
@@ -93,8 +97,17 @@ def _b64_len(n: int) -> int:
 
 
 def _fit_for_vision(data: bytes, media_type: str,
-                    long_edge: int = 0) -> Tuple[bytes, str]:
+                    long_edge: int = 0, b64_cap: int = 0) -> Tuple[bytes, str]:
     """Make one image safe to send to the vision API.
+
+    `b64_cap` is this image's own base64 ceiling, defaulting to the per-image
+    limit. _fit_batch passes each picture its SHARE of the request envelope,
+    and that is the whole point: a rasterised page is legal on its own at 4 MB
+    and illegal as one of five in a 2 MB request. Without a tighter cap the
+    PNG branch below always wins, the JPEG ladder never runs, and the batch
+    fitter can only shrink pixels — which on a page of text is the one axis
+    that costs legibility and saves the least. That is what was still dropping
+    pages 3-5 of five-page PDFs after the 413 retry landed.
 
     Returns the original bytes untouched when they are already within both
     limits — the common case, and no student should pay a re-encode for it.
@@ -109,13 +122,14 @@ def _fit_for_vision(data: bytes, media_type: str,
         return data, media_type
 
     edge = long_edge or VISION_LONG_EDGE
+    cap  = b64_cap or VISION_B64_MAX
     try:
         with Image.open(io.BytesIO(data)) as probe:
             wide = max(probe.size)
     except Exception:
         return data, media_type          # not decodable here; let the API judge
 
-    if wide <= edge and _b64_len(len(data)) <= VISION_B64_MAX:
+    if wide <= edge and _b64_len(len(data)) <= cap:
         return data, media_type
 
     try:
@@ -134,13 +148,13 @@ def _fit_for_vision(data: bytes, media_type: str,
         buf = io.BytesIO()
         img.save(buf, format="PNG", optimize=True)
         out = buf.getvalue()
-        if _b64_len(len(out)) <= VISION_B64_MAX:
+        if _b64_len(len(out)) <= cap:
             return out, "image/png"
         for quality in (85, 70, 55, 40):
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=quality, optimize=True)
             out = buf.getvalue()
-            if _b64_len(len(out)) <= VISION_B64_MAX:
+            if _b64_len(len(out)) <= cap:
                 return out, "image/jpeg"
         return out, "image/jpeg"
     except Exception as e:
@@ -1287,24 +1301,36 @@ def _fit_batch(images, budget=None, long_edge=None):
     """
     budget = budget or VISION_REQUEST_B64_MAX
     edge = long_edge or VISION_LONG_EDGE
-    fitted = list(images)
+    source = list(images)
+    fitted = source
 
-    def total(batch):
-        return sum(len(b64) for _, b64 in batch)
+    def total(bat):
+        return sum(len(b64) for _, b64 in bat)
 
-    while True:
-        if total(fitted) <= budget or edge <= VISION_MIN_LONG_EDGE:
-            break
-        edge = max(VISION_MIN_LONG_EDGE, int(edge * 0.75))
+    # Each picture's SHARE of the envelope. Passing it down is what lets a page
+    # reach for JPEG instead of only losing pixels: five pages in a 2 MB request
+    # get 400 KB each, and 400 KB of base64 is a quality-85 JPEG, not a PNG.
+    # The floor stops a large batch from asking for something illegible.
+    share = max(MIN_IMAGE_SHARE, budget // max(1, len(source)))
+
+    # Re-fit from the ORIGINALS every pass. Re-encoding the previous pass's
+    # output would stack JPEG artefacts on text that is already marginal.
+    def refit(px):
         out = []
-        for media_type, b64 in fitted:
+        for media_type, b64 in source:
             try:
                 raw, mt = _fit_for_vision(base64.b64decode(b64), media_type,
-                                          long_edge=edge)
+                                          long_edge=px, b64_cap=share)
                 out.append((mt, base64.b64encode(raw).decode()))
             except Exception:
                 out.append((media_type, b64))
-        fitted = out
+        return out
+
+    while total(fitted) > budget:
+        fitted = refit(edge)
+        if total(fitted) <= budget or edge <= VISION_MIN_LONG_EDGE:
+            break
+        edge = max(VISION_MIN_LONG_EDGE, int(edge * 0.75))
 
     dropped = 0
     while len(fitted) > 1 and total(fitted) > budget:
