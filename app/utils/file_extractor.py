@@ -68,7 +68,20 @@ VISION_B64_MAX   = int(os.getenv("VISION_B64_MAX", str(4 * 1024 * 1024)))
 # trailing pages dropped. Reading three pages of a five-page PDF beats reading
 # none of it, which is what a 413 gave us.
 VISION_REQUEST_B64_MAX = int(os.getenv("VISION_REQUEST_B64_MAX",
-                                       str(4 * 1024 * 1024)))
+                                       str(2 * 1024 * 1024)))
+
+# What the gateway ACTUALLY accepted, learned at runtime.
+#
+# Live on 31 Aug: every image submission logged
+# "startupapi refused the request size — retrying under 2048 KB" and then
+# succeeded. The retry worked, but each one cost a rejected round trip and a
+# fresh re-encode of every picture — paid on every submission, all day, to
+# rediscover a limit we had already been told twice.
+#
+# So the process remembers. The first 413 lowers the ceiling for every call
+# after it, and a restart re-learns it — which is correct, because the limit
+# belongs to the gateway and may change without telling us.
+_learned_budget = {"b64": 0}
 # Below this the batch is not shrunk further — text stops being legible and a
 # picture the model cannot read is not worth sending at any size.
 VISION_MIN_LONG_EDGE = int(os.getenv("VISION_MIN_LONG_EDGE", "700"))
@@ -1354,7 +1367,7 @@ def _ocr_with_claude(images: List[Tuple[str, str]], kind: str) -> Tuple[str, str
         except Exception:
             pass                          # send the original; the API will say why
         prepared.append((media_type, b64))
-    budget = VISION_REQUEST_B64_MAX
+    budget = _learned_budget["b64"] or VISION_REQUEST_B64_MAX
 
     text_block = {
         "type": "text",
@@ -1399,8 +1412,12 @@ def _ocr_with_claude(images: List[Tuple[str, str]], kind: str) -> Tuple[str, str
             except Exception as e:
                 if "413" in str(e) or "TooLarge" in type(e).__name__:
                     budget = max(400_000, budget // 2)
+                    # Remember it, so the next submission does not pay for this
+                    # discovery again.
+                    _learned_budget["b64"] = budget
                     logger.warning("%s refused the request size — retrying under "
-                                   "%d KB of base64", p.name, budget // 1024)
+                                   "%d KB of base64 (remembered for this process)",
+                                   p.name, budget // 1024)
                     continue
                 # Anything else is this provider's answer, not a size problem.
                 # Record it and let the NEXT provider try — the same failover
