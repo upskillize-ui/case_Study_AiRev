@@ -44,6 +44,78 @@ MAX_OCR_PAGES = int(os.getenv("MAX_OCR_PAGES", "5"))                       # OCR
 from app.services.ai_service import HAIKU as _HAIKU
 OCR_MODEL = os.getenv("OCR_MODEL", _HAIKU)
 
+# What the vision API will actually accept, and what it does with the rest.
+#
+# The limit is 10 MB of BASE64, not of file bytes — base64 inflates by a third,
+# so a 7.6 MB screenshot is already over. Nothing here checked either number,
+# and the failure arrived as a bare BadRequestError with the reason discarded.
+#
+# The long edge matters more than the size. The API downscales every image to
+# 1568 px on the standard tier before the model ever sees it, so a 4000 px phone
+# screenshot is bytes we pay to upload and tokens we pay to encode, for exactly
+# zero extra readability. Fitting first is cheaper AND more reliable.
+VISION_LONG_EDGE = int(os.getenv("VISION_LONG_EDGE", "1568"))
+VISION_B64_MAX   = int(os.getenv("VISION_B64_MAX", str(9 * 1024 * 1024)))  # under 10 MB
+
+
+def _b64_len(n: int) -> int:
+    """Base64 length of n bytes, without encoding them. Pure."""
+    return ((n + 2) // 3) * 4
+
+
+def _fit_for_vision(data: bytes, media_type: str) -> Tuple[bytes, str]:
+    """Make one image safe to send to the vision API.
+
+    Returns the original bytes untouched when they are already within both
+    limits — the common case, and no student should pay a re-encode for it.
+
+    Never raises. An image that cannot be re-encoded is sent as it is: a
+    BadRequestError we can read beats a silent drop, and the caller now reports
+    the API's own reason.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        return data, media_type
+
+    try:
+        with Image.open(io.BytesIO(data)) as probe:
+            wide = max(probe.size)
+    except Exception:
+        return data, media_type          # not decodable here; let the API judge
+
+    if wide <= VISION_LONG_EDGE and _b64_len(len(data)) <= VISION_B64_MAX:
+        return data, media_type
+
+    try:
+        img = Image.open(io.BytesIO(data))
+        # Animated formats: the API reads frame one anyway.
+        img = img.convert("RGB")
+        w, h = img.size
+        if max(w, h) > VISION_LONG_EDGE:
+            scale = VISION_LONG_EDGE / float(max(w, h))
+            img = img.resize((max(1, round(w * scale)), max(1, round(h * scale))),
+                             Image.LANCZOS)
+        # PNG first: screenshots and diagrams are what this cohort submits, and
+        # lossless keeps small text legible. JPEG only if PNG is still too big.
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        out = buf.getvalue()
+        if _b64_len(len(out)) <= VISION_B64_MAX:
+            return out, "image/png"
+        for quality in (85, 70, 55, 40):
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=quality, optimize=True)
+            out = buf.getvalue()
+            if _b64_len(len(out)) <= VISION_B64_MAX:
+                return out, "image/jpeg"
+        return out, "image/jpeg"
+    except Exception as e:
+        logger.warning("could not fit image for vision (%s) - sending as is",
+                       type(e).__name__)
+        return data, media_type
+
+
 # What learners actually send. The cohort submits AI-generated images from a
 # different tool every day and screenshots from whatever device is to hand, so
 # the list is deliberately wider than "what the vision API accepts natively":
@@ -1163,6 +1235,9 @@ def image_for_judge(data: bytes, ext: str) -> Tuple[str, str]:
     from app.services.ai_service import IMAGE_MEDIA_TYPES
     if media_type not in IMAGE_MEDIA_TYPES:
         return "", ""
+    # The marker looks at this image through the same API, under the same
+    # limits, so it gets the same fit.
+    ready, media_type = _fit_for_vision(ready, media_type)
     return base64.b64encode(ready).decode(), media_type
 
 
@@ -1187,8 +1262,17 @@ def _ocr_with_claude(images: List[Tuple[str, str]], kind: str) -> Tuple[str, str
     except ImportError:
         return "", "anthropic SDK not installed"
 
+    # Fit here, not at each caller. Three paths reach this function — a single
+    # image, the pictures inside an OOXML file, and up to five rasterised PDF
+    # pages in ONE request — and only the first went through a converter. One
+    # choke point cannot drift out of step with the others.
     content = []
     for media_type, b64 in images:
+        try:
+            fitted, media_type = _fit_for_vision(base64.b64decode(b64), media_type)
+            b64 = base64.b64encode(fitted).decode()
+        except Exception:
+            pass                          # send the original; the API will say why
         content.append({
             "type": "image",
             "source": {"type": "base64", "media_type": media_type, "data": b64},
@@ -1229,8 +1313,14 @@ def _ocr_with_claude(images: List[Tuple[str, str]], kind: str) -> Tuple[str, str
             return "", NO_TEXT_IN_IMAGE
         return raw, ""
     except Exception as e:
+        # The class name alone is useless. "BadRequestError" appeared on live
+        # submissions for days and nobody could tell whether it meant the image
+        # was too large, too big on its long edge, or mislabelled — because the
+        # one string that says so was discarded here. The API's own message is
+        # short, safe to store and is the whole diagnosis.
         logger.exception("vision OCR failed")
-        return "", f"OCR failed: {type(e).__name__}"
+        detail = str(e).strip().replace("\n", " ")
+        return "", f"OCR failed: {type(e).__name__}" + (f": {detail[:300]}" if detail else "")
 
 
 # ---------- Spreadsheets ----------------------------------------------------

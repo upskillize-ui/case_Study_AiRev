@@ -281,6 +281,17 @@ def from_links_in(text: str, limit: int = MAX_LINKS,
                 # questions, and a website day turns on the second one.
                 if shot and body:
                     picture = shot
+                # Keep the picture where something other than this process can
+                # reach it. In-memory it lives eight at a time for a few
+                # minutes; the LMS needs it to build the student's post, and
+                # rendering the same page twice to photograph it twice is not a
+                # trade worth making. No-ops unless a review set a target.
+                try:
+                    from app.services import link_shot_store
+                    link_shot_store.remember(url, shot_b64=shot,
+                                             why=render_why or why)
+                except Exception:
+                    pass                  # a souvenir must never fail a review
                 if notes and body:
                     # Stated as OUR observation, never as the learner's words,
                     # so the marker cannot mistake it for their writing.
@@ -291,7 +302,14 @@ def from_links_in(text: str, limit: int = MAX_LINKS,
                                 media_type="image/jpeg" if picture else ""))
         else:
             # The link itself is still evidence the learner published SOMETHING;
-            # we simply could not read it from here. Both facts go on the record.
+            # we simply could not read it from here. Both facts go on the record
+            # — including for anything downstream, which must not build a post
+            # out of a page nobody could open.
+            try:
+                from app.services import link_shot_store
+                link_shot_store.remember(url, why=why)
+            except Exception:
+                pass
             out.append(Artefact(kind="link", label=url, note=why, confirmed=True))
     return out
 

@@ -40,6 +40,7 @@ from __future__ import annotations
 import base64
 import ipaddress
 import hashlib
+import logging
 import os
 import re
 import threading
@@ -49,6 +50,8 @@ from typing import Optional, Tuple
 from urllib.parse import urlparse
 
 from app.utils.url_guard import check_public_url
+
+logger = logging.getLogger(__name__)
 
 LINK_RENDER_WAIT_MS = int(os.getenv("LINK_RENDER_WAIT_MS", "6000"))
 LINK_RENDER_TIMEOUT_MS = int(os.getenv("LINK_RENDER_TIMEOUT_MS", "30000"))
@@ -71,6 +74,19 @@ LINK_RENDER_RELOAD_ON_CHALLENGE = os.getenv(
 # is the shape of rate limiting, not of a broken renderer. A few seconds of
 # space between visits costs a link day nothing and stops us tripping it.
 LINK_RENDER_HOST_GAP_MS = int(os.getenv("LINK_RENDER_HOST_GAP_MS", "5000"))
+# How many times the page may be loaded again while a challenge is showing.
+#
+# It was ONE, and not by intent: `reloaded` was set on the first settle attempt
+# and never reset, so the remaining four attempts could only wait. A managed
+# challenge clears on a fresh load far more often than on patience, and the
+# fresh load is the cheap half of the loop.
+LINK_RENDER_MAX_RELOADS = int(os.getenv("LINK_RENDER_MAX_RELOADS", "3"))
+# A host that has just challenged us will challenge us again if we come
+# straight back. Each recent challenge doubles that host's gap, up to a
+# ceiling — so one Gamma link tripping the check slows Gamma down for the next
+# few students instead of dragging all of them through the same failure.
+LINK_RENDER_CHALLENGE_GAP_MAX_MS = int(
+    os.getenv("LINK_RENDER_CHALLENGE_GAP_MAX_MS", "60000"))
 # How long a worker will wait for the browser to be free before giving up on
 # rendering and letting the review proceed without it. Day 05 (22 Aug) had two
 # items take 3,916,989ms and 3,941,830ms — 65 MINUTES each — and the run's
@@ -145,12 +161,6 @@ CHROME_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 
 # What a gate, a challenge or an error page says — none of it the student's
 # work. Live 22 Aug: two Notion links returned "Your browser is not
-# compatible with Notion" and one returned Cloudflare's "Just a moment...",
-# and all three would have been scored as the submission. A page matching
-# any of these is reported unreadable WITH ITS REASON, so the student can be
-# told what to fix instead of being graded on Notion's error text.
-# What a gate, a challenge or an error page says — none of it the student's
-# work. Live 22 Aug: two Notion links returned "Your browser is not
 # compatible with Notion", one returned Cloudflare's "Just a moment...", and
 # after those were fixed a third returned Notion's sign-in wall — "Sign in
 # to see this page in Darshana Gaikwad's space" — which the first phrase
@@ -218,6 +228,28 @@ _WEAK_INTERSTITIALS = (
 
 _render_lock = threading.Lock()
 _last_visit: dict = {}                # host -> monotonic seconds of last render
+_challenges: dict = {}                # host -> consecutive bot-checks seen
+
+
+def host_gap_ms(base_ms: int, challenges: int, ceiling_ms: int) -> int:
+    """The gap to leave before revisiting a host. Pure.
+
+    Doubles per consecutive challenge, capped. Zero challenges leaves the base
+    gap exactly as it was, so a normal link day pays nothing for this.
+    """
+    if base_ms <= 0:
+        return 0
+    gap = base_ms * (2 ** max(0, int(challenges)))
+    return int(min(gap, max(base_ms, ceiling_ms)))
+
+
+def note_challenge(host: str, challenged: bool) -> int:
+    """Record whether this host just bot-checked us. Returns the new count."""
+    h = (host or "").lower()
+    if not h:
+        return 0
+    _challenges[h] = (_challenges.get(h, 0) + 1) if challenged else 0
+    return _challenges[h]
 
 
 def wait_needed(last_at: float, now: float, gap_ms: int) -> float:
@@ -275,6 +307,29 @@ def _flatten(text: str) -> str:
     return " ".join(flat.split())
 
 
+def interstitial_match(title: str, text: str) -> Tuple[str, str]:
+    """(reason, the phrase that matched). Pure.
+
+    The phrase is for the LOG, never for the student. "Cloudflare" and "a
+    sign-in wall" are different failures needing different advice, and until
+    the matched phrase was recorded nobody could tell from the outside which
+    one a link had hit — the same blindness that made `OCR failed:
+    BadRequestError` undiagnosable for days.
+    """
+    blob = _flatten(f"{title or ''} {text or ''}")
+    for phrases, reason in _STRONG_INTERSTITIALS:
+        for p in phrases:
+            if p in blob:
+                return reason, p
+    if len((text or "").split()) > LINK_INTERSTITIAL_MAX_WORDS:
+        return "", ""
+    for phrases, reason in _WEAK_INTERSTITIALS:
+        for p in phrases:
+            if p in blob:
+                return reason, p
+    return "", ""
+
+
 def interstitial_reason(title: str, text: str) -> str:
     """A gate, a challenge or an error page instead of the work? Pure.
 
@@ -284,16 +339,17 @@ def interstitial_reason(title: str, text: str) -> str:
     page too short to be a submission, so a portfolio that happens to say
     "sign in" keeps its grade.
     """
-    blob = _flatten(f"{title or ''} {text or ''}")
-    for phrases, reason in _STRONG_INTERSTITIALS:
-        if any(p in blob for p in phrases):
-            return reason
-    if len((text or "").split()) > LINK_INTERSTITIAL_MAX_WORDS:
-        return ""
-    for phrases, reason in _WEAK_INTERSTITIALS:
-        if any(p in blob for p in phrases):
-            return reason
-    return ""
+    return interstitial_match(title, text)[0]
+
+
+def is_challenge(reason: str) -> bool:
+    """Is this reason a bot-check rather than a private link? Pure.
+
+    A challenge is worth waiting out and worth backing off for. A sign-in wall
+    is not: no amount of patience will publish a private page, and retrying
+    only spends the browser other students are queueing for.
+    """
+    return "human-check" in (reason or "")
 
 
 def _blocked_host(host: str) -> bool:
@@ -391,13 +447,19 @@ def _render_raw(url: str, walk: bool = False) -> Tuple[Optional[Rendered], str]:
                 # A challenge page resolves itself; give it the chance
                 # before calling the link unreadable. Costs nothing on a
                 # page that came back clean the first time.
-                reloaded = False
-                for _ in range(LINK_RENDER_SETTLE_TRIES):
-                    if not interstitial_reason(title, text):
+                reloads = 0
+                reason, phrase = interstitial_match(title, text)
+                for attempt in range(LINK_RENDER_SETTLE_TRIES):
+                    if not reason:
+                        break
+                    # A sign-in wall is not going to open by itself. Waiting on
+                    # one only spends the browser every other review is queued
+                    # behind, so stop and report it now.
+                    if not is_challenge(reason):
                         break
                     page.wait_for_timeout(LINK_RENDER_SETTLE_MS)
-                    if LINK_RENDER_RELOAD_ON_CHALLENGE and not reloaded:
-                        reloaded = True
+                    if LINK_RENDER_RELOAD_ON_CHALLENGE and reloads < LINK_RENDER_MAX_RELOADS:
+                        reloads += 1
                         try:
                             page.reload(wait_until="domcontentloaded",
                                         timeout=LINK_RENDER_TIMEOUT_MS)
@@ -406,6 +468,21 @@ def _render_raw(url: str, walk: bool = False) -> Tuple[Optional[Rendered], str]:
                             pass          # the wait alone still gets a turn
                     text = _harvest_text(page)
                     title = page.title() or ""
+                    reason, phrase = interstitial_match(title, text)
+                    if not reason:
+                        logger.info("link cleared its check after %d wait(s), "
+                                    "%d reload(s): %s", attempt + 1, reloads, url)
+                        break
+
+                # Say WHICH gate it was and where we ended up. Without this the
+                # student is told "a human-check" and the operator is told
+                # nothing at all.
+                host = (urlparse(url).hostname or "").lower()
+                note_challenge(host, bool(reason) and is_challenge(reason))
+                if reason:
+                    logger.warning(
+                        "link unreadable [%s] matched=%r final_url=%s reloads=%d",
+                        host, phrase, page.url, reloads)
 
                 shot = ""
                 try:
@@ -525,8 +602,10 @@ def render_link(url: str, walk: bool = False) -> Tuple[Optional[Rendered], str]:
         return None, ("the browser was busy with another page for longer than "
                       f"{int(LINK_RENDER_LOCK_WAIT_S)}s — not rendered")
     try:
-        pause = wait_needed(_last_visit.get(host, 0.0),
-                            time.monotonic(), LINK_RENDER_HOST_GAP_MS)
+        # A host that bot-checked us last time gets more room this time.
+        gap = host_gap_ms(LINK_RENDER_HOST_GAP_MS, _challenges.get(host, 0),
+                          LINK_RENDER_CHALLENGE_GAP_MAX_MS)
+        pause = wait_needed(_last_visit.get(host, 0.0), time.monotonic(), gap)
         if pause:
             time.sleep(pause)             # do not trip the host's rate limit
         try:

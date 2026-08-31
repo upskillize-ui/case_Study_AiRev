@@ -29,8 +29,6 @@ from app.services import (
     review_pipeline,
     prefilter_service,
     rubric_service,
-    student_notices,
-    grade_guard,
 )
 
 _PIPELINE_ON = os.getenv("REVIEW_PIPELINE", "on").lower() == "on"
@@ -48,40 +46,6 @@ from app.database import set_current_tenant
 
 
 router = APIRouter(prefix="/api/review", tags=["assignment-review"])
-
-
-def scoring_knobs(adaptive: dict,
-                  has_deliverable: bool = False) -> tuple[dict, int, int]:
-    """(gate_overrides, word_min, word_max) for this task's submission kind.
-
-    Written/mixed tasks keep their derived word limits and every gate — an
-    essay may fairly be told it is too short or too long.
-
-    Non-written tasks (image, deliverable, link) get the limits WAIVED
-    (0 / 999999, the capstone idiom), not just lowered. The derived limits
-    describe a typed caption, but word_count counts everything readable —
-    including OCR text extracted from the learner's file. Student 405's
-    image carried a complete 494-word plan and was fined 5 marks for
-    'exceeding' a 150-word caption guide: the learner never wrote past any
-    limit, we read a thorough deliverable and then charged her for its
-    thoroughness. The generic-answer gate stays off for the same reason it
-    always was (criterion-name matching misfires on non-written work).
-
-    A MIXED task that actually RECEIVED a file or a link is a deliverable task
-    for length purposes (28 Aug). Day-14 Figma derives as kind="mixed", so a
-    learner who published three screens and captioned them in one line was
-    still measured against a prose minimum and could lose up to 20 marks — the
-    exact contradiction of judge rule 14(c), "the deliverable is the mark".
-    The rubric's kind describes what was ASKED; has_deliverable describes what
-    ARRIVED, and what arrived decides whether the writing is a caption.
-
-    A purely WRITTEN task stays strict either way: an essay uploaded as a file
-    is still an essay, and its length limits are part of the brief.
-    """
-    kind = adaptive.get("submissionKind")
-    if kind == "written" or (kind == "mixed" and not has_deliverable):
-        return {}, adaptive["wordMin"], adaptive["wordMax"]
-    return {"generic_answer_cap": 100}, 0, 999999
 
 
 # ASYNC, and it MUST stay async. FastAPI runs a SYNC dependency in a worker
@@ -256,13 +220,15 @@ def submit_and_review_assignment(
 
     if cleaned_typed:
         artefacts.append(intake.from_typed(cleaned_typed))
-        # The task text decides whether a link is WALKED (a built site, an
-        # app, a game) or merely read. Passing it here is what makes Lovable
-        # day judgeable on whether the thing works.
-        artefacts.extend(intake.from_links_in(
-            cleaned_typed,
-            task_text=f"{assignment.get('title', '')} "
-                      f"{assignment.get('description', '')}"))
+        # Whose submission the links about to be opened belong to. Set before
+        # reading them and cleared after, so one review's pictures can never be
+        # filed against the next review's row.
+        from app.services import link_shot_store
+        link_shot_store.set_target("assignment", req.assignmentId, req.studentId)
+        try:
+            artefacts.extend(intake.from_links_in(cleaned_typed))
+        finally:
+            link_shot_store.clear_target()
 
     if not any(a.readable for a in artefacts):
         prior = assignment_db_service.get_latest_assignment_submission(
@@ -276,30 +242,6 @@ def submit_and_review_assignment(
                 artefacts.append(intake.from_stored_file(
                     prior_url, prior.get("file_name", "")))
             db_notes = clean_text(prior.get("notes") or "")
-            # THE 1126 NESTING RULE, on this path too (28 Aug 2026).
-            #
-            # Stored notes are usually a FINISHED ASSEMBLY — manifest plus
-            # labelled item blocks — because that is what every review path
-            # writes back. Appending that whole blob as "typed text" while
-            # ALSO re-extracting the attachment above hands the marker:
-            #
-            #     new manifest ("2 items: an IMAGE and TYPED TEXT")
-            #       ITEM 1 IMAGE        <- the OCR, extracted a second time
-            #       ITEM 2 TYPED TEXT   <- the ENTIRE previous assembly, our
-            #                              own instructions to the judge
-            #                              included, dressed up as the
-            #                              learner's own writing
-            #
-            # That is what took student 1126 from 6.8/10 to 1.2/10 on
-            # identical input. The regrade route has refused it since then;
-            # this route did not, and on 28 Aug it produced a cohort of 0.0s
-            # on Day 11 — including a Speaker Report Card that carried every
-            # element the brief asked for.
-            #
-            # Take only the learner's OWN typed blocks out of an assembly.
-            # Raw learner text (never assembled) passes through untouched.
-            if db_notes and intake.from_stored_submission(db_notes):
-                db_notes = intake.typed_text_from(db_notes)
             if db_notes:
                 # No link scan here. Stored notes are ALREADY-ASSEMBLED intake
                 # output from an earlier run — any link in them was opened then
@@ -313,21 +255,14 @@ def submit_and_review_assignment(
 
     if not content:
         total_time = int((time.time() - start_time) * 1000)
-        # One wording for this fault, everywhere it can happen — see
-        # app/services/student_notices.py for why these left the routes.
-        # A recording that could not be transcribed is its own fault with its
-        # own fix — "re-attach the file" is useless advice when the file
-        # arrived intact and we simply could not turn it into words.
-        from app.services.submission_media import is_media
-        if file_error and is_media(req.fileName or ""):
-            kind = "video" if (req.fileName or "").lower().rsplit(".", 1)[-1] in \
-                ("mp4", "mov", "avi", "mkv", "webm", "m4v", "3gp", "wmv", "flv") \
-                else "audio"
-            msg = student_notices.media_not_transcribed(kind)
-        elif file_error:
-            msg = student_notices.file_unreadable(file_error, req.fileName or "")
+        if file_error:
+            msg = (f"We received your file but couldn't read any text from it "
+                   f"({file_error}). Please check it opens correctly, then re-attach "
+                   f"it — or type your answer in the box — and submit again.")
         else:
-            msg = student_notices.nothing_submitted()
+            msg = ("We couldn't find any answer for this assignment. Attach your work "
+                   "(PDF, Word, Excel, image, or text), or type your answer in the box, "
+                   "then click Submit again.")
         return {
             "success": True,
             # Explicit no-content signal (same contract as industry sessions):
@@ -362,60 +297,19 @@ def submit_and_review_assignment(
     # storeOnly is exempt: storage must accept short work — the gate applies
     # when the stored work is actually reviewed.
     if not req.storeOnly and word_count < MIN_REVIEWABLE_WORDS and not deliverable:
-        msg = student_notices.too_little_content(
-            word_count, file_error,
-            had_attachment=bool(req.fileData or req.fileUrl or req.fileName))
+        found = f"{word_count} word{'' if word_count == 1 else 's'} of text"
+        if file_error:
+            found += f", and your attachment could not be read ({file_error})"
+        elif req.fileData or req.fileUrl or req.fileName:
+            found += ", and no readable text could be taken from your attachment"
+        else:
+            found += ", and no file was attached"
+        msg = (f"We haven't scored this yet — we could only find {found}. "
+               f"If your work is in a file, re-attach it (PDF, Word, image or text); "
+               f"if it is written work, add your reasoning in the answer box. "
+               f"No score has been recorded for this attempt.")
         print(f"[ASSIGNMENT] NOT SCORED (too little readable content): "
               f"words={word_count}, file_error={file_error or 'none'} — no row written")
-        return {
-            "success": True,
-            "status": "needs_input",
-            "needsInput": True,
-            "submission": {"submissionId": 0, "attemptNumber": 0},
-            "feedback": _empty_feedback(msg, helpful=True),
-            "processingTimeMs": int((time.time() - start_time) * 1000),
-        }
-
-    # A deliverable we could not open, with nothing readable beside it, must
-    # not be scored — a mark there would measure OUR reach, not their work
-    # (the Day 06 Suno failure: URL-only rows pinned at the no-evidence cap).
-    # The regrade path has refused this since 19 Aug; the LIVE submit path
-    # did not, and Day 02's deliverable is a Claude artifact link — a page
-    # that only opens in a browser. Caught HERE, at submit time, the learner
-    # can fix it in the same sitting instead of days later from a sweep.
-    # Same ruling at submit time, where the learner can still fix it in the
-    # same sitting: a publish-this task whose link never opened is not graded.
-    if not req.storeOnly and intake.link_is_the_deliverable(
-            f"{assignment.get('title', '')} {assignment.get('description', '')}"
-    ) and intake.link_deliverable_unseen(artefacts):
-        # The steps must match the tool THIS learner used. Sending Notion's
-        # Share -> Publish to someone whose link was a Gemini share taught
-        # them nothing and looked like we had not read their submission.
-        msg = student_notices.link_never_opened(
-            next((a.label for a in artefacts if a.kind == "link"), ""))
-        print(f"[ASSIGNMENT] NOT SCORED (published link never opened): "
-              f"{word_count} words typed beside an unopenable link")
-        return {
-            "success": True,
-            "status": "needs_input",
-            "needsInput": True,
-            "submission": {"submissionId": 0, "attemptNumber": 0},
-            "feedback": _empty_feedback(msg, helpful=True),
-            "processingTimeMs": int((time.time() - start_time) * 1000),
-        }
-
-    if not req.storeOnly and intake.is_unassessable(manifest, content):
-        first_link = next((a.label for a in artefacts if a.kind == "link"), "")
-        # A site's own bot protection is not a private link. Telling a learner
-        # to "publish" a page that IS published is how they conclude the
-        # system is broken and stop trying.
-        blocked = any("human-check" in (a.note or "").lower()
-                      or "security check" in (a.note or "").lower()
-                      for a in artefacts if a.kind == "link")
-        msg = (student_notices.link_blocked_by_the_site(first_link) if blocked
-               else student_notices.link_opens_only_in_a_browser(first_link))
-        print(f"[ASSIGNMENT] NOT SCORED (unassessable deliverable): "
-              f"{word_count} words beside an unreadable link/file — no review run")
         return {
             "success": True,
             "status": "needs_input",
@@ -473,44 +367,19 @@ def submit_and_review_assignment(
     adaptive = rubric_service.get_or_derive(
         tenant, "assignment", req.assignmentId, assignment)
     adaptive_rubric = {"criteria": adaptive["criteria"]}
+    word_min, word_max = adaptive["wordMin"], adaptive["wordMax"]
     # AUDIT: `assignment` is ALSO the knowledge-pack source. Mutating it here
     # changed the pack's content hash and staled every pack, so the derived
     # rubric travels separately and the task text stays untouched.
-    #
-    # Gates + word limits both depend on the task's submission kind — one
-    # decision, made once, in scoring_knobs() (shared with the regrade route).
-    # A8 — THE FILE WAS THE WORK AND IT NEVER OPENED (28 Aug 2026).
-    #
-    # The link half of this has been guarded since 19 Aug. The file half was
-    # not, and is_unassessable() stops applying the moment the typed answer
-    # passes MIN_GRADABLE_WORDS — so a learner who exported a .fig, uploaded
-    # it, and wrote 300 careful words about their design was scored on the
-    # WORDS and charged for the design nobody could see. That mark measures
-    # our reach, not their work: the same fault as Day 04's 21 rows, wearing a
-    # different file extension.
-    #
-    # Narrow on purpose, exactly like link_is_the_deliverable: only when THIS
-    # task asked the learner to produce something. On a written task an
-    # unopenable attachment is a supporting extra and the essay still stands.
-    if (adaptive.get("submissionKind") in intake.PRODUCED_KINDS
-            and intake.file_deliverable_unseen(artefacts)):
-        unread = next((a for a in artefacts
-                       if a.kind not in ("link", "typed text")), None)
-        msg = student_notices.file_unreadable(
-            getattr(unread, "note", ""), getattr(unread, "label", ""))
-        print(f"[ASSIGNMENT] NOT SCORED (the submitted file never opened): "
-              f"{word_count} words typed beside an unreadable "
-              f"{getattr(unread, 'kind', 'file')}")
-        return {
-            "success": True,
-            "status": "needs_input",
-            "needsInput": True,
-            "submission": submission,
-            "feedback": _empty_feedback(msg, helpful=True),
-            "processingTimeMs": int((time.time() - start_time) * 1000),
-        }
 
-    gate_overrides, word_min, word_max = scoring_knobs(adaptive, deliverable)
+    # AUDIT: apply_gates decides "case specificity" by substring-matching
+    # criterion NAMES ("evidence", "application", "practical" ...). With
+    # free-text derived names that fired by accident, capping a criterion at
+    # 40% and telling the student they "never engaged this case's facts" — on
+    # tasks that have no case at all. Disable that gate for non-written
+    # deliverables, where there is no source material to be specific about.
+    gate_overrides = ({} if adaptive.get("submissionKind") in ("written", "mixed")
+                      else {"generic_answer_cap": 100})
 
     # ── Evidence-gated pipeline (primary path) ─────────────────────────────
     if _PIPELINE_ON:
@@ -523,56 +392,7 @@ def submit_and_review_assignment(
                 word_limit_max=word_max,
                 gate_overrides=gate_overrides,
                 student_id=req.studentId,
-                # What the learner MADE, as pictures — their uploads first,
-                # then anything we rendered on their behalf.
-                images=intake.images_for_judge(artefacts),
             )
-            # THE WRONG LINK IS NOT A ZERO. Day 07: student 880 pasted
-            # their Day-06 Suno song and student 188 pasted Gemini's own
-            # advertisement page. The marker diagnosed both correctly — and
-            # then the garbage path awarded 0.00/10 to each. Policy (22 Aug)
-            # is that work we cannot judge gets NO grade and an explanation,
-            # so the learner can send the right link tonight. A zero teaches
-            # them nothing and cannot be undone from their side.
-            if (r is not None and r.get("isGarbage")
-                    and intake.link_is_the_deliverable(
-                        f"{assignment.get('title', '')} "
-                        f"{assignment.get('description', '')}")
-                    and intake.deliverable_is_only_links(artefacts)):
-                why = (r.get("garbageWarning") or "").strip()
-                print(f"[ASSIGNMENT] NOT GRADED (link is not this task's "
-                      f"work): {why[:120]} — no mark written")
-                return {
-                    "success": True,
-                    "status": "needs_input",
-                    "needsInput": True,
-                    "submission": submission,
-                    "feedback": _empty_feedback(
-                        student_notices.link_is_not_the_work(
-                            r.get("garbageReason")
-                            or r.get("garbage_reason") or "", 
-                            assignment.get("title", "")),
-                        helpful=True),
-                    "processingTimeMs": int((time.time() - start_time) * 1000),
-                }
-            if r is not None and r.get("wrongTask", {}).get("declared"):
-                # Policy: wrong work is NOT graded — no score, low or
-                # otherwise. The row stays status='submitted' with no grade
-                # (the upsert already cleared any old one), so the learner can
-                # attach the right work and the item remains reviewable.
-                what = r["wrongTask"]["whatItIs"] or "work for a different task"
-                print(f"[ASSIGNMENT] NOT GRADED (wrong task): {what} — "
-                      f"no mark written")
-                return {
-                    "success": True,
-                    "status": "wrong_task",
-                    "needsInput": True,
-                    "submission": submission,
-                    "feedback": _empty_feedback(
-                        student_notices.wrong_task(what, assignment["title"]),
-                        helpful=True),
-                    "processingTimeMs": int((time.time() - start_time) * 1000),
-                }
             if r is not None:
                 prefilter_service.flag_review_outcomes(
                     "assignment", req.assignmentId, req.studentId,
@@ -580,33 +400,10 @@ def submit_and_review_assignment(
                 _remember_student_assignment(req, submission, r)
                 return _pipeline_assignment_response(
                     tenant, submission, r, word_count, start_time,
-                    manifest=manifest,
                     duplicate=any(f.get("flag") == "cohort_duplicate"
                                   for f in reflex.get("flags", [])),
                     max_marks=max_marks)
         except Exception as e:
-            # OUR OUTAGE MUST NOT BECOME THEIR GRADE. When the model never
-            # answered — rate limit, timeout, no structured result — the
-            # legacy marker often succeeds on the same input and writes a
-            # number nobody judged. Falling back is right for a SHAPE
-            # problem, never for an outage.
-            if grade_guard.is_transport_failure(e):
-                print(f"[ASSIGNMENT] NOT GRADED (reviewer unavailable): {e} — "
-                      f"no mark written, submission stored")
-                return {
-                    "success": True,
-                    "partialReview": True,
-                    "status": "needs_input",
-                    "submission": submission,
-                    "feedback": _empty_feedback(
-                        "Your work is saved. Our reviewer was unavailable just "
-                        "now, so no marks have been recorded — this is our "
-                        "side, not yours, and nothing you submitted is lost. "
-                        "Your review will run automatically and appear here.",
-                        helpful=True),
-                    "message": "Saved. The review will run shortly.",
-                    "processingTimeMs": int((time.time() - start_time) * 1000),
-                }
             print(f"[ASSIGNMENT] Pipeline failed, falling back to legacy: {e}")
 
     try:
@@ -688,8 +485,7 @@ def submit_and_review_assignment(
 
     try:
         assignment_db_service.update_assignment_submission_with_ai_results(
-            tenant, submission["submissionId"], result, max_marks,
-            course_id=assignment.get("courseId")
+            tenant, submission["submissionId"], result, max_marks
         )
     except Exception as db_err:
         print(f"[ASSIGNMENT] DB update failed after AI review: {db_err}")
@@ -758,58 +554,9 @@ def _graded_by_human(row: dict) -> bool:
         return True
     if str(fb.get("reviewedBy", "")).lower() in ("mentor", "faculty", "human"):
         return True
-    agent_markers = ("rubricScores", "facultyView", "aiLikelihoodPercent",
-                     "howYouScored", "authorship", "detailedFeedback")
+    agent_markers = ("rubricScores", "aiLikelihoodPercent", "howYouScored",
+                     "authorship", "detailedFeedback")
     return not any(k in fb for k in agent_markers)
-
-
-def _tell_student_why(tenant, submission_id: int, message: str) -> None:
-    """Write a student-side blocker onto the student's own review card.
-
-    Policy (Ranjana, 19 Aug): "if it student side fault show them what is the
-    issue so they can re-submit or next time don't repeat same issue." Only
-    ever called for rows with NO grade — a row holding a real review must
-    never have it replaced by an explanation of a later failed read. Failure
-    to write the note must never break the skip response it accompanies.
-    """
-    try:
-        assignment_db_service.mark_not_graded(
-            tenant, submission_id, message,
-            card=_empty_feedback(message, helpful=False))
-    except Exception as e:
-        print(f"[REGRADE] could not write student note on {submission_id}: {e}")
-
-
-def _prior_word_count(row: dict) -> int:
-    """How many words the row's LAST stored review actually read (0 if none).
-
-    review_payload.build records wordCount in every feedback blob, so a graded
-    row carries a receipt of how much content its review was based on.
-    """
-    blob = row.get("feedback")
-    if not blob:
-        return 0
-    try:
-        fb = json.loads(blob) if isinstance(blob, str) else blob
-        return int(fb.get("wordCount") or 0) if isinstance(fb, dict) else 0
-    except (ValueError, TypeError):
-        return 0
-
-
-def content_shrunk(prior_words: int, current_words: int) -> bool:
-    """True when this regrade read materially less than the stored review saw.
-
-    Live case, 19 Aug: student 1233 held a 7.1/10 from a run that read her
-    image in full; a batch regrade re-fetched the image, got much less back
-    (intermittent CDN/OCR), scored the remnant 2.7 and OVERWROTE the honest
-    mark. Reading less than half of what a prior review read is not a changed
-    judgement — it is a degraded copy of the input, and a degraded copy must
-    never replace a mark earned on the full one.
-
-    prior >= 60 keeps the guard off caption-sized rows, where a few words of
-    natural OCR variance would trip a ratio test.
-    """
-    return prior_words >= 60 and current_words < prior_words * 0.5
 
 
 # ---------- POST /api/review/re-review/assignment/{submission_id} ----------
@@ -839,7 +586,6 @@ def re_review_assignment(
     submission_id: int,
     dryRun: bool = False,
     force: bool = False,
-    allowLower: bool = False,
     tenant: Tenant = Depends(get_tenant),
     x_admin_key: str = Header(default=""),
 ):
@@ -854,15 +600,6 @@ def re_review_assignment(
         raise HTTPException(
             status_code=404,
             detail=f"Submission {submission_id} not found in tenant '{tenant.id}'")
-
-    # A 'draft' row is not a submission — the LMS creates one when a student
-    # merely OPENS an assignment. Skip silently: no review, no zero, no
-    # message to the student (Ranjana, 26 Aug).
-    if (row.get("status") or "") == "draft":
-        return {"success": False, "skipped": "draft",
-                "submissionId": submission_id,
-                "detail": "This row is an unsubmitted draft (the student only "
-                          "opened the assignment). Nothing to review."}
 
     assignment = assignment_db_service.get_assignment_by_id(tenant, row["assignment_id"])
     if not assignment:
@@ -903,25 +640,11 @@ def re_review_assignment(
     artefacts: list[intake.Artefact] = []
     stored_notes = clean_text(row.get("notes") or "")
     already_assembled = intake.from_stored_submission(stored_notes)
-    stored_file = row.get("file_path") or row.get("file_url")
-
-    # A stored assembly that RECORDS a failed read, while the source file is
-    # still on record, is not a result — it is a snapshot of the failure.
-    # Reusing it replays that failure forever: the 21 Aug probe found ~110
-    # "unreadable" rows whose files existed and served bytes the whole time
-    # (transient fetches, the media-type bug). Discard the snapshot and read
-    # the source again; only the learner's own TYPED TEXT blocks carry over,
-    # never the old manifest (the 1126 nesting rule).
-    if (already_assembled and stored_file
-            and intake.records_failed_read(already_assembled[0])):
-        print(f"[REGRADE] submission {submission_id}: stored assembly records "
-              f"a failed read and the file is still on record — re-extracting")
-        stored_notes = intake.typed_text_from(already_assembled[1])
-        already_assembled = None
 
     if already_assembled:
         manifest, content = already_assembled
     else:
+        stored_file = row.get("file_path") or row.get("file_url")
         if stored_file:
             artefacts.append(intake.from_stored_file(stored_file, row.get("file_name") or ""))
         if stored_notes:
@@ -932,10 +655,14 @@ def re_review_assignment(
             # the learner's prose — nothing to quote, every criterion pinned at
             # the no-evidence cap, a cohort that did the work told it scored
             # 2/10. Same call, same guards (url_guard, link budget) as submit.
-            artefacts.extend(intake.from_links_in(
-                stored_notes,
-                task_text=f"{assignment.get('title', '')} "
-                          f"{assignment.get('description', '')}"))
+            from app.services import link_shot_store
+            link_shot_store.set_target(
+                "assignment", row.get("assignment_id"), row.get("student_id"),
+                submission_id=row.get("id") or submission_id)
+            try:
+                artefacts.extend(intake.from_links_in(stored_notes))
+            finally:
+                link_shot_store.clear_target()
         manifest, content = intake.render(artefacts)
     word_count = count_words(content)
     inventory = ([{"kind": "stored", "label": "previously assembled submission",
@@ -947,45 +674,14 @@ def re_review_assignment(
                    "readable": a.readable, "note": a.note} for a in artefacts])
 
     if not content:
-        # Rule 2. The grade (if any) stays; but a NEVER-graded row is a
-        # student-side blocker the student cannot see from a staff CSV —
-        # write the reason onto their card so they know to resubmit.
+        # Rule 2. Report it and leave the row exactly as it is.
         print(f"[REGRADE] submission {submission_id}: nothing readable "
               f"({intake.first_error(artefacts) or 'no stored work'}) — row untouched")
-        if previous_grade is None:
-            # Simple English by policy: short words, one problem, one fix.
-            _tell_student_why(tenant, submission_id, (
-                "We could not open your file, and there was no written "
-                "answer. No marks given yet. Please upload your work again "
-                "(image, PDF or Word), or type your answer in the box, then "
-                "click Submit."))
         return {"success": False, "skipped": "no_readable_content",
                 "submissionId": submission_id,
                 "previousGrade": previous_grade,
                 "artefacts": inventory,
                 "detail": intake.first_error(artefacts) or "no stored work found"}
-
-    # Ranjana's ruling, 22 Aug (Day 04): when the DELIVERABLE is the published
-    # page itself, a typed paragraph beside a link that will not open is a
-    # description OF the work, not the work. 21 rows were marked 0.0-4.7 while
-    # their own feedback said the page could not be read. A withheld mark can
-    # still become a real score tonight; a recorded 2.5 cannot.
-    task_text = f"{assignment.get('title', '')} {assignment.get('description', '')}"
-    if (intake.link_is_the_deliverable(task_text)
-            and intake.link_deliverable_unseen(artefacts)):
-        print(f"[REGRADE] submission {submission_id}: published link never "
-              f"opened on a publish-this task — no mark, row untouched")
-        if previous_grade is None:
-            _tell_student_why(tenant, submission_id, student_notices.link_never_opened(
-                next((a.label for a in artefacts if a.kind == "link"), "")))
-        return {"success": False, "skipped": "unreadable_published_link",
-                "submissionId": submission_id,
-                "previousGrade": previous_grade,
-                "artefacts": inventory,
-                "detail": ("The task asks for a published page and the link "
-                           "submitted never opened — it asks visitors to sign "
-                           "in. No mark: the work was never seen. The learner "
-                           "must publish the page and resubmit the public link.")}
 
     if intake.is_unassessable(manifest, content):
         # The deliverable exists; we could not open it. Scoring it anyway is an
@@ -995,11 +691,6 @@ def re_review_assignment(
         print(f"[REGRADE] submission {submission_id}: deliverable present but "
               f"unreadable ({intake.substantive_words(content)} words of answer) "
               f"— row untouched")
-        if previous_grade is None:
-            _tell_student_why(tenant, submission_id,
-                              student_notices.link_opens_only_in_a_browser(
-                                  next((a.label for a in artefacts
-                                        if a.kind == "link"), "")))
         return {"success": False, "skipped": "unassessable_deliverable",
                 "submissionId": submission_id,
                 "previousGrade": previous_grade,
@@ -1008,24 +699,6 @@ def re_review_assignment(
                            "open, and there is no written answer to judge. Ask the "
                            "learner to add a few lines describing what they made "
                            "and how, then re-review.")}
-
-    # Rule 2, extended: reading LESS than the stored review saw is a fetch
-    # problem, not a performance change — refuse to replace a mark earned on
-    # the full input with one scored on a degraded copy. See content_shrunk.
-    prior_words = _prior_word_count(row)
-    if content_shrunk(prior_words, word_count) and not force:
-        print(f"[REGRADE] submission {submission_id}: content shrank "
-              f"{prior_words} -> {word_count} words — row untouched "
-              f"(pass force=true to override)")
-        return {"success": False, "skipped": "content_shrunk",
-                "submissionId": submission_id,
-                "previousGrade": previous_grade,
-                "artefacts": inventory,
-                "detail": (f"The stored review was based on {prior_words} words of "
-                           f"readable content; this attempt could only read "
-                           f"{word_count}. The file likely failed to fetch in "
-                           f"full — the existing grade stands. Re-run later, or "
-                           f"force=true to overwrite anyway.")}
 
     if dryRun:
         return {"success": True, "dryRun": True,
@@ -1038,98 +711,19 @@ def re_review_assignment(
 
     adaptive = rubric_service.get_or_derive(
         tenant, "assignment", row["assignment_id"], assignment)
-    # A8 — THE FILE WAS THE WORK AND IT NEVER OPENED (28 Aug 2026).
-    #
-    # The link half of this has been guarded since 19 Aug. The file half was
-    # not, and is_unassessable() stops applying the moment the typed answer
-    # passes MIN_GRADABLE_WORDS — so a learner who exported a .fig, uploaded
-    # it, and wrote 300 careful words about their design was scored on the
-    # WORDS and charged for the design nobody could see. That mark measures
-    # our reach, not their work: the same fault as Day 04's 21 rows, wearing a
-    # different file extension.
-    #
-    # Narrow on purpose, exactly like link_is_the_deliverable: only when THIS
-    # task asked the learner to produce something. On a written task an
-    # unopenable attachment is a supporting extra and the essay still stands.
-    if (adaptive.get("submissionKind") in intake.PRODUCED_KINDS
-            and intake.file_deliverable_unseen(artefacts)):
-        unread = next((a for a in artefacts
-                       if a.kind not in ("link", "typed text")), None)
-        label = getattr(unread, "label", "")
-        print(f"[REGRADE] submission {submission_id}: the submitted file "
-              f"never opened ({label}) — row untouched")
-        if previous_grade is None:
-            _tell_student_why(tenant, submission_id,
-                              student_notices.file_unreadable(
-                                  getattr(unread, "note", ""), label))
-        return {"success": False, "skipped": "unassessable_deliverable",
-                "submissionId": submission_id,
-                "previousGrade": previous_grade,
-                "artefacts": inventory,
-                "detail": (f"The task asks the learner to produce something and "
-                           f"the file they uploaded ({label or 'unnamed'}) could "
-                           f"not be opened. No mark: the work was never seen. "
-                           f"They have been asked for a readable format.")}
-
-    gate_overrides, word_min, word_max = scoring_knobs(
-        adaptive, intake.has_deliverable(artefacts))
+    gate_overrides = ({} if adaptive.get("submissionKind") in ("written", "mixed")
+                      else {"generic_answer_cap": 100})
 
     r = review_pipeline.review_with_knowledge(
         scope_type="assignment", scope_id=row["assignment_id"],
         raw_source=assignment, rubric={"criteria": adaptive["criteria"]},
         student_answer=f"{manifest}\n{content}".strip(), word_count=word_count,
-        word_limit_min=word_min, word_limit_max=word_max,
+        word_limit_min=adaptive["wordMin"], word_limit_max=adaptive["wordMax"],
         gate_overrides=gate_overrides, student_id=row["student_id"],
-        images=intake.images_for_judge(artefacts),
     )
     if r is None:
         raise HTTPException(status_code=503,
                             detail="Reviewer unavailable — row left unchanged.")
-
-    if r.get("wrongTask", {}).get("declared"):
-        # Wrong work carries NO grade — including the wrong low one it may
-        # hold from before this rule existed (student 1151's investment deck
-        # was scored 1.2/10 on the 5-year-plan task; policy says it should
-        # never have been scored at all). Clear the mark, tell the learner
-        # what arrived, leave the row 'submitted' so the right work can come.
-        what = r["wrongTask"]["whatItIs"] or "work for a different task"
-        # Same wording the submit path uses — a learner who re-submits must
-        # not be told two different stories about one fault.
-        wrong_msg = student_notices.wrong_task(what, assignment.get("title", ""))
-        assignment_db_service.mark_not_graded(
-            tenant, submission_id, wrong_msg,
-            card=_empty_feedback(wrong_msg, helpful=False))
-        print(f"[REGRADE] submission {submission_id}: NOT GRADED (wrong task: "
-              f"{what}) — grade cleared, was {previous_grade}")
-        return {"success": False, "skipped": "wrong_task",
-                "submissionId": submission_id,
-                "previousGrade": previous_grade,
-                "artefacts": inventory,
-                "detail": (f"Recognized as {what}, not this assignment's task. "
-                           f"Grade cleared per policy — wrong work is not "
-                           f"graded. The learner should resubmit the correct "
-                           f"deliverable.")}
-
-    # GRADE FLOOR (Ranjana, 26 Aug): a re-review must not quietly LOWER a
-    # mark a student already has — batch re-runs exist to correct unfair LOW
-    # scores, and a surprise drop erodes trust faster than an inflated mark.
-    # Pass allowLower=true for a deliberate downward correction.
-    new_pct = (r.get("scores") or {}).get("totalScore")
-    if (previous_grade is not None and new_pct is not None and not allowLower):
-        new_marks = round(float(new_pct) * max_marks / 100, 1)
-        if new_marks < float(previous_grade):
-            print(f"[REGRADE] submission {submission_id}: new mark "
-                  f"{new_marks} < existing {previous_grade} — existing grade "
-                  f"kept (allowLower not set)")
-            return {"success": False, "skipped": "kept_higher_previous_grade",
-                    "submissionId": submission_id,
-                    "previousGrade": previous_grade,
-                    "wouldHaveBeen": new_marks,
-                    "artefacts": inventory,
-                    "detail": (f"Re-review scored {new_marks}/{max_marks}, "
-                               f"below the existing {previous_grade}. The "
-                               f"existing grade stands. Pass allowLower=true "
-                               f"to apply the lower mark deliberately.")}
 
     # Same persistence the normal path uses, pointed at the EXISTING row.
     # attemptNumber is echoed from the row so nothing downstream invents a
@@ -1137,8 +731,7 @@ def re_review_assignment(
     submission = {"submissionId": submission_id,
                   "attemptNumber": row.get("attempt_number") or 1}
     response = _pipeline_assignment_response(
-        tenant, submission, r, word_count, start_time, max_marks=max_marks,
-        manifest=manifest)
+        tenant, submission, r, word_count, start_time, max_marks=max_marks)
     response["reReviewed"] = True
     response["previousGrade"] = previous_grade
     response["artefacts"] = inventory
@@ -1182,8 +775,7 @@ def _remember_student_assignment(req, submission, r):
 
 
 def _pipeline_assignment_response(tenant, submission, r, word_count, start_time,
-                                  duplicate=False, max_marks: int = 100,
-                                  manifest: str = ""):
+                                  duplicate=False, max_marks: int = 100):
     """Persist + shape the assignment response from a pipeline result.
     Reuses _build_response for the envelope; adds the pipeline-only fields."""
     scores = r["scores"]
@@ -1197,14 +789,8 @@ def _pipeline_assignment_response(tenant, submission, r, word_count, start_time,
     result = {
         "totalScore":       scores["totalScore"],
         "grade":            grade,
-        # Rubric framework is FACULTY-facing (policy, 18 Aug): the student
-        # card shows total marks + pointwise feedback only; the per-criterion
-        # table and scoring narrative live under facultyView, where the mentor
-        # dashboard and any human re-review can still read them. Internal
-        # scoring is unchanged — this moves presentation, not judgement.
-        "facultyView":      {"rubricScores": scoring_service.scale_rubric(
-                                 scores["rubricBreakdown"], max_marks),
-                             "howYouScored": r["howYouScored"]},
+        "rubricScores":     scoring_service.scale_rubric(
+                                scores["rubricBreakdown"], max_marks),
         "penaltyPercent":   scores.get("wordCountPenalty", 0),
         "strengths":        r["strengths"],
         "improvements":     r["improvements"],
@@ -1226,43 +812,17 @@ def _pipeline_assignment_response(tenant, submission, r, word_count, start_time,
         "plagiarismFlag":   "high" if duplicate else "low",
         **r["authorship"],
     }
-    # THE WRITER CAN REFUSE, AND THE ANSWER MUST SAY SO.
-    #
-    # grade_guard returns False when it will not let a mark exist. Ignoring
-    # that return value (as this did until 23 Aug) meant the route still
-    # answered success=True carrying result["totalScore"] = 0 — so the row was
-    # correctly left ungraded in the database while every consumer was told
-    # "scored 0". The bulk log printed "OK student 872 -> 0.0/10" for a
-    # student who had deliberately NOT been marked, in the very report used to
-    # decide whether to release a run to 183 people.
-    written = True
     try:
-        written = assignment_db_service.update_assignment_submission_with_ai_results(
-            tenant, submission["submissionId"], result, max_marks,
-            manifest=manifest, course_id=assignment.get("courseId"))
+        assignment_db_service.update_assignment_submission_with_ai_results(
+            tenant, submission["submissionId"], result, max_marks)
     except Exception as db_err:
         print(f"[ASSIGNMENT] DB update failed after pipeline review: {db_err}")
-    if written is False:
-        return {
-            "success": True,
-            "status": "not_graded",
-            "notGraded": True,
-            "needsInput": True,
-            "submission": submission,
-            "feedback": _empty_feedback(
-                "We could not complete a fair review of this attempt, so no "
-                "marks have been recorded. Nothing you submitted is lost — "
-                "it will be reviewed again.", helpful=True),
-            "processingTimeMs": int((time.time() - start_time) * 1000),
-        }
 
     print(f"[ASSIGNMENT] ✅ Pipeline review: score={scores['totalScore']} grade={grade} "
           f"path={r['decisions']['scoringPath']} gates={len(scores['gatesHit'])}")
 
     response = _build_response(submission, result, summary, start_time, max_marks)
-    # languageReport and factualErrors stay student-facing: grammar fixes and
-    # factual corrections are feedback the learner can act on. The scoring
-    # narrative (howYouScored) moved to facultyView with the rubric table.
+    response["feedback"]["howYouScored"]   = r["howYouScored"]
     response["feedback"]["languageReport"] = r["languageReport"]
     response["feedback"]["factualErrors"]  = r["factualErrors"]
     response["_meta"] = {"pipeline": r["decisions"]}
@@ -1287,12 +847,7 @@ def _build_response(submission: dict, result: dict, summary: str, start_time: fl
             "grade":                  result["grade"],
             "scoreEmoji":             result.get("scoreEmoji", "—"),
             "summary":                summary,
-            # No rubricScores here: the student card is total marks +
-            # pointwise feedback (policy, 18 Aug). Rubric detail, if any,
-            # travels under facultyView for staff surfaces only.
-            "facultyView":            result.get("facultyView")
-                                      or ({"rubricScores": result["rubricScores"]}
-                                          if result.get("rubricScores") else {}),
+            "rubricScores":           result.get("rubricScores", []),
             "strengths":              result.get("strengths", []),
             "improvements":           result.get("improvements", []),
             "missingConcepts":        result.get("missingConcepts", []),
