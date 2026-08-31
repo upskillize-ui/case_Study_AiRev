@@ -1252,15 +1252,36 @@ def _extract_image(data: bytes, ext: str) -> Tuple[str, str]:
 
 
 def _ocr_with_claude(images: List[Tuple[str, str]], kind: str) -> Tuple[str, str]:
-    """Run vision OCR on one or more images. Returns (text, reason)."""
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        return "", "ANTHROPIC_API_KEY not set — cannot OCR"
+    """Run vision OCR on one or more images. Returns (text, reason).
 
+    GOES THROUGH THE PROVIDER CHAIN, like every other Claude call.
+    ---------------------------------------------------------------
+    This used to build its own client:
+
+        anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+
+    which bypassed ai_service.providers() entirely and spoke straight to
+    api.anthropic.com with an `x-api-key` header. Two consequences, both live:
+
+      * The startup banner says the gateway is the ONLY provider, yet every OCR
+        call was quietly billed to the direct API — and when that key is an
+        IDENTITY-LINKED key, the direct API answers 400 "anthropic-workspace-id
+        is required". A 400 is a BadRequestError, which is exactly the
+        `OCR failed: BadRequestError` that put screenshots in front of the
+        marker as "its substance is unknown" and produced blind grading.
+      * The auth dialect was hard-coded. The gateway wants
+        `Authorization: Bearer`; the SDK sends `x-api-key` for api_key=. One
+        client builder already knows that difference. Two did not.
+
+    So: reuse the chain. Same providers, same order, same auth, same failover.
+    """
     try:
-        import anthropic
-    except ImportError:
-        return "", "anthropic SDK not installed"
+        from app.services.ai_service import providers, _client_for
+    except Exception:
+        return "", "ai_service unavailable — cannot OCR"
+    chain = providers()
+    if not chain:
+        return "", "no Claude provider configured — cannot OCR"
 
     # Fit here, not at each caller. Three paths reach this function — a single
     # image, the pictures inside an OOXML file, and up to five rasterised PDF
@@ -1295,15 +1316,29 @@ def _ocr_with_claude(images: List[Tuple[str, str]], kind: str) -> Tuple[str, str
         ),
     })
 
-    try:
-        client = anthropic.Anthropic(api_key=api_key)
-        msg = client.messages.create(
-            model=OCR_MODEL,
-            max_tokens=4000,
-            messages=[{"role": "user", "content": content}],
-        )
-        text_parts = [b.text for b in msg.content if getattr(b, "type", "") == "text"]
-        raw = _clean("\n".join(text_parts))
+    last = ""
+    for p in chain:
+        try:
+            msg = _client_for(p).messages.create(
+                model=OCR_MODEL,
+                max_tokens=4000,
+                messages=[{"role": "user", "content": content}],
+            )
+        except Exception as e:
+            # The class name alone is useless. "BadRequestError" appeared on
+            # live submissions for days and nobody could tell whether the image
+            # was too large, too big on its long edge, or the key was wrong —
+            # because the one string that says so was discarded here.
+            detail = str(e).strip().replace("\n", " ")
+            last = f"OCR failed on {p.name}: {type(e).__name__}" + (
+                f": {detail[:240]}" if detail else "")
+            logger.warning(last)
+            continue                      # the next provider gets its turn
+        try:
+            text_parts = [b.text for b in msg.content if getattr(b, "type", "") == "text"]
+            raw = _clean("\n".join(text_parts))
+        except Exception as e:
+            return "", f"OCR reply unreadable: {type(e).__name__}"
         if not raw or raw.strip().upper().strip(" .") == "NO_TEXT":
             # Not an error: an AI-generated picture or a photo legitimately
             # carries no text. Signalled distinctly so the caller can record
@@ -1312,15 +1347,7 @@ def _ocr_with_claude(images: List[Tuple[str, str]], kind: str) -> Tuple[str, str
             # "your submission lacks an AI-generated image" criticism.
             return "", NO_TEXT_IN_IMAGE
         return raw, ""
-    except Exception as e:
-        # The class name alone is useless. "BadRequestError" appeared on live
-        # submissions for days and nobody could tell whether it meant the image
-        # was too large, too big on its long edge, or mislabelled — because the
-        # one string that says so was discarded here. The API's own message is
-        # short, safe to store and is the whole diagnosis.
-        logger.exception("vision OCR failed")
-        detail = str(e).strip().replace("\n", " ")
-        return "", f"OCR failed: {type(e).__name__}" + (f": {detail[:300]}" if detail else "")
+    return "", (last or "OCR failed: every provider refused the request")
 
 
 # ---------- Spreadsheets ----------------------------------------------------
