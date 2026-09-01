@@ -18,7 +18,7 @@
 #                       exemplar; future reviews see "what a verified 72
 #                       looks like" instead of guessing.
 #   4. GATE TUNING    — bounded, evidence-backed adjustment of scoring gates
-#                       stored in agent_config. Hard bounds live in CODE, so
+#                       stored in airev_agent_config. Hard bounds live in CODE, so
 #                       the agent can tune its strictness but never rewrite
 #                       its principles.
 #
@@ -117,8 +117,24 @@ def _ensure_tables() -> None:
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (scope_type, scope_id)
         )""")
+    # NAMESPACED, and it must stay that way (1 Sep 2026).
+    #
+    # This table was called `agent_config`. The lms tenant DB already had a
+    # table of that name, owned by something else and shaped differently, so
+    # CREATE TABLE IF NOT EXISTS quietly did nothing — that is what IF NOT
+    # EXISTS means: it checks the NAME, never the columns — and every write
+    # then failed with `Unknown column 'k' in 'field list'`. The nightly
+    # consolidation had been dying on that line every night.
+    #
+    # The read side hid it completely. get_config_float() swallows the same
+    # error and returns the default, so gate tuning silently never took effect
+    # on lms while the log said the gate had been tuned.
+    #
+    # `k` and `v` are near-reserved words on a table name generic enough for
+    # any other system to claim. The prefix is what stops the collision
+    # recurring; renaming it back reintroduces the bug in silence.
     execute("""
-        CREATE TABLE IF NOT EXISTS agent_config (
+        CREATE TABLE IF NOT EXISTS airev_agent_config (
             k VARCHAR(64) PRIMARY KEY,
             v VARCHAR(64) NOT NULL,
             evidence TEXT,
@@ -375,7 +391,7 @@ def _tune_gates() -> None:
         target = min(hi, current + 1)   # cohort-wide harshness -> loosen
     if target != current:
         execute(
-            "REPLACE INTO agent_config (k, v, evidence) VALUES (%s,%s,%s)",
+            "REPLACE INTO airev_agent_config (k, v, evidence) VALUES (%s,%s,%s)",
             ("generic_answer_cap", str(int(target)),
              f"overall mean {overall:.1f} across {len(rows)} scopes"))
         print(f"🎛️ Gate tuned: generic_answer_cap {current} -> {target} "
@@ -384,7 +400,7 @@ def _tune_gates() -> None:
 
 def get_config_float(key: str, default: float) -> float:
     try:
-        rows = query("SELECT v FROM agent_config WHERE k=%s LIMIT 1", (key,))
+        rows = query("SELECT v FROM airev_agent_config WHERE k=%s LIMIT 1", (key,))
         if rows:
             val = float(rows[0]["v"])
             lo, hi = GATE_BOUNDS.get(key, (val, val))
