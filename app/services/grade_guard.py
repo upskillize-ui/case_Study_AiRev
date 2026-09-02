@@ -42,6 +42,20 @@ _TRANSPORT_MARKERS = (
 )
 
 
+def reads_as_our_outage(text: str) -> bool:
+    """Does this failure text describe OUR side going down? Pure.
+
+    Extracted 02 Sep 2026 because a second caller needed it. The intake layer
+    records WHY a file could not be read, and that string is often our own
+    provider refusing: "OCR failed on startupapi: Error code: 503 - provider
+    capacity is temporarily unavailable". Telling a learner to re-attach a file
+    that is perfectly fine — because our OCR was down — is blaming them for our
+    outage, in writing, on their own review card.
+    """
+    blob = str(text or "").lower()
+    return any(marker in blob for marker in _TRANSPORT_MARKERS)
+
+
 def is_transport_failure(error: BaseException) -> bool:
     """Did the model never answer? Pure.
 
@@ -49,8 +63,7 @@ def is_transport_failure(error: BaseException) -> bool:
     writing its number would turn our downtime into the learner's grade —
     quietly, because the fallback succeeds and nothing looks broken.
     """
-    text = f"{type(error).__name__}: {error}".lower()
-    return any(marker in text for marker in _TRANSPORT_MARKERS)
+    return reads_as_our_outage(f"{type(error).__name__}: {error}")
 
 
 # What the pipeline writes into a criterion when the model gave it nothing.

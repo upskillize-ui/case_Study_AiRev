@@ -26,6 +26,7 @@ from app.services import (
     scoring_service,
     feedback_service,
     assignment_db_service,
+    grade_guard,
     review_pipeline,
     prefilter_service,
     rubric_service,
@@ -747,14 +748,22 @@ def re_review_assignment(
         # and grade stays NULL so their corrected resubmission flows through
         # the normal path. A graded row is never touched.
         why = intake.first_error(artefacts) or "no stored work found"
-        if previous_grade is None and not dryRun:
+        # OUR OUTAGE IS NOT THEIR FAULT (02 Sep 2026). Live on the Space right
+        # now: the OCR provider is answering 503 to everything, so intake
+        # records "could not be read" for files that are perfectly fine. Writing
+        # "re-attach your work" onto those rows tells a learner their file is
+        # broken when ours is. Stay silent, leave the row retryable, and say so
+        # in the log instead.
+        ours = grade_guard.reads_as_our_outage(why)
+        if previous_grade is None and not dryRun and not ours:
             assignment_db_service.mark_not_graded(
                 tenant, submission_id,
                 f"We could not open your file ({why}), so there are no marks "
                 f"yet. Re-attach your work, or type your answer in the box, "
                 f"and submit again.")
-        print(f"[REGRADE] submission {submission_id}: nothing readable "
-              f"({why}) — learner told, row left ungraded")
+        print(f"[REGRADE] submission {submission_id}: nothing readable ({why}) — "
+              + ("OUR outage, learner not told, row retryable"
+                 if ours else "learner told, row left ungraded"))
         return {"success": False, "skipped": "no_readable_content",
                 "submissionId": submission_id,
                 "previousGrade": previous_grade,
@@ -768,7 +777,11 @@ def re_review_assignment(
         # is asked for a description rather than handed a mark they didn't earn.
         detail = ("The work was submitted as a link or file we could not open, "
                   "and there is no written answer to judge.")
-        if previous_grade is None and not dryRun:
+        # Same rule as above: if the read failed because OUR side was down, the
+        # learner hears nothing and the row waits for the next sweep.
+        ours = grade_guard.reads_as_our_outage(
+            f"{intake.first_error(artefacts) or ''} {manifest}")
+        if previous_grade is None and not dryRun and not ours:
             assignment_db_service.mark_not_graded(
                 tenant, submission_id,
                 "Your link or file would not open for us, and there is no "
@@ -776,8 +789,9 @@ def re_review_assignment(
                 "lines about what you made, or attach the file itself, then "
                 "submit again.")
         print(f"[REGRADE] submission {submission_id}: deliverable present but "
-              f"unreadable ({intake.substantive_words(content)} words of answer) "
-              f"— learner told, row left ungraded")
+              f"unreadable ({intake.substantive_words(content)} words of answer) — "
+              + ("OUR outage, learner not told, row retryable"
+                 if ours else "learner told, row left ungraded"))
         return {"success": False, "skipped": "unassessable_deliverable",
                 "submissionId": submission_id,
                 "previousGrade": previous_grade,
