@@ -22,6 +22,8 @@
 # ---------------------------------------------------------------------------
 
 import json
+from datetime import datetime, timezone
+
 from app.database import tquery, texecute
 from app.tenants import Tenant
 from app.services import review_payload
@@ -255,9 +257,10 @@ def update_assignment_submission_with_ai_results(tenant: Tenant, submission_id: 
         print(f"[GRADE GUARD] submission {submission_id}: NO MARK — {why}")
         mark_not_graded(
             tenant, submission_id,
-            "We could not complete a fair review of this attempt, so "
-            "no marks have been recorded. This is our side, not yours — "
-            "nothing you submitted is lost, and it will be reviewed again.")
+            # No "it will be reviewed again": that depends on a rules change,
+            # and a date we cannot name is a promise we cannot keep.
+            "We could not finish reviewing this attempt, so there are no "
+            "marks yet. Your work is saved. This is our side, not yours.")
         return False
 
     awarded = scaled_marks(result.get("totalScore", 0), max_marks)
@@ -283,6 +286,22 @@ def update_assignment_submission_with_ai_results(tenant: Tenant, submission_id: 
     return True
 
 
+# ---------------------------------------------------------------------------
+# WHAT WE TELL A LEARNER (02 Sep 2026, Ranjana).
+#
+# Short. Plain. True. Three beats and no more:
+#     what happened  ·  what to do  ·  where their marks stand
+#
+# NEVER promise something the system does not do. "A mentor has been notified"
+# sat in three routes today and nothing notified anyone; "you will hear back
+# soon" had no sender behind it; "it will be reviewed again shortly" named a
+# time we cannot keep. A learner who waits on a promise we broke stops
+# believing the true messages too.
+#
+# No blame, no exclamation marks, no emojis.
+# ---------------------------------------------------------------------------
+
+
 def mark_not_graded(tenant: Tenant, submission_id: int, message: str,
                     card: dict | None = None) -> None:
     """Record that this submission is deliberately NOT graded, and tell the
@@ -302,11 +321,22 @@ def mark_not_graded(tenant: Tenant, submission_id: int, message: str,
     protection (nothing human here) and back in the reviewable queue, so the
     learner's corrected resubmission flows through the normal upsert path.
     """
+    # WHICH RULES REFUSED THIS (02 Sep 2026). Without a version stamp, the
+    # sweeper's "skip rows already carrying a notGraded verdict" was permanent:
+    # a row refused by a marker we have since FIXED could never be looked at
+    # again, so every refusal accumulated for ever and the ungraded list only
+    # grew. Stamping the rules version makes the skip conditional instead of
+    # permanent — sweeper_service re-offers a refusal exactly once per rules
+    # change, which is bounded spend and the only sane retry trigger: nothing
+    # else about the row has changed, but the marker has.
+    from app.services.rubric_service import RUBRIC_VERSION
     payload = {
         **(card or {}),
         "notGraded": True,
         "reviewedBy": "airev",
         "message": message,
+        "rulesVersion": RUBRIC_VERSION,
+        "notGradedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     texecute(
         tenant,

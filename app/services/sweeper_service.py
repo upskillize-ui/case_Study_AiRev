@@ -35,6 +35,7 @@ import os
 from typing import Callable, Optional
 
 from app.database import tquery
+from app.services.rubric_service import RUBRIC_VERSION as RULES_VERSION
 
 # A runaway sweep must never be able to spend a night's budget. This is a
 # ceiling per run, not a target: a healthy cohort sweeps single digits.
@@ -49,6 +50,25 @@ def find_unreviewed(tenant, course_ids: Optional[list] = None,
     One SQL pass, then one dict pass — the shape select_rows() proved. Pure
     apart from the read.
     """
+    # THE PERMANENT-SKIP LEAK, CLOSED (02 Sep 2026).
+    #
+    # The old clause was `feedback NOT LIKE '%notGraded%'` — full stop. A row
+    # refused by the marker was therefore skipped FOR EVER, whatever we later
+    # fixed. Every guard refusal and every unreadable file accumulated, nothing
+    # ever came back out, and the "to be graded" list could only grow. That is
+    # the shape the cohort was seeing.
+    #
+    # The cost trap the original clause avoided is real and still avoided: a
+    # blanket "retry everything ungraded" re-buys the same refusal every night
+    # for ever. So the retry is triggered by the only thing that makes a
+    # different outcome POSSIBLE — the marking rules changing. mark_not_graded
+    # stamps rulesVersion into the refusal; a row is re-offered exactly once
+    # per version bump, and rows refused under the CURRENT rules stay skipped.
+    #
+    # Rows stamped by no version at all (every refusal written before today)
+    # match the "missing stamp" arm and get their one run under the new rules.
+    # A LIKE pattern is a VALUE, not query text: single %, no doubling.
+    stamp = f'%"rulesVersion": {RULES_VERSION}%'
     sql = """
         SELECT s.id, s.assignment_id, s.student_id, s.submitted_at
         FROM assignment_submissions s
@@ -58,9 +78,10 @@ def find_unreviewed(tenant, course_ids: Optional[list] = None,
           AND COALESCE(s.status, '') <> 'draft'
           AND (CHAR_LENGTH(COALESCE(s.notes, '')) > 0
                OR COALESCE(s.file_path, '') <> '')
-          AND COALESCE(s.feedback, '') NOT LIKE '%%notGraded%%'
+          AND (COALESCE(s.feedback, '') NOT LIKE '%%notGraded%%'
+               OR COALESCE(s.feedback, '') NOT LIKE %s)
     """
-    params: list = []
+    params: list = [stamp]
     if course_ids:
         marks = ", ".join(["%s"] * len(course_ids))
         sql += f" AND a.course_id IN ({marks})"

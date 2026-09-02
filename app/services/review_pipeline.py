@@ -77,14 +77,68 @@ def concept_cap_for(scope_type: str, default: int) -> int:
 # file content IS the submission — and this makes the arithmetic obey it.
 # Whitespace-tolerant for the same reason submission_intake's parser is:
 # stored rows do not all carry the exact spacing render() emitted.
-_NONTEXT_ITEM = re.compile(r"===\s*ITEM\s+\d+\s*:\s*(IMAGE|AUDIO|VIDEO)", re.I)
+# WIDENED 02 Sep 2026. The old pattern matched IMAGE|AUDIO|VIDEO only, so a
+# link whose page is chrome, or a poster whose OCR is three words, still had to
+# produce verbatim quotes or every one of its criteria was pinned at 20% — a
+# 2/10 ceiling on work that was done, for the format the task ASKED FOR.
+#
+# But the cap is not junk: on typed prose, "you scored this highly and quoted
+# nothing from it" is a real signal that the marker invented its grounding, and
+# a PDF essay in the prompt is every bit as quotable as the answer box. Turning
+# it off for anything with an attachment would throw that away.
+#
+# So the rule is the honest, narrow one — the cap is lifted only where quoting
+# is genuinely impossible:
+#
+#   1. the work IS our rendering of it — a picture, a transcript, frames. There
+#      are no learner sentences to quote, only ours.
+#   2. an artefact was submitted and there is barely any prose to quote FROM.
+#      A Suno link, a screenshot-only page, a poster with a five-word caption:
+#      the substance is real and unquotable either way.
+#
+# A document, deck or opened page carrying real text keeps the cap, because
+# there the marker can and should quote. Rule 9a made arithmetic, precisely.
+_ITEM_BLOCK = re.compile(
+    r"===\s*ITEM\s+\d+\s*:\s*([A-Za-z][A-Za-z ]*?)\s*\([^)]*\)\s*===",
+    re.I)
+_TYPED_KIND = "typed text"
+
+# Kinds whose ITEM body is OUR description of the work, never the learner's
+# own sentences: OCR of a poster, a transcript of a recording, frame captions.
+_OUR_RENDERING_KINDS = {"image", "audio recording", "video"}
+
+# Below this much quotable prose across the whole submission, "quote it" is not
+# a standard the learner could have met. Deliberately generous: an answer with
+# real writing in it stays inside the cap's reach.
+QUOTABLE_MIN_WORDS = int(os.getenv("QUOTABLE_MIN_WORDS", "80"))
+
+
+def submitted_items(student_answer: str) -> list:
+    """[(kind, body)] for each assembled ITEM block. Pure."""
+    text = student_answer or ""
+    marks = list(_ITEM_BLOCK.finditer(text))
+    items = []
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        items.append((m.group(1).strip().lower(), text[m.end():end].strip()))
+    return items
+
+
+def submitted_kinds(student_answer: str) -> set:
+    """Every artefact kind named in an assembled submission. Pure."""
+    return {kind for kind, _ in submitted_items(student_answer)}
 
 
 def has_nontext_evidence(student_answer: str, images=None) -> bool:
-    """Did the learner's readable work arrive as picture, audio or video? Pure."""
+    """Is the learner's work real but impossible to quote? Pure."""
     if images:
         return True
-    return bool(_NONTEXT_ITEM.search(student_answer or ""))
+    items = submitted_items(student_answer)
+    if any(kind in _OUR_RENDERING_KINDS for kind, _ in items):
+        return True
+    has_artefact = any(kind != _TYPED_KIND for kind, _ in items)
+    quotable_words = sum(len(body.split()) for _, body in items)
+    return has_artefact and quotable_words < QUOTABLE_MIN_WORDS
 
 
 # Criterion names whose score demands case-specific grounding.
@@ -494,6 +548,26 @@ def apply_gates(criteria: list, rubric_criteria: list, concepts_missing: list,
                               "from": pct, "to": GATES_ACTIVE["generic_answer_cap"]})
             pct = GATES_ACTIVE["generic_answer_cap"]
 
+        # AN UNMATCHED REQUIREMENT IS NOT A ZERO (02 Sep 2026).
+        #
+        # _match returns None when the marker answered under a name this
+        # requirement list does not carry. The row then took pct=0 and the
+        # student was failed on that requirement — for OUR matching failure,
+        # invisibly, with the judgement reading "No assessment available."
+        # Live shape: two submissions each described as covering "3 of 7"
+        # scored 0.00 and 0.70 on the same assignment.
+        #
+        # The honest treatment: the requirement was not judged, so it carries
+        # no verdict and no marks either way. aggregate() scores the learner
+        # out of what WAS judged, and grade_guard refuses the mark outright
+        # when too little of the task was reached.
+        unjudged = judged is None
+        if unjudged:
+            gates_hit.append({"gate": "unjudged_requirement", "criterion": name,
+                              "from": max_score, "to": 0,
+                              "detail": "the marker returned no verdict for "
+                                        "this requirement; it is excluded "
+                                        "from the total rather than failed"})
         pct = max(0, min(100, pct))
         results.append({
             "criteria":   name,
@@ -503,6 +577,7 @@ def apply_gates(criteria: list, rubric_criteria: list, concepts_missing: list,
             "status":     "good" if pct >= 70 else "average" if pct >= 40 else "needs_improvement",
             "evidence":   evidence[:3],
             "judgment":   (judged or {}).get("judgment", "No assessment available."),
+            "unjudged":   unjudged,
         })
 
     total_cap = 100
@@ -534,12 +609,34 @@ def apply_gates(criteria: list, rubric_criteria: list, concepts_missing: list,
 
 
 def aggregate(gated: dict, word_count: int, word_limit_min: int,
-              word_limit_max: int) -> dict:
-    """Compute the final score. Pure arithmetic — no model involvement."""
-    raw_total = sum(r["score"] for r in gated["breakdown"])
+              word_limit_max: int, artefact_deliverable: bool = False) -> dict:
+    """Compute the final score. Pure arithmetic — no model involvement.
+
+    `artefact_deliverable` — the submission's substance arrived as a file,
+    picture, recording or link. The length penalty then measures the CAPTION,
+    not the work, and must not apply.
+    """
+    rows = gated["breakdown"]
+    judged_rows = [r for r in rows if not r.get("unjudged")]
+    all_max = sum(r["maxScore"] for r in rows)
+    judged_max = sum(r["maxScore"] for r in judged_rows)
+
+    raw_total = sum(r["score"] for r in judged_rows)
+    unjudged_names = [r["criteria"] for r in rows if r.get("unjudged")]
+    if (unjudged_names and judged_max > 0 and judged_max < all_max
+            and judged_max * 2 >= all_max):
+        # Score out of what was actually judged. Leaving the unjudged weight in
+        # the denominator would charge the learner for our miss.
+        # Scored out of what was actually judged. The gate trace already
+        # names each one, so no second prose field is kept here.
+        raw_total = raw_total * all_max / judged_max
 
     word_penalty, word_note = 0, ""
-    if word_count < word_limit_min:
+    if artefact_deliverable:
+        # The deliverable is the file, the picture, the recording or the page.
+        # A short caption beside it is what the task ASKED for.
+        pass
+    elif word_count < word_limit_min:
         shortfall = 1 - (word_count / max(word_limit_min, 1))
         word_penalty = min(20, round(shortfall * 30))
         word_note = (f"Answer is {word_count} words (minimum {word_limit_min}) — "
@@ -562,6 +659,7 @@ def aggregate(gated: dict, word_count: int, word_limit_min: int,
         "errorDeduction":   gated["error_deduction"],
         "totalCap":         gated["total_cap"],
         "gatesHit":         gated["gates_hit"],
+        "unjudgedRequirements": unjudged_names,
     }
 
 
@@ -1078,14 +1176,20 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
     # falls below half. Trimming both to four for the card therefore MOVED
     # EVERY RATIO TOWARDS 0.5 and silently changed marks. The brevity work was
     # supposed to touch wording only; this is where it reached into scoring.
+    # ONE predicate, TWO consequences. If the learner's substance arrived as
+    # an artefact, the marker cannot quote it (so the zero-quote cap must not
+    # fire) AND the typed word count is a caption (so the length penalty must
+    # not fire). Deriving both from the same fact stops them disagreeing.
+    artefact_deliverable = has_nontext_evidence(student_answer, images)
+
     gated = apply_gates(review["criteria"], rubric_criteria,
                         review["concepts_missing"], review["concepts_covered"],
                         review["factual_errors"], gates=gate_overrides,
-                        nontext_evidence=has_nontext_evidence(student_answer,
-                                                              images))
+                        nontext_evidence=artefact_deliverable)
 
     review = tidy_review(review)
-    scores = aggregate(gated, word_count, word_limit_min, word_limit_max)
+    scores = aggregate(gated, word_count, word_limit_min, word_limit_max,
+                       artefact_deliverable=artefact_deliverable)
 
     # Wrong-task: the model DECLARES, the arithmetic CORROBORATES, Python
     # decides. Policy (Ranjana, 18 Aug): work that belongs to a different task
@@ -1180,8 +1284,14 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
         "isGarbage": False,
         "garbageWarning": "",
         "wrongTask": wrong_task,
+        # Which list judged this, and which parts of it returned no verdict.
+        # Without the fingerprint there is no way to prove two students on one
+        # assignment faced the same requirements — the question that had no
+        # answer while the counts were drifting 4/5/6/7.
         "decisions": {"packVersion": pack_version, "scoringPath": scoring_path,
-                      "gatesHit": scores["gatesHit"]},
+                      "gatesHit": scores["gatesHit"],
+                      "requirementsFingerprint": rubric.get("fingerprint", ""),
+                      "unjudgedRequirements": scores.get("unjudgedRequirements", [])},
     }
 
 
@@ -1223,5 +1333,6 @@ def _garbage_result(review: dict, rubric_criteria: list, pack_version: int,
                            + (f"Reason: {reason}. " if reason else "")
                            + "Please submit a thoughtful response."),
         "decisions": {"packVersion": pack_version, "scoringPath": scoring_path,
-                      "gatesHit": ["garbage"]},
+                      "gatesHit": ["garbage"],
+                      "requirementsFingerprint": "", "unjudgedRequirements": []},
     }

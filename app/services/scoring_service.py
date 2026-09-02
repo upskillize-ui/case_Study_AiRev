@@ -166,16 +166,79 @@ def fmt_marks(value) -> str:
     return str(int(f)) if f == int(f) else f"{f:.1f}"
 
 
-def build_summary(awarded, max_marks, concepts_covered: int,
-                  concepts_total: int) -> str:
+# ─── The headline sentence must be the score, in words ──────────────────────
+#
+# WHY THIS CHANGED (02 Sep 2026). The sentence under the score ring used to be
+# built from concepts_covered / concepts_missing — a SECOND, independent model
+# judgement that never met the one that produced the number. So the card could
+# say "you covered 3 of the 7 key points" beside 0.00, and say exactly the same
+# sentence beside 0.70 on the same assignment. Two students, identical
+# feedback, different marks, and nothing on the card explained either.
+#
+# The requirement rows ARE the score: each one carries the percentage that was
+# summed into the total. Counting them cannot contradict the number, because
+# it IS the number, said in words.
+
+MET_PCT = 70          # the requirement was done
+PARTLY_PCT = 40       # something is there, not enough of it
+
+
+def requirement_tally(rows) -> dict:
+    """How many of the task's requirements were met, partly met, missed. Pure.
+
+    Unjudged rows are excluded from every count: they carry no verdict, so
+    reporting them as missed would be the same fabrication in the sentence
+    that it was in the score.
+    """
+    met = partly = missed = 0
+    for r in rows or []:
+        if not isinstance(r, dict) or r.get("unjudged"):
+            continue
+        try:
+            pct = float(r.get("percentage") or 0)
+        except (TypeError, ValueError):
+            pct = 0.0
+        if pct >= MET_PCT:
+            met += 1
+        elif pct >= PARTLY_PCT:
+            partly += 1
+        else:
+            missed += 1
+    return {"met": met, "partly": partly, "missed": missed,
+            "total": met + partly + missed}
+
+
+def coverage_sentence(tally: dict) -> str:
+    """The tally as one plain sentence a 19-year-old reads in one pass. Pure."""
+    total = tally.get("total", 0)
+    if total <= 0:
+        return ""
+    met, partly = tally.get("met", 0), tally.get("partly", 0)
+    thing = "thing" if total == 1 else "things"
+    line = f"You fully did {met} of the {total} {thing} this task asked for."
+    if partly:
+        line += (f" {partly} more {'was' if partly == 1 else 'were'} "
+                 f"started but not finished.")
+    return line
+
+
+def build_summary(awarded, max_marks, concepts_covered: int = 0,
+                  concepts_total: int = 0, requirements=None) -> str:
     """The one-line headline under the score ring.
 
     Deliberately excludes the grade letter: the card already displays it in
-    48pt beside this sentence, so repeating it is noise. Concept coverage is
-    phrased for a student, not for us — "key points this task expected"
-    rather than "core concepts engaged".
+    48pt beside this sentence, so repeating it is noise.
+
+    `requirements` — the scored requirement rows. When given, the coverage
+    clause is derived from the SAME rows that produced the mark, so the
+    sentence and the number can never disagree. The concept counts remain for
+    review types where must-cover concepts are a real, score-bearing standard
+    (case studies keep the concept cap; assignments do not).
     """
     line = f"You scored {fmt_marks(awarded)} out of {fmt_marks(max_marks)}."
+    if requirements is not None:
+        clause = coverage_sentence(requirement_tally(requirements))
+        return f"{line} {clause}".strip()
     if concepts_total > 0:
         line += (f" You covered {concepts_covered} of the {concepts_total} "
                  f"key points this task expected.")

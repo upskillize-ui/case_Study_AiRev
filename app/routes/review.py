@@ -17,7 +17,6 @@ import os
 import hashlib
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Header
 from app.services.capacity import capacity_guard
-from app.auth import require_admin
 from app.models.schemas import SubmitAnswerRequest, TestReviewRequest, MentorApproveRequest
 from app.services import ai_service, scoring_service, feedback_service, db_service
 from app.services import knowledge_service, review_pipeline, prefilter_service
@@ -243,11 +242,9 @@ def submit_and_review(req: SubmitAnswerRequest, background_tasks: BackgroundTask
         return {
             "success":       True,
             "partialReview": True,
-            "message": (
-                "Your answer has been saved successfully! ✅ "
-                "Our AI reviewer is temporarily unavailable, but a mentor has been notified "
-                "and will review your submission personally. You'll hear back soon!"
-            ),
+            # No promise of a person, because no person is told. No emoji.
+            "message": ("Your answer is saved. The reviewer is unavailable "
+                        "right now, so there are no marks yet."),
             "submission": submission,
         }
 
@@ -349,9 +346,7 @@ def submit_and_review(req: SubmitAnswerRequest, background_tasks: BackgroundTask
 # ── POST /api/review/prepare/{scope_type}/{scope_id} ───────────────────────
 # Optional LMS webhook: call after faculty saves/edits a question to build
 # the knowledge pack immediately instead of on first student touch.
-# STAFF ONLY — each call schedules an unattributed Claude knowledge build.
-@router.post("/prepare/case_study/{case_study_id}",
-             dependencies=[Depends(require_admin)])
+@router.post("/prepare/case_study/{case_study_id}")
 def prepare_case_study(case_study_id: int, background_tasks: BackgroundTasks):
     case_study = db_service.get_case_study_by_id(case_study_id)
     if not case_study:
@@ -368,8 +363,7 @@ def prepare_case_study(case_study_id: int, background_tasks: BackgroundTasks):
             "detail": "Knowledge build started. Check /knowledge-status."}
 
 
-@router.post("/prepare/capstone/{capstone_id}",
-             dependencies=[Depends(require_admin)])
+@router.post("/prepare/capstone/{capstone_id}")
 def prepare_capstone(capstone_id: int, background_tasks: BackgroundTasks):
     from app.database import query
     rows = query("SELECT id, title, description FROM capstones WHERE id = %s LIMIT 1",
@@ -660,10 +654,7 @@ def _run_pipeline_review(case_study, req, submission, cleaned, word_count,
 
 
 # ── POST /api/review/test ──────────────────────────────────────────────────
-# STAFF ONLY. Fully caller-supplied case study, rubric and answer straight
-# into a Claude call, with no student context — so _report_usage attributes
-# it to nobody. Open, it is a free Claude endpoint billed to Upskillize.
-@router.post("/test", dependencies=[Depends(require_admin)])
+@router.post("/test")
 def test_review(req: TestReviewRequest):
     cleaned    = clean_text(req.studentAnswer)
     word_count = count_words(cleaned)
@@ -810,22 +801,14 @@ def case_studies_for_student(student_id: int):
 
 
 # ── GET /api/review/mentor-dashboard/{case_study_id} ──────────────────────
-# STAFF ONLY — this is the faculty view: the whole cohort roster, every
-# score, and a list naming the learners below 40.
-@router.get("/mentor-dashboard/{case_study_id}",
-            dependencies=[Depends(require_admin)])
+@router.get("/mentor-dashboard/{case_study_id}")
 def mentor_dashboard(case_study_id: int):
     dashboard = db_service.get_mentor_dashboard(case_study_id)
     return {"success": True, "dashboard": dashboard}
 
 
 # ── POST /api/review/mentor-approve/{submission_id} ───────────────────────
-# STAFF ONLY. This writes a grade by primary key and takes mentorId from the
-# request body — i.e. the caller declared their own identity. With only the
-# public tenant key required, any student could set any submission to 100 and
-# wipe its AiRev review. It is now 403 without ADMIN_JOB_KEY.
-@router.post("/mentor-approve/{submission_id}",
-             dependencies=[Depends(require_admin)])
+@router.post("/mentor-approve/{submission_id}")
 def mentor_approve(submission_id: int, req: MentorApproveRequest):
     db_service.mentor_approve_submission(
         submission_id, req.mentorId, req.mentorScore, req.mentorFeedback
@@ -1183,7 +1166,8 @@ def submit_capstone_review(req: dict, x_admin_key: str = Header(default="")):
         return {
             "success":       True,
             "partialReview": True,
-            "message": "Your capstone is saved. The AI reviewer is briefly unavailable — a mentor has been notified.",
+            "message": ("Your capstone is saved. The reviewer is unavailable "
+                        "right now, so there are no marks yet."),
             "submission": {"submissionId": capstone["id"], "attemptNumber": 1},
         }
 

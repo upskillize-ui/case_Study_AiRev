@@ -32,6 +32,9 @@ from app.services import (
 )
 
 _PIPELINE_ON = os.getenv("REVIEW_PIPELINE", "on").lower() == "on"
+# The legacy scorer marks against a different standard (see the fallback below).
+# Off by default from 02 Sep 2026: one standard per assignment, or no mark.
+_LEGACY_FALLBACK_ON = os.getenv("AIREV_LEGACY_FALLBACK", "off").lower() == "on"
 MAX_REVIEWED_ATTEMPTS = int(os.getenv("MAX_REVIEWED_ATTEMPTS", "2"))
 # Below this word count AND with no readable attachment we DECLINE to score,
 # rather than award a 0 the student never earned. Image- and artifact-first
@@ -256,13 +259,11 @@ def submit_and_review_assignment(
     if not content:
         total_time = int((time.time() - start_time) * 1000)
         if file_error:
-            msg = (f"We received your file but couldn't read any text from it "
-                   f"({file_error}). Please check it opens correctly, then re-attach "
-                   f"it — or type your answer in the box — and submit again.")
+            msg = (f"We could not read your file ({file_error}). "
+                   f"Re-attach it, or type your answer in the box, and submit again.")
         else:
-            msg = ("We couldn't find any answer for this assignment. Attach your work "
-                   "(PDF, Word, Excel, image, or text), or type your answer in the box, "
-                   "then click Submit again.")
+            msg = ("We could not find your answer. Attach your work — PDF, Word, "
+                   "Excel, image or text — or type it in the box, then submit again.")
         return {
             "success": True,
             # Explicit no-content signal (same contract as industry sessions):
@@ -304,10 +305,9 @@ def submit_and_review_assignment(
             found += ", and no readable text could be taken from your attachment"
         else:
             found += ", and no file was attached"
-        msg = (f"We haven't scored this yet — we could only find {found}. "
-               f"If your work is in a file, re-attach it (PDF, Word, image or text); "
-               f"if it is written work, add your reasoning in the answer box. "
-               f"No score has been recorded for this attempt.")
+        msg = (f"We could only find {found}, so there are no marks yet. "
+               f"Attach your file again, or write your answer in the box, "
+               f"then submit.")
         print(f"[ASSIGNMENT] NOT SCORED (too little readable content): "
               f"words={word_count}, file_error={file_error or 'none'} — no row written")
         return {
@@ -366,7 +366,8 @@ def submit_and_review_assignment(
     # so an image-first task is not penalised for a short caption.
     adaptive = rubric_service.get_or_derive(
         tenant, "assignment", req.assignmentId, assignment)
-    adaptive_rubric = {"criteria": adaptive["criteria"]}
+    adaptive_rubric = {"criteria": adaptive["criteria"],
+                       "fingerprint": adaptive.get("fingerprint", "")}
     word_min, word_max = adaptive["wordMin"], adaptive["wordMax"]
     # AUDIT: `assignment` is ALSO the knowledge-pack source. Mutating it here
     # changed the pack's content hash and staled every pack, so the derived
@@ -381,6 +382,36 @@ def submit_and_review_assignment(
     gate_overrides = ({} if adaptive.get("submissionKind") in ("written", "mixed")
                       else {"generic_answer_cap": 100})
 
+    # A GENERIC RUBRIC IS NOT THIS TASK'S STANDARD (02 Sep 2026).
+    #
+    # derived=False means rubric derivation failed and the four-line fallback
+    # (Task completion / Accuracy / Reasoning / Communication) is in play. That
+    # is a DIFFERENT standard from the one every other student on this
+    # assignment was judged against — the requirement list that varied 4/5/6/7
+    # across one assignment. Derivation failure is an outage on our side and
+    # transient, so the row is left ungraded and swept again, exactly like
+    # every other of-our-making failure.
+    if not adaptive.get("gradeable"):
+        assignment_db_service.mark_not_graded(
+            tenant, submission["submissionId"],
+            "We could not read this task's requirements just now. Your work "
+            "is saved and there are no marks yet. This is our side, not yours.")
+        print(f"[ASSIGNMENT] NOT GRADED — rubric derivation unavailable for "
+              f"assignment {req.assignmentId}; row left retryable")
+        return {
+            "success": True, "status": "pending_review", "notGraded": True,
+            "submission": submission,
+            "feedback": _empty_feedback(
+                "Your work is saved. There are no marks yet.", helpful=True),
+            "processingTimeMs": int((time.time() - start_time) * 1000),
+        }
+
+    # Pictures of the learner's own work, for the marker to actually look at.
+    judge_images = intake.images_for_judge(artefacts)
+    if judge_images:
+        print(f"[ASSIGNMENT] handing the marker {len(judge_images)} "
+              f"picture(s) of the work")
+
     # ── Evidence-gated pipeline (primary path) ─────────────────────────────
     if _PIPELINE_ON:
         try:
@@ -392,6 +423,12 @@ def submit_and_review_assignment(
                 word_limit_max=word_max,
                 gate_overrides=gate_overrides,
                 student_id=req.studentId,
+                # THE MARKER LOOKS AT THE WORK. images_for_judge has existed
+                # since 23 Aug and no route ever called it, so every poster,
+                # screenshot and rendered page was judged from its filename
+                # and a three-word caption. On an image-first cohort that is
+                # the whole explanation for a wall of near-zeros.
+                images=judge_images,
             )
             if r is not None:
                 prefilter_service.flag_review_outcomes(
@@ -404,7 +441,34 @@ def submit_and_review_assignment(
                                   for f in reflex.get("flags", [])),
                     max_marks=max_marks)
         except Exception as e:
-            print(f"[ASSIGNMENT] Pipeline failed, falling back to legacy: {e}")
+            print(f"[ASSIGNMENT] Pipeline failed: {e}")
+            if not _LEGACY_FALLBACK_ON:
+                # THE SECOND MARKER (02 Sep 2026). The legacy path below scores
+                # against a different standard: no evidence gates, no
+                # requirement rows, no gate trace. A learner whose review threw
+                # got a number nobody else on the assignment was measured by,
+                # and nothing on the card said so. That is half of "two
+                # students, same work, different marks".
+                #
+                # A pipeline failure is our outage and transient. Refuse, keep
+                # the row retryable, and let the sweep serve it under the same
+                # rules as everyone else. Set AIREV_LEGACY_FALLBACK=on to
+                # restore the old behaviour instantly if this ever blocks a
+                # cohort.
+                assignment_db_service.mark_not_graded(
+                    tenant, submission["submissionId"],
+                    "Your work is saved. The reviewer stopped partway, so there "
+                    "are no marks yet. This is our side, not yours.")
+                return {
+                    "success": True, "status": "pending_review",
+                    "notGraded": True, "submission": submission,
+                    "feedback": _empty_feedback(
+                        "Your work is saved. There are no marks yet.", helpful=True),
+                    "processingTimeMs": int((time.time() - start_time) * 1000),
+                }
+            print("[ASSIGNMENT] AIREV_LEGACY_FALLBACK=on — marking with the "
+                  "legacy scorer (a DIFFERENT standard from the rest of this "
+                  "assignment)")
 
     try:
         ai_analysis = ai_service.analyze_answer(
@@ -423,11 +487,9 @@ def submit_and_review_assignment(
         return {
             "success":       True,
             "partialReview": True,
-            "message": (
-                "Your assignment has been saved successfully! "
-                "Our AI reviewer is temporarily unavailable, but a faculty member "
-                "has been notified and will review your submission personally."
-            ),
+            # Nothing notifies a faculty member, so nothing here says one was.
+            "message": ("Your assignment is saved. The reviewer is unavailable "
+                        "right now, so there are no marks yet."),
             "submission": submission,
         }
 
@@ -674,23 +736,48 @@ def re_review_assignment(
                    "readable": a.readable, "note": a.note} for a in artefacts])
 
     if not content:
-        # Rule 2. Report it and leave the row exactly as it is.
+        # THE ORPHAN LEAK (02 Sep 2026). This used to leave the row exactly as
+        # it was: grade NULL, feedback untouched, no notGraded marker. So the
+        # sweeper re-selected it the next night, and the night after, for ever,
+        # while the student sat in "to be graded" and was never told anything.
+        # That is why the ungraded list only ever grew.
+        #
+        # Rule 2 still holds — no MARK is invented — but the row is RESOLVED:
+        # the learner is told what we could not open and what to do about it,
+        # and grade stays NULL so their corrected resubmission flows through
+        # the normal path. A graded row is never touched.
+        why = intake.first_error(artefacts) or "no stored work found"
+        if previous_grade is None and not dryRun:
+            assignment_db_service.mark_not_graded(
+                tenant, submission_id,
+                f"We could not open your file ({why}), so there are no marks "
+                f"yet. Re-attach your work, or type your answer in the box, "
+                f"and submit again.")
         print(f"[REGRADE] submission {submission_id}: nothing readable "
-              f"({intake.first_error(artefacts) or 'no stored work'}) — row untouched")
+              f"({why}) — learner told, row left ungraded")
         return {"success": False, "skipped": "no_readable_content",
                 "submissionId": submission_id,
                 "previousGrade": previous_grade,
                 "artefacts": inventory,
-                "detail": intake.first_error(artefacts) or "no stored work found"}
+                "detail": why}
 
     if intake.is_unassessable(manifest, content):
         # The deliverable exists; we could not open it. Scoring it anyway is an
         # assertion about work nobody read — the fabrication rule, pointed the
         # other way. Leave the row untouched and say so plainly, so the learner
         # is asked for a description rather than handed a mark they didn't earn.
+        detail = ("The work was submitted as a link or file we could not open, "
+                  "and there is no written answer to judge.")
+        if previous_grade is None and not dryRun:
+            assignment_db_service.mark_not_graded(
+                tenant, submission_id,
+                "Your link or file would not open for us, and there is no "
+                "written answer with it, so there are no marks yet. Add a few "
+                "lines about what you made, or attach the file itself, then "
+                "submit again.")
         print(f"[REGRADE] submission {submission_id}: deliverable present but "
               f"unreadable ({intake.substantive_words(content)} words of answer) "
-              f"— row untouched")
+              f"— learner told, row left ungraded")
         return {"success": False, "skipped": "unassessable_deliverable",
                 "submissionId": submission_id,
                 "previousGrade": previous_grade,
@@ -711,15 +798,39 @@ def re_review_assignment(
 
     adaptive = rubric_service.get_or_derive(
         tenant, "assignment", row["assignment_id"], assignment)
+    if not adaptive.get("gradeable"):
+        # Same standard for every learner on this task, or no mark. See
+        # rubric_service.get_or_derive.
+        if previous_grade is None:
+            assignment_db_service.mark_not_graded(
+                tenant, submission_id,
+                "We could not read this task's requirements just now. Your work "
+                "is saved and there are no marks yet. This is our side, not yours.")
+        print(f"[REGRADE] submission {submission_id}: requirements unavailable "
+              f"({adaptive.get('reason', 'unknown')}) — left ungraded")
+        return {"success": False, "skipped": "requirements_unavailable",
+                "submissionId": submission_id,
+                "previousGrade": previous_grade,
+                "artefacts": inventory,
+                "detail": adaptive.get("reason", "requirements unavailable")}
+
     gate_overrides = ({} if adaptive.get("submissionKind") in ("written", "mixed")
                       else {"generic_answer_cap": 100})
 
+    judge_images = intake.images_for_judge(artefacts)
+    if judge_images:
+        print(f"[REGRADE] handing the marker {len(judge_images)} picture(s) "
+              f"of the work")
+
     r = review_pipeline.review_with_knowledge(
         scope_type="assignment", scope_id=row["assignment_id"],
-        raw_source=assignment, rubric={"criteria": adaptive["criteria"]},
+        raw_source=assignment,
+        rubric={"criteria": adaptive["criteria"],
+                "fingerprint": adaptive.get("fingerprint", "")},
         student_answer=f"{manifest}\n{content}".strip(), word_count=word_count,
         word_limit_min=adaptive["wordMin"], word_limit_max=adaptive["wordMax"],
         gate_overrides=gate_overrides, student_id=row["student_id"],
+        images=judge_images,
     )
     if r is None:
         raise HTTPException(status_code=503,
@@ -790,10 +901,13 @@ def _pipeline_assignment_response(tenant, submission, r, word_count, start_time,
     scores = r["scores"]
     grade = scoring_service.get_grade(scores["totalScore"])
     awarded = assignment_db_service.scaled_marks(scores["totalScore"], max_marks)
+    # The headline is the score said in words. It reads the SAME rows that
+    # were summed into the mark, so "you fully did 2 of the 5 things" can
+    # never sit beside a number that disagrees with it. (Concept counts fed
+    # this sentence until 02 Sep and were a separate model judgement — see
+    # scoring_service.build_summary.)
     summary = scoring_service.build_summary(
-        awarded, max_marks,
-        len(r["conceptsCovered"]),
-        len(r["conceptsCovered"]) + len(r["conceptsMissing"]))
+        awarded, max_marks, requirements=scores["rubricBreakdown"])
 
     result = {
         "totalScore":       scores["totalScore"],

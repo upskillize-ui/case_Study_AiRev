@@ -68,7 +68,18 @@ _TABLE = "derived_rubrics"
 # the only criterion on its task, so its ceiling was 0.0/10 for all 195
 # learners. Those rubrics are cached under the v7 hash and would survive the
 # code fix; the bump is what re-derives them.
-RUBRIC_VERSION = 8
+# v9 (02 Sep 2026): the marking rules changed, so the number that identifies
+# them changes with them. Three fixes ride on this bump:
+#   - the marker is now SHOWN the learner's pictures (images_for_judge was
+#     written on 23 Aug and never wired to a route);
+#   - the zero-quote cap no longer fires on any artefact, only on typed prose;
+#   - the length penalty no longer fires when the deliverable is a file, a
+#     picture, a recording or a link.
+# It is also the retry trigger: sweeper_service re-offers every refusal
+# stamped with an older version exactly once, so the rows that piled up under
+# v8 get one run under the fixed marker. Bumping re-derives every cached
+# requirement list — deliberate, once, and cheap at ~30 assignments.
+RUBRIC_VERSION = 9
 # Per-tenant: one tenant's CREATE TABLE must never suppress another's.
 _tables_ready: set = set()
 
@@ -510,7 +521,15 @@ def requirements_to_criteria(requirements: list) -> list:
 
 
 def _fallback(reason: str) -> dict:
-    print(f"⚠️  rubric derivation unavailable ({reason}) — using generic rubric")
+    """The generic four-line rubric. NOT gradeable — see `gradeable` below.
+
+    Its presence means we could not read THIS task, so a learner judged
+    against it is judged against a different standard from every classmate.
+    That is the requirement-count drift (4/5/6/7 on one assignment) seen
+    across the cohort. Callers must refuse to mark on it.
+    """
+    print(f"⚠️  rubric derivation unavailable ({reason}) — generic rubric, "
+          f"NOT gradeable")
     return {
         "criteria": [dict(c, weight=c["maxScore"] / 100) for c in FALLBACK_CRITERIA],
         "wordMin": FALLBACK_WORDS[0],
@@ -518,7 +537,20 @@ def _fallback(reason: str) -> dict:
         "deliverables": [],
         "submissionKind": "mixed",
         "derived": False,
+        "gradeable": False,
+        "reason": reason,
     }
+
+
+def requirements_fingerprint(criteria: list) -> str:
+    """Which requirement list judged this submission. Pure.
+
+    Stored on every mark so two students on one assignment can be PROVEN to
+    have faced the same list — the question that had no answer when the counts
+    were drifting.
+    """
+    names = "|".join(sorted((c or {}).get("name", "") for c in criteria or []))
+    return hashlib.md5(f"{RUBRIC_VERSION}:{names}".encode()).hexdigest()[:12]
 
 
 def _load(tenant, scope_type: str, scope_id: int, fresh_hash: str) -> Optional[dict]:
@@ -535,7 +567,14 @@ def _load(tenant, scope_type: str, scope_id: int, fresh_hash: str) -> Optional[d
         return None
 
 
-def _store(tenant, scope_type: str, scope_id: int, fresh_hash: str, payload: dict) -> None:
+def _store(tenant, scope_type: str, scope_id: int, fresh_hash: str, payload: dict) -> bool:
+    """Persist the derived list. Returns True when it is safely shared.
+
+    The return value matters: a derivation that was NOT stored is a list only
+    this one learner will ever be judged against, because the next learner
+    re-derives and the model does not repeat itself. Same standard for
+    everyone means the list must be the persisted one.
+    """
     try:
         _ensure_table(tenant)
         texecute(
@@ -544,8 +583,10 @@ def _store(tenant, scope_type: str, scope_id: int, fresh_hash: str, payload: dic
             f"VALUES (%s, %s, %s, %s)",
             (scope_type, scope_id, fresh_hash,
              json.dumps(payload, ensure_ascii=False)))
+        return True
     except Exception as e:
         print(f"⚠️  could not cache derived rubric: {e}")
+        return False
 
 
 def derive(task: dict) -> dict:
@@ -610,20 +651,28 @@ def get_or_derive(tenant, scope_type: str, scope_id: int, task: dict) -> dict:
     except Exception as e:
         return _fallback(f"hash failed: {e}")
 
+    # A cache MISS (no row, or the task was edited) means derive — correct.
+    # A cache READ FAILURE means the DB hiccupped, and deriving anyway hands
+    # THIS learner a freshly-invented list while their classmates keep the
+    # stored one. Same input, different standard, no trace. Refuse instead;
+    # the row stays ungraded and is swept again.
     try:
         cached = _load(tenant, scope_type, scope_id, fresh)
-        if cached:
-            # The pattern list is NOT part of source_hash, so a rubric cached
-            # under this RUBRIC_VERSION can predate a newly-added pattern.
-            # Re-filtering on read makes the invariant hold either way.
-            kept, dropped = strip_offplatform(cached.get("criteria"))
-            if dropped:
-                print("⚠️  cached rubric contained off-platform criteria "
-                      f"{[c.get('name') for c in dropped]} — filtered on read")
-                cached["criteria"] = normalise(kept)
-            return cached
     except Exception as e:
-        print(f"⚠️  rubric cache read failed: {e}")
+        return _fallback(f"cache read failed: {e}")
+
+    if cached:
+        # The pattern list is NOT part of source_hash, so a rubric cached
+        # under this RUBRIC_VERSION can predate a newly-added pattern.
+        # Re-filtering on read makes the invariant hold either way.
+        kept, dropped = strip_offplatform(cached.get("criteria"))
+        if dropped:
+            print("⚠️  cached rubric contained off-platform criteria "
+                  f"{[c.get('name') for c in dropped]} — filtered on read")
+            cached["criteria"] = normalise(kept)
+        cached["gradeable"] = True
+        cached["fingerprint"] = requirements_fingerprint(cached.get("criteria"))
+        return cached
 
     try:
         payload = derive(task)
@@ -633,5 +682,13 @@ def get_or_derive(tenant, scope_type: str, scope_id: int, task: dict) -> dict:
     names = ", ".join(c["name"] for c in payload["criteria"])
     print(f"🎯 Rubric derived for {scope_type} {scope_id} "
           f"({payload['submissionKind']}, words {payload['wordMin']}-{payload['wordMax']}): {names}")
-    _store(tenant, scope_type, scope_id, fresh, payload)
+
+    # ONE LIST PER TASK, OR NO MARK. If it did not persist, the next learner
+    # on this assignment derives a different one and the counts drift again —
+    # which is exactly what 4/5/6/7 requirements on a single assignment was.
+    if not _store(tenant, scope_type, scope_id, fresh, payload):
+        return _fallback("derived list could not be stored — refusing to mark "
+                         "against a list only this learner would face")
+    payload["gradeable"] = True
+    payload["fingerprint"] = requirements_fingerprint(payload["criteria"])
     return payload

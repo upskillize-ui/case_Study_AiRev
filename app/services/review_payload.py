@@ -39,6 +39,10 @@ def audit_record(result: dict, manifest: str = "", word_count=None) -> dict:
         "scoringPath":    decisions.get("scoringPath", ""),
         "packVersion":    decisions.get("packVersion"),
         "gatesHit":       decisions.get("gatesHit", []),
+        # The exact requirement list this mark was made against, and any part
+        # of it the marker returned no verdict for.
+        "requirementsFingerprint": decisions.get("requirementsFingerprint", ""),
+        "unjudgedRequirements":    decisions.get("unjudgedRequirements", []),
         # What actually reached the marker, in the intake's own words. This is
         # the line that answers "but my page WAS published".
         "manifest":       (manifest or "")[:2000],
@@ -69,6 +73,10 @@ def _faculty_view(result: dict) -> dict:
             "percent":     r.get("percentage"),
             "note":        r.get("judgment") or r.get("note") or "",
             "evidence":    r.get("evidence") or [],
+            # True when the marker returned no verdict for this requirement.
+            # It is excluded from the total rather than failed, and the guard
+            # refuses the mark outright when too much of the task is unjudged.
+            "unjudged":    bool(r.get("unjudged")),
         })
     out = {k: v for k, v in faculty.items() if k != "howYouScored"}
     if requirements:

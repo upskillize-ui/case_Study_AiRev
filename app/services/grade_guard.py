@@ -25,6 +25,7 @@
 # DO with a refusal; this module only decides whether a grade may exist.
 # ---------------------------------------------------------------------------
 
+import os
 from typing import Optional, Tuple
 
 # Exception text that means "the model never answered", as opposed to "the
@@ -89,6 +90,33 @@ def has_model_evidence(criteria: Optional[list]) -> bool:
                if isinstance(c, dict))
 
 
+# How much of the task must carry a real verdict before a number is honest.
+# Below this, "the score" is an extrapolation from a minority of the brief,
+# multiplied up to look like a whole mark — which is precisely the shape that
+# produced 0.00 and 0.70 for two submissions described identically.
+MIN_JUDGED_SHARE = float(os.getenv("MIN_JUDGED_SHARE", "0.5"))
+
+
+def judged_share(criteria: Optional[list]) -> float:
+    """Fraction of the task's weight that received a verdict. Pure.
+
+    Rows written before requirement-level judging carry no `unjudged` key and
+    count as judged, so nothing about older reviews changes.
+    """
+    total = judged = 0.0
+    for c in criteria or []:
+        if not isinstance(c, dict):
+            continue
+        try:
+            weight = float(c.get("outOf") or c.get("maxScore") or 0) or 1.0
+        except (TypeError, ValueError):
+            weight = 1.0
+        total += weight
+        if not c.get("unjudged"):
+            judged += weight
+    return (judged / total) if total else 0.0
+
+
 def review_is_empty(result: Optional[dict]) -> bool:
     """A review with no feedback of any kind did not happen. Pure.
 
@@ -146,6 +174,11 @@ def may_write_grade(*, criteria: Optional[list], manifest: str = "",
         return False, ("the reviewer returned no judgement for any part of "
                        "this task, so any score would be computed from "
                        "nothing")
+    share = judged_share(criteria)
+    if criteria and share < MIN_JUDGED_SHARE:
+        return False, (f"only {round(share * 100)}% of what this task asks for "
+                       f"received a verdict — a score built from that much of "
+                       f"the brief is an extrapolation, not a mark")
     if words_read <= 0:
         return False, ("nothing readable reached the reviewer, so there is "
                        "no work to put a number on")
