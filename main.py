@@ -17,7 +17,7 @@ from app.routes.review import router as review_router
 from app.routes.assignment_review import router as assignment_router
 from app.routes.industry_session_review import router as industry_session_router   # ← ADD THIS
 from app.routes.exceptions import router as exceptions_router
-from app.routes.review_jobs import router as review_jobs_router, resume_after_restart
+from app.routes.review_jobs import router as review_jobs_router
 from app.services.capacity import CapacityFull, BUSY_MESSAGE, RETRY_AFTER_SECONDS, snapshot as capacity_snapshot
 from app.tenants import resolve_tenant_by_key, all_tenant_ids, configured_tenant_ids, TENANTS, Tenant
 from app.database import test_all_tenants, set_current_tenant
@@ -176,7 +176,7 @@ def _start_scheduler():
         if reaped and jobs_enabled():
             scheduler.add_job(sweep_all_tenants, "date",
                               run_date=datetime.now() + timedelta(minutes=2),
-                              id="resume_after_restart", replace_existing=True)
+                              id="resume_sweep", replace_existing=True)
             print(f"   ♻️  {reaped} job(s) left running by the last restart closed — "
                   f"resume sweep in 2 minutes")
         scheduler.start()
@@ -299,12 +299,11 @@ async def startup():
     ok = sum(1 for v in results.values() if v)
     print(f"   {ok}/{len(results)} tenant DBs connected")
     print("")
-    # Deploys restart the Space mid-cohort; a flagged-on queue picks its job
-    # back up from DB state instead of leaving half a class unmarked.
-    try:
-        resume_after_restart()
-    except Exception as e:
-        print(f"   ⚠️ review-jobs resume skipped: {e}")
+    # Deploys restart the Space mid-cohort. The old one-job resume
+    # restarted only the oldest running job and left the others 'running'
+    # for ever, blocking every new batch with 409. Since 04 Sep the scheduler
+    # bootstrap closes every orphan and sweeps two minutes later instead —
+    # see _start_scheduler.
 
 
 # NOTE: /api/debug/keycheck was removed on 12 Aug 2026.

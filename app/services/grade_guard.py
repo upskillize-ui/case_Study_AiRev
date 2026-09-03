@@ -82,6 +82,34 @@ _MACHINERY = ("error code", "request_id", "{'type'", '{"type"', "traceback",
               "exception", "error:", "errno", "http ", "status_code")
 
 
+# THE SITE THAT WOULD NOT LET A ROBOT IN (04 Sep 2026). claude.ai artifacts,
+# perplexity.ai searches and chatgpt.com shares open for any person in a
+# browser and refuse our headless one: a Cloudflare "human check", or the
+# tool's own signed-out shell instead of the work. 104 claude.ai links on one
+# course. That is a limit of OUR reader, not a fault in the submission — but
+# it is not an outage either: retrying next sweep gives the same answer, so
+# the row must be STAMPED (not looped) and the learner told what actually
+# helps: a screenshot or PDF beside the link. The LMS classifier files the
+# phrase below as "never zeroed".
+_READER_BLOCKED_MARKERS = (
+    "human-check", "human check", "cloudflare",
+    "tool's own page rather than your work",
+    "blocked our automatic reader",
+)
+
+READER_BLOCKED_MESSAGE = (
+    "Your link opened, but the site blocked our automatic reader. This is our "
+    "side, not yours. Your work is saved and there are no marks yet. A "
+    "screenshot or PDF of your work submitted with the link lets us read it.")
+
+
+def reader_blocked(text: str) -> bool:
+    """Did a site refuse our headless browser rather than the learner's link
+    being wrong? Pure."""
+    low = str(text or "").lower()
+    return any(m in low for m in _READER_BLOCKED_MARKERS)
+
+
 def learner_facing(why: str) -> str:
     """The reason a learner sees, or a plain sentence when the real one is
     machine noise. Pure."""

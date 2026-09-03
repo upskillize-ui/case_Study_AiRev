@@ -819,8 +819,13 @@ def re_review_assignment(
             # card read "OCR failed on anthropic: BadRequestError: Error code:
             # 400 - {...'You have reached your specified API usage limits'...}"
             # followed by "re-attach your work". Ours, in writing, on hers.
+            #
+            # A site that refused our robot is neither: not the learner's
+            # fault, not an outage to retry. Its own sentence, stamped. See
+            # grade_guard.reader_blocked.
             assignment_db_service.mark_not_graded(
                 tenant, submission_id,
+                grade_guard.READER_BLOCKED_MESSAGE if grade_guard.reader_blocked(why) else
                 f"We could not open your file ({grade_guard.learner_facing(why)}), "
                 f"so there are no marks yet. Re-attach your work, or type your "
                 f"answer in the box, and submit again.")
@@ -849,11 +854,13 @@ def re_review_assignment(
                   "and there is no written answer to judge.")
         # Same rule as above: if the read failed because OUR side was down, the
         # learner hears nothing and the row waits for the next sweep.
-        ours = grade_guard.reads_as_our_outage(
-            f"{intake.first_error(artefacts) or ''} {manifest}")
+        first_why = intake.first_error(artefacts) or ""
+        ours = grade_guard.reads_as_our_outage(f"{first_why} {manifest}")
         if previous_grade is None and not dryRun and not ours:
             assignment_db_service.mark_not_graded(
                 tenant, submission_id,
+                grade_guard.READER_BLOCKED_MESSAGE
+                if grade_guard.reader_blocked(f"{first_why} {manifest}") else
                 "Your link or file would not open for us, and there is no "
                 "written answer with it, so there are no marks yet. Add a few "
                 "lines about what you made, or attach the file itself, then "

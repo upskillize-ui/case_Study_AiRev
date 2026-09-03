@@ -302,26 +302,3 @@ def render_check(body: dict, tenant: Tenant = Depends(get_tenant),
             "words": len(text.split()), "preview": text[:1200], "why": why}
 
 
-def resume_after_restart() -> None:
-    """Called at startup: deploys restart the Space mid-cohort, and item state
-    lives in the DB precisely so the job can pick itself back up. Only acts
-    when the feature flag AND the admin key are configured — an unflagged
-    Space stays inert, exactly as before this subsystem existed."""
-    if not jobs.jobs_enabled():
-        return
-    admin_key = os.getenv("ADMIN_JOB_KEY", "")
-    if not admin_key:
-        print("   review-jobs: enabled but no ADMIN_JOB_KEY — cannot resume")
-        return
-    from app.tenants import TENANTS
-    for tenant in TENANTS.values():
-        try:
-            running = jobs.running_jobs(tenant)
-        except Exception:
-            continue                      # tenant DB down — nothing to resume
-        if running:
-            job_id = running[0]["id"]
-            print(f"   review-jobs: resuming job {job_id} "
-                  f"(tenant {tenant.id}) after restart")
-            jobs.start_worker(tenant, job_id, make_review_one(tenant, admin_key))
-            return                        # one worker process-wide

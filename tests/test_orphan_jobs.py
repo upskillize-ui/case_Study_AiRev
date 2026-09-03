@@ -118,11 +118,13 @@ def test_orphan_detail_matches_the_ledger_exclusion():
 
 def test_startup_and_start_job_and_sweep_all_call_the_reaper():
     root = os.path.dirname(_HERE)
-    main_src = open(os.path.join(root, "main.py")).read()
-    route_src = open(os.path.join(root, "app", "routes", "review_jobs.py")).read()
-    sweep_src = open(os.path.join(root, "app", "services", "sweeper_service.py")).read()
+    main_src = open(os.path.join(root, "main.py"), encoding="utf-8").read()
+    route_src = open(os.path.join(root, "app", "routes", "review_jobs.py"), encoding="utf-8").read()
+    sweep_src = open(os.path.join(root, "app", "services", "sweeper_service.py"), encoding="utf-8").read()
     assert "reap_orphans(t, stale_minutes=0)" in main_src          # every running job is dead after a restart
-    assert "resume_after_restart" in main_src                      # and the rows are picked up in minutes
+    assert 'id="resume_sweep"' in main_src                         # and the rows are picked up in minutes
+    assert "resume_after_restart()" not in main_src                # the old one-job resume is gone…
+    assert "def resume_after_restart" not in route_src             # …not just unplugged
     assert "jobs.reap_orphans(tenant)" in route_src                # before the 409 check
     assert route_src.index("jobs.reap_orphans(tenant)") < route_src.index("status_code=409")
     assert "jobs.reap_orphans(tenant)" in sweep_src

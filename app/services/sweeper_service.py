@@ -11,7 +11,7 @@
 #   2. start_worker() returns False when ANY worker is already running, so a
 #      live enqueue during a staff batch wrote its row and nobody drained it.
 #   3. _finalize() closes a live job as "aborted" when rows are still pending,
-#      and resume_after_restart() only resumes jobs in state 'running' — so
+#      and (until 04 Sep) a restart only resumed jobs in state 'running' — so
 #      those rows were never looked at again by anything.
 #
 # Each of those could be fixed on its own. This is better: the sweeper does
