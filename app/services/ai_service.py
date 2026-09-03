@@ -437,7 +437,52 @@ def _lms_user_id(sid):
     return sid
 
 
+# WHAT THIS SPACE HAS ACTUALLY SPENT, SINCE BOOT (03 Sep 2026).
+#
+# ai_credit_run on the LMS was EMPTY while the Anthropic bill ran past $100,
+# and both facts were correct. Every review reaches the agent through the queue
+# with the admin key — the LMS auto-review hook enqueues that way, so does the
+# sweep, so does the admin button — and a staff-initiated run is deliberately
+# not billed to a learner. _report_usage therefore returned before it wrote
+# anything, and nothing anywhere counted the calls. There was no number to look
+# at until the invoice arrived.
+#
+# So the calls are counted here, before any early return, whether or not they
+# are billable, and read back on /health. Tokens, not dollars: the Space has no
+# price table (the LMS owns that conversion) and a made-up rate would be worse
+# than none. Per-process and reset by a restart — this is a live gauge, not a
+# ledger.
+_SPEND = {"calls": 0, "input_tokens": 0, "output_tokens": 0,
+          "unbilled_calls": 0, "unbilled_input_tokens": 0,
+          "unbilled_output_tokens": 0}
+
+
+def spend_snapshot() -> dict:
+    """Calls and tokens this process has made since boot. Copy, not the live
+    dict — a caller must not be able to edit the counters."""
+    return dict(_SPEND)
+
+
+def _count_spend(usage, billed: bool) -> None:
+    """Tally one call. Never raises: a broken counter must not fail a review."""
+    try:
+        i = int(getattr(usage, "input_tokens", 0) or 0)
+        o = int(getattr(usage, "output_tokens", 0) or 0)
+        _SPEND["calls"] += 1
+        _SPEND["input_tokens"] += i
+        _SPEND["output_tokens"] += o
+        if not billed:
+            _SPEND["unbilled_calls"] += 1
+            _SPEND["unbilled_input_tokens"] += i
+            _SPEND["unbilled_output_tokens"] += o
+    except Exception:
+        pass
+
+
 def _report_usage(model: str, usage) -> None:
+    # Count FIRST. Every early return below is a reason not to bill a learner,
+    # never a reason not to know what was spent.
+    _count_spend(usage, billed=not _no_bill_ctx.get())
     base = os.getenv("LMS_BASE_URL", "").rstrip("/")
     secret = os.getenv("INTERNAL_CREDIT_SECRET", "")
     student_id = _student_ctx.get()

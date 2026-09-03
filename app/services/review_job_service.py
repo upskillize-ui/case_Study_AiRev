@@ -100,6 +100,39 @@ def should_abort(consecutive_failures: int,
     return consecutive_failures >= limit
 
 
+# Regrade outcomes that are policy, not breakage. They must not trip the
+# consecutive-failure abort — a run of human-graded rows is a healthy queue.
+_SKIP_STATES = {"human_graded", "no_readable_content",
+                "unassessable_deliverable", "content_shrunk", "wrong_task",
+                "unreadable_published_link"}
+
+
+# THE BRAKE WAS DISARMED FOR THE ONE FAILURE IT EXISTS TO CATCH (03 Sep 2026).
+#
+# should_abort() stops a job after eight consecutive FAILURES, and its docstring
+# says why: "eight in a row is a dead provider or an expired key, and continuing
+# would spend the rest of the cohort budget discovering that repeatedly."
+#
+# But when the provider is down, intake cannot read anything, so every row comes
+# back `no_readable_content` — which is in the set above, counts as a policy
+# skip, and RESETS the consecutive counter. The brake never came on. A sweep of
+# a thousand rows paid full intake on every one of them — OCR per page, Whisper
+# per recording, a vision call per sampled video frame — to rediscover a
+# thousand times over that the provider was answering 503.
+#
+# The route now reports whose fault the unreadable row was. A read that failed
+# because OUR side was down is breakage and counts toward the brake, whatever
+# label it carries; a genuinely unreadable file from a learner is still policy.
+def outcome_state(res: dict) -> str:
+    "done | skipped | failed for one regrade result. Pure."
+    if res.get("success"):
+        return "done"
+    if res.get("ours"):
+        return "failed"                  # our outage — let the brake see it
+    reason = res.get("skipped") or "not reviewed"
+    return "skipped" if reason in _SKIP_STATES else "failed"
+
+
 def next_item(items: list) -> Optional[dict]:
     """The next row to review: first pending, in order. Pure.
 
@@ -145,9 +178,21 @@ def ensure_tables(tenant) -> None:
             score         FLOAT        NULL,
             updated_at    DATETIME     DEFAULT CURRENT_TIMESTAMP
                                        ON UPDATE CURRENT_TIMESTAMP,
-            INDEX idx_job_state (job_id, state)
+            INDEX idx_job_state (job_id, state),
+            INDEX idx_submission (submission_id)
         )
     """)
+    # The submission index is also added to tables that already exist, because
+    # CREATE TABLE IF NOT EXISTS silently leaves an older schema alone. The
+    # sweep's attempt ceiling reads this column on every run; without the index
+    # that is a full scan of every attempt ever made, three-hourly, for ever.
+    # 1061 = duplicate key name — the index is already there, which is success.
+    try:
+        texecute(tenant, f"ALTER TABLE {ITEMS_TABLE} ADD INDEX idx_submission (submission_id)")
+    except Exception as e:
+        if "1061" not in str(e) and "Duplicate key name" not in str(e):
+            print(f"   review-jobs: could not add idx_submission ({e}) — "
+                  f"the attempt ceiling still works, just slower")
     _tables_ready.add(key)
 
 

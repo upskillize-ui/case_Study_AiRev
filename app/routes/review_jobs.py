@@ -41,11 +41,9 @@ from app.tenants import Tenant
 
 router = APIRouter(prefix="/api/review/jobs", tags=["review-jobs"])
 
-# Regrade outcomes that are policy, not breakage. They must not trip the
-# consecutive-failure abort — a run of human-graded rows is a healthy queue.
-_SKIP_STATES = {"human_graded", "no_readable_content",
-                "unassessable_deliverable", "content_shrunk", "wrong_task",
-                "unreadable_published_link"}
+# Outcome classification lives in review_job_service with the brake it
+# feeds — see outcome_state() there. Imported, not restated.
+
 
 
 class JobRequest(BaseModel):
@@ -122,13 +120,14 @@ def make_review_one(tenant, admin_key: str):
                 return "skipped", f"gone: {e.detail}"[:255], None
             return "failed", f"HTTP {e.status_code}: {e.detail}"[:255], None
 
-        if res.get("success"):
+        state = jobs.outcome_state(res)
+        if state == "done":
             score = (res.get("feedback") or {}).get("scoreMarks")
             prev = res.get("previousGrade")
             return "done", f"{prev} -> {score}", score
         reason = res.get("skipped") or "not reviewed"
-        state = "skipped" if reason in _SKIP_STATES else "failed"
-        return state, f"{reason}: {res.get('detail', '')}"[:255], None
+        prefix = "our outage — " if res.get("ours") else ""
+        return state, f"{prefix}{reason}: {res.get('detail', '')}"[:255], None
     return review_one
 
 

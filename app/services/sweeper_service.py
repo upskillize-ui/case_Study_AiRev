@@ -42,6 +42,28 @@ from app.services.rubric_service import RUBRIC_VERSION as RULES_VERSION
 MAX_PER_RUN = int(os.getenv("SWEEP_MAX_PER_RUN", "200"))
 SWEEP_NOTE = "sweep — submissions with no mark"
 
+# ONE SUBMISSION, ONE REVIEW (03 Sep 2026).
+#
+# The sweep is a safety net for work that slipped through, not a retry loop.
+# A row it cannot mark must eventually STOP being offered, or the net becomes
+# the leak: every three hours it re-buys the same failure, paying full intake
+# each time — OCR per page, Whisper per recording, a vision call per sampled
+# video frame — and writing nothing.
+#
+# The stamp-based skip does not close this on its own. A read that fails
+# because OUR provider is down deliberately writes no verdict (blaming a
+# learner for our outage would be worse), so the row keeps whatever stamp it
+# had and matches the sweep again, and again, for ever. That is the shape that
+# emptied the budget.
+#
+# So the ceiling is on ATTEMPTS, not on verdicts, and it is counted from work
+# already recorded: every queue item this submission has ever settled. Nothing
+# new is stored. A row that has had its reviews and still has no mark waits for
+# something to actually change — the learner resubmits (which clears feedback
+# and resets nothing, but gives the marker different input), or a human presses
+# re-review, which never consults this ceiling.
+MAX_SWEEP_ATTEMPTS = int(os.getenv("SWEEP_MAX_ATTEMPTS", "2"))
+
 
 def find_unreviewed(tenant, course_ids: Optional[list] = None,
                     limit: int = MAX_PER_RUN) -> list:
@@ -95,7 +117,45 @@ def find_unreviewed(tenant, course_ids: Optional[list] = None,
     # Oldest first: a learner who has been waiting since Day 02 is served
     # before one who submitted an hour ago.
     picked = sorted(latest.values(), key=lambda r: r["id"])
+
+    # Drop anything that has already had its attempts. One membership test per
+    # row against a set built in a single query — never a query inside the loop.
+    spent = attempts_spent(tenant, [r["id"] for r in picked])
+    picked = [r for r in picked if spent.get(r["id"], 0) < MAX_SWEEP_ATTEMPTS]
     return picked[:max(0, limit)]
+
+
+def attempts_spent(tenant, submission_ids: list) -> dict:
+    """How many times the queue has already settled each submission.
+
+    Reads review_job_items, which has recorded one row per attempt since the
+    queue existed — so the ceiling costs no new table, no new column and no
+    migration. Pending items are not counted: an attempt that has not finished
+    has not been paid for yet.
+
+    Returns {submission_id: attempts}; ids with no history are simply absent.
+    Fails OPEN — an unreadable ledger must not stop the safety net, because a
+    sweep that runs twice is a smaller problem than a cohort never marked.
+    """
+    if not submission_ids:
+        return {}
+    from app.services.review_job_service import ITEMS_TABLE
+    marks = ", ".join(["%s"] * len(submission_ids))
+    try:
+        rows = tquery(tenant, f"""
+            SELECT submission_id, COUNT(*) AS n
+              FROM {ITEMS_TABLE}
+             WHERE submission_id IN ({marks})
+               AND state IN ('done', 'skipped', 'failed')
+             GROUP BY submission_id
+        """, tuple(submission_ids)) or []
+        # Parsing is inside the guard on purpose. A driver that returns an
+        # unexpected row shape is the same class of problem as one that cannot
+        # answer at all, and neither is a reason to stop marking a cohort.
+        return {int(r["submission_id"]): int(r["n"]) for r in rows}
+    except Exception as e:
+        print(f"   sweep: attempt ledger unreadable ({e}) — ceiling not applied")
+        return {}
 
 
 def sweep(tenant, review_one: Callable, course_ids: Optional[list] = None,

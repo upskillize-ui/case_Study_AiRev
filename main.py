@@ -111,6 +111,11 @@ async def health():
         "tenants": all_tenant_ids(),
         "tenantsConfigured": configured_tenant_ids(),
         "load": capacity_snapshot(),
+        # Calls and tokens since this process booted, billed and unbilled. The
+        # unbilled figure is the one that matters: every queued review runs on
+        # the admin key, so it never reaches the LMS credit ledger and was
+        # invisible until the invoice. Resets on restart — a gauge, not a ledger.
+        "spend": _spend_snapshot(),
     }
 
 
@@ -172,6 +177,15 @@ async def trigger_consolidation(x_admin_key: str = Header(default="")):
     import asyncio
     result = await asyncio.to_thread(run_all_tenants)
     return {"success": True, "summary": result}
+
+
+def _spend_snapshot():
+    """Deferred import — keeps main.py importable before services are ready."""
+    try:
+        from app.services.ai_service import spend_snapshot
+        return spend_snapshot()
+    except Exception:
+        return {}
 
 
 def _model_tiers():

@@ -765,6 +765,13 @@ def re_review_assignment(
               + ("OUR outage, learner not told, row retryable"
                  if ours else "learner told, row left ungraded"))
         return {"success": False, "skipped": "no_readable_content",
+                # WHOSE FAULT WAS IT (03 Sep 2026). The caller has to be able to
+                # tell "this student's file is unreadable" from "our provider is
+                # down and every file is unreadable". Without this flag the batch
+                # worker counted a dead provider as an ordinary policy skip, so
+                # the consecutive-failure brake never came on and one sweep paid
+                # to rediscover the outage a thousand times. See make_review_one.
+                "ours": ours,
                 "submissionId": submission_id,
                 "previousGrade": previous_grade,
                 "artefacts": inventory,
@@ -793,6 +800,7 @@ def re_review_assignment(
               + ("OUR outage, learner not told, row retryable"
                  if ours else "learner told, row left ungraded"))
         return {"success": False, "skipped": "unassessable_deliverable",
+                "ours": ours,          # see the note on no_readable_content
                 "submissionId": submission_id,
                 "previousGrade": previous_grade,
                 "artefacts": inventory,
