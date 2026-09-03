@@ -305,6 +305,29 @@ def from_links_in(text: str, limit: int = MAX_LINKS,
             continue
         picture = ""
         body, why = fetch_link(url)
+        # THE SHELL THAT READ AS WORK (04 Sep 2026, seen live). A plain fetch
+        # of a chatgpt.com share returns ChatGPT's own signed-out page, ~170
+        # words of it; a Cloudflare-fronted page returns the challenge, ~50.
+        # Both came back as `body`, passed as readable, and were graded as
+        # the learner's answer: three students scored 0 "for doing 0 of 2
+        # requirements" on ChatGPT's page furniture, one scored 3.6 on
+        # Cloudflare's. The renderer had said "shell" / "human-check" — and
+        # was overruled because the plain body was non-empty. An interstitial
+        # is not a body, and a blocked verdict from the browser beats any
+        # text the plain fetch scraped off the gate.
+        from app.services import link_renderer
+        gate = ""
+        if body:
+            gate = (link_renderer.interstitial_reason("", body)
+                    or link_renderer.note_page(url, body))
+        if gate:
+            body, why = "", gate
+        elif body and needs_browser(url):
+            # A JS app's plain HTML is its shell, never the learner's work,
+            # and the FIRST shell of a run is unique so the duplicate check
+            # cannot catch it. These hosts are read in the browser or not
+            # at all.
+            body, why = "", "this page only builds itself in a browser"
         if not body or _is_preview_only(body) or _is_thin_body(body):
             # The plain fetch saw nothing, only link-preview metadata, or so
             # little that it cannot be the deliverable — the page builds
@@ -312,7 +335,6 @@ def from_links_in(text: str, limit: int = MAX_LINKS,
             # open the link the way a visitor would and read what actually
             # renders. Failure falls through to the honest confirmed-but-
             # unread record, exactly as before.
-            from app.services import link_renderer
             if link_renderer.enabled():
                 # On a build-a-thing day, USE the page: scroll it, press its
                 # safe controls, keep its JavaScript errors. On a reading day
@@ -322,8 +344,8 @@ def from_links_in(text: str, limit: int = MAX_LINKS,
                         url, walk=link_renderer.task_wants_a_walkthrough(task_text))
                 if rendered_text and _render_is_richer(rendered_text, body):
                     body, why = rendered_text, ""
-                elif not body:
-                    why = render_why or why
+                elif not body or _reader_blocked(render_why):
+                    body, why = "", (render_why or why)
                 # Kept even when the page's own text carried the review: what
                 # a built page SAYS and what it LOOKS LIKE are different
                 # questions, and a website day turns on the second one.
@@ -360,6 +382,31 @@ def from_links_in(text: str, limit: int = MAX_LINKS,
                 pass
             out.append(Artefact(kind="link", label=url, note=why, confirmed=True))
     return out
+
+
+# Hosts whose share pages are JavaScript applications: the plain HTML is the
+# app's signed-out shell (ChatGPT's "What can I help with?", Gemini's product
+# page, Cloudflare's challenge), never the learner's content. Only a browser
+# render can be the work — so the plain body is never graded for these.
+_RENDER_FIRST_HOSTS = (
+    "chatgpt.com", "chat.openai.com", "claude.ai", "gemini.google.com",
+    "share.gemini.google", "perplexity.ai", "notebooklm.google.com",
+    "notebook.google.com", "grok.com", "lovable.app", "lovable.dev",
+)
+
+
+def needs_browser(url: str) -> bool:
+    """Is this a host whose plain HTML is never the deliverable? Pure."""
+    host = (urlparse((url or "").lower()).hostname or "")
+    return any(host == h or host.endswith("." + h) for h in _RENDER_FIRST_HOSTS)
+
+
+def _reader_blocked(reason: str) -> bool:
+    """Did the browser report a gate (human-check, sign-in, the tool's own
+    shell) rather than a page? Pure. One definition, in grade_guard, shared
+    with the refusal message and the LMS classifier."""
+    from app.services import grade_guard
+    return grade_guard.reader_blocked(reason)
 
 
 def _is_thin_body(body: str) -> bool:

@@ -196,7 +196,7 @@ def attempts_spent(tenant, submission_ids: list) -> dict:
               FROM {ITEMS_TABLE}
              WHERE submission_id IN ({marks})
                AND state IN ('done', 'skipped', 'failed')
-               AND detail NOT LIKE 'our outage %'
+               AND detail NOT LIKE 'our outage %%'
              GROUP BY submission_id
         """, tuple(submission_ids)) or []
         # Parsing is inside the guard on purpose. A driver that returns an
@@ -212,6 +212,14 @@ def sweep(tenant, review_one: Callable, course_ids: Optional[list] = None,
           limit: int = MAX_PER_RUN) -> dict:
     """Queue everything unreviewed and start the worker. Returns a summary."""
     from app.services import review_job_service as jobs
+
+    # A busy worker means a job created now would sit 'running' with every
+    # item pending until the orphan reaper closed it — a phantom that also
+    # made Grade-all answer 409. Say "busy" and let the next tick try again;
+    # the rows are still unreviewed then and still selected.
+    if jobs.worker_is_running():
+        return {"queued": 0, "detail": "a worker is busy — nothing queued; "
+                                       "the next sweep picks these up"}
 
     rows = find_unreviewed(tenant, course_ids, limit)
     if not rows:

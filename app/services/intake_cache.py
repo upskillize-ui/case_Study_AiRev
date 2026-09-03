@@ -44,8 +44,9 @@ TABLE = "airev_intake_cache"
 
 # Bump when intake itself changes shape or behaviour — a better OCR, a fixed
 # link path — so stale reads are re-done rather than served.
-INTAKE_VERSION = 3       # 3 = partial reads no longer cached; every v2 entry
-                         #     may hold an unopened link, so all must miss (04 Sep)
+INTAKE_VERSION = 4       # 4 = a gate page (ChatGPT shell, Cloudflare challenge)
+                         #     is no longer a readable link; v3 entries may hold
+                         #     one as the learner's text, so all must miss (04 Sep)
 
 _tables_ready: set = set()
 

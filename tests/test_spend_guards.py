@@ -305,7 +305,7 @@ def test_outage_attempts_do_not_spend_the_ceiling():
         sweeper.tquery = orig
     ledger = [q for q, _ in db.queries if "review_job_items" in q][0]
     check("our-outage items are excluded from the attempt count",
-          "detail NOT LIKE 'our outage %'" in ledger, ledger)
+          "detail NOT LIKE 'our outage %%'" in ledger, ledger)   # %% — PyMySQL formats the SQL
 
 
 for fn in [test_our_refusal_phrases_match_their_writers,
