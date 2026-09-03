@@ -242,6 +242,25 @@ def test_unbilled_calls_are_still_counted():
     check("a malformed usage object never breaks a review", True)
 
 
+# --- 4. a row sent back to the learner is the learner's, not the sweep's -------
+
+def test_returned_rows_are_never_swept():
+    print("\na returned row waits on the student, not on us")
+    db = LedgerDB([], {})
+    original = sweeper.tquery
+    sweeper.tquery = db
+    try:
+        sweeper.find_unreviewed("lms")
+    finally:
+        sweeper.tquery = original
+    row_sql = [q for q in db.queries if "review_job_items" not in q][0]
+    # The admin's send-back note carries notGraded and NO rules stamp, so the
+    # stamp escape arm would re-select every returned row. The status clause
+    # is the only thing standing between the sweep and 796 paid re-refusals.
+    check("the sweep excludes status 'returned' outright",
+          "NOT IN ('draft', 'returned')" in row_sql, row_sql)
+
+
 for fn in [test_our_outage_counts_as_breakage,
            test_eight_of_ours_stops_the_job,
            test_a_row_is_offered_only_until_its_attempts_are_spent,
@@ -249,7 +268,8 @@ for fn in [test_our_outage_counts_as_breakage,
            test_an_unreadable_ledger_fails_open,
            test_pending_attempts_are_not_charged_to_the_row,
            test_the_ceiling_is_small_and_configurable,
-           test_unbilled_calls_are_still_counted]:
+           test_unbilled_calls_are_still_counted,
+           test_returned_rows_are_never_swept]:
     fn()
 
 print()

@@ -36,9 +36,23 @@ _TRANSPORT_MARKERS = (
     "returned no structured result",
     "model returned empty content",
     "timeout", "timed out", "connection", "read operation",
-    "rate limit", "429", "500", "502", "503", "504",
+    "rate limit", "rate_limit", "429", "500", "502", "503", "504",
     "overloaded", "service unavailable", "api key", "authentication",
     "insufficient_quota", "credit balance",
+    # BILLING AND QUOTA (03 Sep 2026). Live on the Space: the Anthropic monthly
+    # spend cap tripped, every OCR call answered HTTP 400 "You have reached your
+    # specified API usage limits. You will regain access on 2026-10-01", and
+    # because none of the markers above matched, a learner was told on her own
+    # card to re-attach a file that was perfectly fine — with the raw API error
+    # pasted in beside it. Our account running out is ours.
+    "usage limit", "spend limit", "regain access", "billing", "quota",
+    "insufficient", "exceeded",
+    # RAW ERROR SIGNATURES. Whatever the words, text that quotes an exception
+    # class, an HTTP error envelope or a request id came from our side of the
+    # wire. A learner's file cannot produce a request_id.
+    "error code:", "request_id", "invalid_request_error", "badrequesterror",
+    "apistatuserror", "apiconnectionerror", "internalservererror",
+    "ocr failed on", "transcription failed", "could not process this recording",
 )
 
 
@@ -51,9 +65,34 @@ def reads_as_our_outage(text: str) -> bool:
     capacity is temporarily unavailable". Telling a learner to re-attach a file
     that is perfectly fine — because our OCR was down — is blaming them for our
     outage, in writing, on their own review card.
+
+    Since 03 Sep the list is deliberately generous: a raw provider error of ANY
+    shape is ours. The cost of a false positive is one row waiting for the next
+    sweep; the cost of a false negative is a learner blamed in writing.
     """
     blob = str(text or "").lower()
     return any(marker in blob for marker in _TRANSPORT_MARKERS)
+
+
+# What a learner may be TOLD when a read fails and it is genuinely their file.
+# Anything that looks like machinery — an exception class, a JSON envelope, a
+# request id, a stack — is replaced. The reason is kept on the row for staff
+# (the route logs it); it is never the learner's to decode.
+_MACHINERY = ("error code", "request_id", "{'type'", '{"type"', "traceback",
+              "exception", "error:", "errno", "http ", "status_code")
+
+
+def learner_facing(why: str) -> str:
+    """The reason a learner sees, or a plain sentence when the real one is
+    machine noise. Pure."""
+    text = str(why or "").strip()
+    if not text:
+        return "the file could not be read"
+    low = text.lower()
+    if any(m in low for m in _MACHINERY) or reads_as_our_outage(text):
+        return "the file could not be read"
+    # Even a clean reason should be short on a card.
+    return text if len(text) <= 120 else text[:117].rstrip() + "…"
 
 
 def is_transport_failure(error: BaseException) -> bool:

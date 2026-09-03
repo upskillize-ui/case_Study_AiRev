@@ -43,6 +43,13 @@ ANCHOR_CANDIDATES = 3       # per scope per night (high / mid / low band)
 CONSENSUS_LENSES = ("rubric-strict", "evidence-anchored", "comparative")
 CONSENSUS_MAX_SPREAD = 15   # lens disagreement above this rejects the anchor
 ANCHOR_EXCERPT_CHARS = 1500
+# A scope whose three lenses could not agree tonight will not agree tomorrow on
+# the same three answers. Without this, every rejected scope was re-bought
+# every night — nine strong-tier calls a scope, up to the whole nightly budget —
+# for as long as the cohort lasted. Retry only after the wait, by which time
+# new reviews may have given it different candidates.
+ANCHOR_RETRY_DAYS = int(os.getenv("ANCHOR_RETRY_DAYS", "7"))
+_ANCHOR_REJECTED = "anchor attempt rejected"
 
 # Self-tuning bounds — the agent may move a knob only inside these rails.
 GATE_BOUNDS = {
@@ -324,11 +331,26 @@ def _pick_candidates(rows: list) -> list:
     return [ranked[0], ranked[len(ranked) // 2], ranked[-1]][:ANCHOR_CANDIDATES]
 
 
+def _recently_rejected(scope_type: str, scope_id: int) -> bool:
+    """Did an anchor attempt on this scope fail within the retry window?
+    Reuses calibration_notes — no new table for a memo."""
+    rows = query(
+        "SELECT 1 AS hit FROM calibration_notes "
+        "WHERE scope_type=%s AND scope_id=%s AND note LIKE %s "
+        "  AND created_at >= NOW() - INTERVAL %s DAY LIMIT 1",
+        (scope_type, scope_id, f"{_ANCHOR_REJECTED}%", ANCHOR_RETRY_DAYS))
+    return bool(rows)
+
+
 def _build_anchors(scope_type: str, scope_id: int, rows: list,
                    remaining_budget: int) -> tuple[int, int]:
     candidates = _pick_candidates(rows)
     calls_needed = len(candidates) * len(CONSENSUS_LENSES)
     if not candidates or calls_needed > remaining_budget:
+        return 0, 0
+    if _recently_rejected(scope_type, scope_id):
+        print(f"ℹ️  anchors for {scope_type}:{scope_id} rejected within "
+              f"{ANCHOR_RETRY_DAYS}d — not re-buying tonight")
         return 0, 0
     added, calls = 0, 0
     for cand in candidates:
@@ -348,6 +370,14 @@ def _build_anchors(scope_type: str, scope_id: int, rows: list,
         spread = scores[-1] - scores[0]
         if spread > CONSENSUS_MAX_SPREAD:
             print(f"ℹ️  anchor rejected ({scope_type}:{scope_id}): spread {spread}")
+            # Remember the failure so tomorrow's run does not pay to repeat it.
+            # active=0: a memo for the scheduler, not a note for a marker.
+            execute(
+                "INSERT INTO calibration_notes (scope_type, scope_id, note, evidence, active) "
+                "VALUES (%s,%s,%s,%s,0)",
+                (scope_type, scope_id,
+                 f"{_ANCHOR_REJECTED}: lens spread {spread} > {CONSENSUS_MAX_SPREAD}",
+                 json.dumps({"scores": scores})[:500]))
             continue
         median = scores[len(scores) // 2]
         execute(

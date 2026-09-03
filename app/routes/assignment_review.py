@@ -243,8 +243,15 @@ def submit_and_review_assignment(
             # LMS paths resolve inside extract_text_from_url (resolve_lms_url).
             prior_url = prior.get("file_url") or prior.get("file_path")
             if prior_url:
-                artefacts.append(intake.from_stored_file(
-                    prior_url, prior.get("file_name", "")))
+                # May open a browser now (a link in the link field). Same
+                # target rule as the notes scan above.
+                from app.services import link_shot_store
+                link_shot_store.set_target("assignment", req.assignmentId, req.studentId)
+                try:
+                    artefacts.append(intake.from_stored_file(
+                        prior_url, prior.get("file_name", "")))
+                finally:
+                    link_shot_store.clear_target()
             db_notes = clean_text(prior.get("notes") or "")
             if db_notes:
                 # No link scan here. Stored notes are ALREADY-ASSEMBLED intake
@@ -301,7 +308,8 @@ def submit_and_review_assignment(
     if not req.storeOnly and word_count < MIN_REVIEWABLE_WORDS and not deliverable:
         found = f"{word_count} word{'' if word_count == 1 else 's'} of text"
         if file_error:
-            found += f", and your attachment could not be read ({file_error})"
+            found += (f", and your attachment could not be read "
+                      f"({grade_guard.learner_facing(file_error)})")
         elif req.fileData or req.fileUrl or req.fileName:
             found += ", and no readable text could be taken from your attachment"
         else:
@@ -704,34 +712,66 @@ def re_review_assignment(
     stored_notes = clean_text(row.get("notes") or "")
     already_assembled = intake.from_stored_submission(stored_notes)
 
+    # READ ONCE, EVER (03 Sep 2026). Everything below the cache check is the
+    # expensive part of a review — OCR, transcription, frame description, a
+    # browser render — and it produces the same text every time the same
+    # submission is read. The fingerprint covers what the learner controls
+    # (notes, file, name) and how we read it (INTAKE_VERSION); a resubmit or an
+    # intake fix misses, everything else hits. Rows that never got a readable
+    # artefact are not cached, so a transient failure is never made permanent.
+    from app.services import intake_cache
+    stored_file = row.get("file_path") or row.get("file_url")
+    fp = intake_cache.fingerprint(stored_notes, stored_file or "",
+                                  row.get("file_name") or "")
+    cached = None if (already_assembled or dryRun) else \
+        intake_cache.recall(tenant, submission_id, fp)
+
     if already_assembled:
         manifest, content = already_assembled
-    else:
-        stored_file = row.get("file_path") or row.get("file_url")
-        if stored_file:
-            artefacts.append(intake.from_stored_file(stored_file, row.get("file_name") or ""))
-        if stored_notes:
-            artefacts.append(intake.from_typed(stored_notes))
-            # Open what the learner linked to. The submit path has always done
-            # this; the regrade path did not, so a Day 06 row whose whole
-            # submission is a suno.com link had that URL marked as if it were
-            # the learner's prose — nothing to quote, every criterion pinned at
-            # the no-evidence cap, a cohort that did the work told it scored
-            # 2/10. Same call, same guards (url_guard, link budget) as submit.
-            from app.services import link_shot_store
-            link_shot_store.set_target(
-                "assignment", row.get("assignment_id"), row.get("student_id"),
-                submission_id=row.get("id") or submission_id)
-            try:
-                artefacts.extend(intake.from_links_in(stored_notes))
-            finally:
-                link_shot_store.clear_target()
+    elif cached:
+        artefacts = cached
         manifest, content = intake.render(artefacts)
+        print(f"[REGRADE] submission {submission_id}: intake served from cache "
+              f"({len(artefacts)} artefact(s), nothing re-read)")
+    else:
+        # Whose submission the pages about to be opened belong to. The target is
+        # set around BOTH reads now: a link pasted into the submit form's link
+        # field lives in file_path, and since 03 Sep from_stored_file opens it in
+        # the browser like any other link — so its screenshot has to be filed
+        # against this row too, or the share card for a link submission is
+        # built with no picture.
+        from app.services import link_shot_store
+        link_shot_store.set_target(
+            "assignment", row.get("assignment_id"), row.get("student_id"),
+            submission_id=row.get("id") or submission_id)
+        try:
+            if stored_file:
+                artefacts.append(intake.from_stored_file(
+                    stored_file, row.get("file_name") or ""))
+            if stored_notes:
+                artefacts.append(intake.from_typed(stored_notes))
+                # Open what the learner linked to. The submit path has always
+                # done this; the regrade path did not, so a Day 06 row whose
+                # whole submission is a suno.com link had that URL marked as if
+                # it were the learner's prose — nothing to quote, every
+                # criterion pinned at the no-evidence cap, a cohort that did the
+                # work told it scored 2/10. Same guards as submit.
+                artefacts.extend(intake.from_links_in(stored_notes))
+        finally:
+            link_shot_store.clear_target()
+        manifest, content = intake.render(artefacts)
+        if not dryRun:
+            intake_cache.remember(tenant, submission_id, fp, artefacts)
     word_count = count_words(content)
     inventory = ([{"kind": "stored", "label": "previously assembled submission",
                    "words": len(content.split()), "readable": bool(content),
                    "note": "reused; not re-extracted"}]
                  if already_assembled else
+                 [{"kind": a.kind, "label": a.label,
+                   "words": len(a.text.split()) if a.readable else 0,
+                   "readable": a.readable, "note": "served from intake cache"}
+                  for a in artefacts]
+                 if cached else
                  [{"kind": a.kind, "label": a.label,
                    "words": len(a.text.split()) if a.readable else 0,
                    "readable": a.readable, "note": a.note} for a in artefacts])
@@ -756,11 +796,16 @@ def re_review_assignment(
         # in the log instead.
         ours = grade_guard.reads_as_our_outage(why)
         if previous_grade is None and not dryRun and not ours:
+            # learner_facing(): a learner is told a plain reason, never an
+            # exception class, an HTTP envelope or a request id. On 03 Sep a
+            # card read "OCR failed on anthropic: BadRequestError: Error code:
+            # 400 - {...'You have reached your specified API usage limits'...}"
+            # followed by "re-attach your work". Ours, in writing, on hers.
             assignment_db_service.mark_not_graded(
                 tenant, submission_id,
-                f"We could not open your file ({why}), so there are no marks "
-                f"yet. Re-attach your work, or type your answer in the box, "
-                f"and submit again.")
+                f"We could not open your file ({grade_guard.learner_facing(why)}), "
+                f"so there are no marks yet. Re-attach your work, or type your "
+                f"answer in the box, and submit again.")
         print(f"[REGRADE] submission {submission_id}: nothing readable ({why}) — "
               + ("OUR outage, learner not told, row retryable"
                  if ours else "learner told, row left ungraded"))

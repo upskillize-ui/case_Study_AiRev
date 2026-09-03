@@ -210,8 +210,56 @@ def _with_picture(art: Artefact, file_data=None, file_url=None,
     return art
 
 
-def from_stored_file(file_url: str, file_name: str = "") -> Artefact:
-    """A file already on the submission row (Coursework writes file_path)."""
+# Hosts that hold real uploads. A URL here is a download, whatever its path
+# looks like; anywhere else, an extension-less URL is a page on the web.
+_UPLOAD_HOSTS = ("res.cloudinary.com",)
+
+
+def is_web_page(file_url: str, file_name: str = "") -> bool:
+    """Is this stored 'file' really a page on the web? Pure.
+
+    THE LINK THAT WAS NEVER OPENED AS A LINK (03 Sep 2026). The submit form
+    has a link field. The LMS stores what a learner pastes there in file_path,
+    with file_name "Link submission" — and from_stored_file handed it to the
+    file DOWNLOADER. A Canva design, a Drive view page, a HeyGen share: the
+    downloader asked for bytes, got HTML or a 403, and refused with "the link
+    returned a web page, not the file itself" or "download HTTP 403". The
+    browser renderer that exists precisely for such pages was never tried,
+    because only links pasted into the NOTES box reached from_links_in.
+
+    303 submissions on one course were refused that way. Not one of them was
+    read the way a visitor would read it.
+
+    Three signals, any one decisive: the LMS's own "Link submission" marker; a
+    URL with no file extension on a host that is not our upload store; an
+    LMS-relative path or upload-store URL is never a page.
+    """
+    u = (file_url or "").strip()
+    low = u.lower()
+    if not low.startswith(("http://", "https://")):
+        return False                       # relative path — an upload on the LMS
+    host = (urlparse(low).hostname or "")
+    if any(host == h or host.endswith("." + h) for h in _UPLOAD_HOSTS):
+        return False                       # our CDN — always bytes
+    if (file_name or "").strip().lower() == "link submission":
+        return True                        # the LMS said so
+    return kind_for(low) == "file"         # no known extension — a page
+
+
+def from_stored_file(file_url: str, file_name: str = "",
+                     task_text: str = "") -> Artefact:
+    """A file already on the submission row (Coursework writes file_path).
+
+    A stored value that is really a web page takes the LINK path — plain
+    fetch, HTML text, then the browser renderer — so it is read the way the
+    learner's visitor would read it, not asked for bytes it never had.
+    Reused, not restated: from_links_in already owns every step of that.
+    """
+    if is_web_page(file_url, file_name):
+        opened = from_links_in(file_url, limit=1, task_text=task_text)
+        if opened:
+            return opened[0]
+
     from app.utils.file_extractor import extract_text_from_url
 
     label = file_name or file_url or "stored file"

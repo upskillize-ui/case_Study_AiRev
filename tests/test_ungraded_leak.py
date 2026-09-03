@@ -69,7 +69,13 @@ def test_refusals_are_re_offered():
     print("\nthe permanent skip is now conditional")
     db, _ = _sweep_with([])
     check("the notGraded skip has an escape arm",
-          "OR COALESCE(s.feedback, '') NOT LIKE %s" in db.sql, db.sql)
+          "OR (COALESCE(s.feedback, '') NOT LIKE %s" in db.sql, db.sql)
+    # 03 Sep: the escape is CONDITIONAL on the refusal being ours. A verdict
+    # about the submission itself stays parked until the learner resubmits.
+    check("…and the escape only opens for OUR refusals",
+          "AND (COALESCE(s.feedback, '') LIKE %s" in db.sql, db.sql)
+    check("every one of our refusal phrases is a bound value",
+          all(f"%{ph}%" in db.params for ph in sweeper.OUR_REFUSAL_PHRASES), db.params)
     check("the escape is the rules version",
           db.params and db.params[0] ==
           f'%"rulesVersion": {rubric_service.RUBRIC_VERSION}%', db.params)
@@ -108,9 +114,11 @@ def test_course_filter_params_stay_in_order():
         sweeper.find_unreviewed("lms", course_ids=[55, 61])
     finally:
         sweeper.tquery = original
-    check("stamp first, then course ids",
-          list(db.params) == [f'%"rulesVersion": {rubric_service.RUBRIC_VERSION}%',
-                              55, 61], db.params)
+    n = len(sweeper.OUR_REFUSAL_PHRASES) + len(sweeper.API_ERROR_PHRASES)
+    check("stamp first, then our refusal + api-error phrases, then course ids",
+          list(db.params)[0] == f'%"rulesVersion": {rubric_service.RUBRIC_VERSION}%'
+          and list(db.params)[-2:] == [55, 61]
+          and len(db.params) == 1 + n + 2, db.params)
     check("placeholders match params",
           db.sql.count("%s") == len(db.params),
           f"{db.sql.count('%s')} placeholders, {len(db.params)} params")

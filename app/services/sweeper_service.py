@@ -64,6 +64,40 @@ SWEEP_NOTE = "sweep — submissions with no mark"
 # re-review, which never consults this ceiling.
 MAX_SWEEP_ATTEMPTS = int(os.getenv("SWEEP_MAX_ATTEMPTS", "2"))
 
+# A REFUSAL IS RE-OFFERED ONLY WHEN THE THING THAT CAUSED IT MIGHT HAVE CHANGED
+# (03 Sep 2026).
+#
+# The rules-version stamp sorted refusals by WHEN they were written, not by
+# whether a retry could help. On 03 Sep that landed exactly backwards: 606 rows
+# on the treadmill, of which 428 were verdicts about the SUBMISSION — a private
+# link, nothing readable attached, work from a different brief — that will
+# return the identical answer on every run until the learner resubmits; and
+# 112 rows that genuinely deserved a retry sat parked because they happened to
+# carry the current stamp.
+#
+# So the escape arm is now conditional on WHOSE refusal it was. These are the
+# phrases our own failure paths write; a refusal that carries none of them is a
+# verdict about the work and stays parked until the learner acts (their
+# resubmit clears feedback, which makes the row fresh again). Each phrase is
+# pinned to its writer by test_budget_burn, so a reworded message cannot
+# silently turn a retryable failure into a permanent one.
+OUR_REFUSAL_PHRASES = (
+    "could not complete a fair review",        # grade guard, route envelope
+    "could not finish reviewing this attempt", # grade guard, assignment_db_service
+    "could not read this task",                # rubric cache unreadable
+)
+
+# A refusal that QUOTES A PROVIDER ERROR was never a verdict about the work —
+# it is our outage that slipped past reads_as_our_outage() and got stamped as
+# if it were a decision (03 Sep: the Anthropic monthly cap, HTTP 400, "You have
+# reached your specified API usage limits"). These are re-offered whatever
+# rules stamp they carry, because the only thing that needs to change for them
+# to succeed is the provider coming back. The card message is also wrong on
+# these rows; a successful re-review replaces it.
+API_ERROR_PHRASES = (
+    "request_id", "error code:", "usage limits", "invalid_request_error",
+)
+
 
 def find_unreviewed(tenant, course_ids: Optional[list] = None,
                     limit: int = MAX_PER_RUN) -> list:
@@ -90,6 +124,11 @@ def find_unreviewed(tenant, course_ids: Optional[list] = None,
     # Rows stamped by no version at all (every refusal written before today)
     # match the "missing stamp" arm and get their one run under the new rules.
     # A LIKE pattern is a VALUE, not query text: single %, no doubling.
+    # 'returned' (03 Sep 2026): an admin sent the row back to the learner with
+    # a note — a private link, a file that would not open. It is waiting on the
+    # STUDENT. The note carries notGraded without a rules stamp, so without
+    # this clause the escape arm below would re-select every one of them and
+    # the sweep would pay to re-refuse work the learner has been asked to fix.
     stamp = f'%"rulesVersion": {RULES_VERSION}%'
     sql = """
         SELECT s.id, s.assignment_id, s.student_id, s.submitted_at
@@ -97,13 +136,19 @@ def find_unreviewed(tenant, course_ids: Optional[list] = None,
         JOIN assignments a ON a.id = s.assignment_id
         WHERE a.status = 'active'
           AND s.grade IS NULL
-          AND COALESCE(s.status, '') <> 'draft'
+          AND COALESCE(s.status, '') NOT IN ('draft', 'returned')
           AND (CHAR_LENGTH(COALESCE(s.notes, '')) > 0
                OR COALESCE(s.file_path, '') <> '')
           AND (COALESCE(s.feedback, '') NOT LIKE '%%notGraded%%'
-               OR COALESCE(s.feedback, '') NOT LIKE %s)
-    """
-    params: list = [stamp]
+               OR (COALESCE(s.feedback, '') NOT LIKE %s
+                   AND ({ours}))
+               OR ({api_err}))
+    """.format(
+        ours=" OR ".join(["COALESCE(s.feedback, '') LIKE %s"] * len(OUR_REFUSAL_PHRASES)),
+        api_err=" OR ".join(["COALESCE(s.feedback, '') LIKE %s"] * len(API_ERROR_PHRASES)))
+    params: list = [stamp,
+                    *[f"%{p}%" for p in OUR_REFUSAL_PHRASES],
+                    *[f"%{p}%" for p in API_ERROR_PHRASES]]
     if course_ids:
         marks = ", ".join(["%s"] * len(course_ids))
         sql += f" AND a.course_id IN ({marks})"
@@ -142,11 +187,16 @@ def attempts_spent(tenant, submission_ids: list) -> dict:
     from app.services.review_job_service import ITEMS_TABLE
     marks = ", ".join(["%s"] * len(submission_ids))
     try:
+        # An attempt that failed because OUR provider was down is not a try
+        # the learner used up. review_one prefixes those "our outage — ", so
+        # they are excluded here: a quota cap that lasts a week must not burn
+        # through every row's two tries and park the cohort until resubmit.
         rows = tquery(tenant, f"""
             SELECT submission_id, COUNT(*) AS n
               FROM {ITEMS_TABLE}
              WHERE submission_id IN ({marks})
                AND state IN ('done', 'skipped', 'failed')
+               AND detail NOT LIKE 'our outage %'
              GROUP BY submission_id
         """, tuple(submission_ids)) or []
         # Parsing is inside the guard on purpose. A driver that returns an
@@ -177,6 +227,37 @@ def sweep(tenant, review_one: Callable, course_ids: Optional[list] = None,
                        "the next sweep or restart")}
 
 
+# After the brake stops a job for a dead provider, the next tick is three hours
+# away and the provider is usually still dead. Eight rows per tick, eight ticks
+# a day: 64 paid failures a day to rediscover an outage. So a tenant whose last
+# sweep ABORTED stays quiet for a cool-off window. DB-only check, zero spend.
+COOLOFF_HOURS = float(os.getenv("SWEEP_COOLOFF_HOURS", "6"))
+
+
+def cooling_off(tenant, hours: float = COOLOFF_HOURS) -> bool:
+    """Did this tenant's most recent sweep abort within the window? Fails
+    CLOSED to False — an unreadable jobs table must not silence the net."""
+    from app.services.review_job_service import JOBS_TABLE
+    try:
+        rows = tquery(tenant, f"""
+            SELECT state FROM {JOBS_TABLE}
+             WHERE note = %s
+             ORDER BY id DESC LIMIT 1
+        """, (SWEEP_NOTE,)) or []
+        if not rows or rows[0]["state"] != "aborted":
+            return False
+        recent = tquery(tenant, f"""
+            SELECT 1 AS hit FROM {JOBS_TABLE}
+             WHERE note = %s AND state = 'aborted'
+               AND updated_at >= NOW() - INTERVAL %s HOUR
+             ORDER BY id DESC LIMIT 1
+        """, (SWEEP_NOTE, hours)) or []
+        return bool(recent)
+    except Exception as e:
+        print(f"   sweep: cool-off check failed ({e}) — sweeping anyway")
+        return False
+
+
 def sweep_all_tenants() -> dict:
     """The scheduled entry point. Never raises — a tenant whose DB is down
     must not stop the others (eaprep has been offline for days)."""
@@ -194,6 +275,11 @@ def sweep_all_tenants() -> dict:
     summary: dict = {}
     for tenant in TENANTS.values():
         try:
+            if cooling_off(tenant):
+                summary[tenant.id] = {"skipped": "cooling off after an aborted sweep"}
+                print(f"   sweep [{tenant.id}]: last sweep aborted (provider down?) — "
+                      f"waiting {COOLOFF_HOURS:g}h before trying again")
+                continue
             summary[tenant.id] = sweep(tenant, make_review_one(tenant, admin_key),
                                        courses)
         except Exception as e:
