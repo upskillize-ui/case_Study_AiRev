@@ -147,7 +147,10 @@ def start_job(req: JobRequest, tenant: Tenant = Depends(get_tenant),
     # for ever. Close such orphans first; a job this process is draining is
     # never touched.
     jobs.reap_orphans(tenant)
-    running = jobs.running_jobs(tenant)
+    # The live queue is always 'running' between submits; it is not a batch
+    # and must not answer 409 to one. Live on 03 Sep: one pending live item
+    # made every Grade-all press fail for the 15 minutes until it went stale.
+    running = jobs.running_jobs(tenant, include_live=False)
     if jobs.worker_is_running() or running:
         raise HTTPException(
             status_code=409,
@@ -166,6 +169,31 @@ def start_job(req: JobRequest, tenant: Tenant = Depends(get_tenant),
     return {"success": True, "jobId": job_id, "queued": len(rows),
             "note": note,
             "poll": f"/api/review/jobs/{job_id}"}
+
+
+def resume_live_queue() -> int:
+    """Startup: a live item enqueued just before a restart has no worker —
+    nothing starts one until the NEXT learner submits. Give it one now.
+    Returns the number of tenants whose live queue was picked up (0 or 1:
+    one worker process-wide). Never raises."""
+    if not jobs.jobs_enabled():
+        return 0
+    admin_key = os.getenv("ADMIN_JOB_KEY", "")
+    if not admin_key:
+        return 0
+    from app.tenants import TENANTS
+    for tenant in TENANTS.values():
+        try:
+            live_id = jobs.open_live_job(tenant)
+            if live_id is None or not jobs.has_pending(tenant, live_id):
+                continue
+            if jobs.start_worker(tenant, live_id, make_review_one(tenant, admin_key), live=True):
+                print(f"   review-jobs [{tenant.id}]: live queue (job {live_id}) "
+                      f"had work waiting — worker started")
+                return 1
+        except Exception as e:
+            print(f"   review-jobs [{getattr(tenant, 'id', '?')}]: live-queue check skipped ({e})")
+    return 0
 
 
 class EnqueueRequest(BaseModel):

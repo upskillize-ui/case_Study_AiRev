@@ -186,9 +186,16 @@ def ensure_tables(tenant) -> None:
     # CREATE TABLE IF NOT EXISTS silently leaves an older schema alone. The
     # sweep's attempt ceiling reads this column on every run; without the index
     # that is a full scan of every attempt ever made, three-hourly, for ever.
-    # 1061 = duplicate key name — the index is already there, which is success.
+    # Probe first: the DB layer logs every failed statement as "❌ DB error",
+    # so relying on 1061 (duplicate key name) painted a red line into every
+    # startup log for a condition that is success.
     try:
-        texecute(tenant, f"ALTER TABLE {ITEMS_TABLE} ADD INDEX idx_submission (submission_id)")
+        have = tquery(tenant, f"""
+            SELECT 1 AS hit FROM information_schema.statistics
+             WHERE table_schema = DATABASE() AND table_name = %s
+               AND index_name = 'idx_submission' LIMIT 1""", (ITEMS_TABLE,)) or []
+        if not have:
+            texecute(tenant, f"ALTER TABLE {ITEMS_TABLE} ADD INDEX idx_submission (submission_id)")
     except Exception as e:
         if "1061" not in str(e) and "Duplicate key name" not in str(e):
             print(f"   review-jobs: could not add idx_submission ({e}) — "
@@ -243,11 +250,16 @@ def set_job_state(tenant, job_id: int, state: str, note: str = "") -> None:
              (state, note[:255], job_id))
 
 
-def running_jobs(tenant) -> list:
+def running_jobs(tenant, include_live: bool = True) -> list:
+    """Jobs in state 'running'. The live queue is one of them by design — it
+    stays open between submits — so a caller deciding whether a BATCH may
+    start passes include_live=False: an open live job is not a batch in
+    progress, and since 04 Sep the batch worker drains it as it goes."""
     ensure_tables(tenant)
-    return list(tquery(
+    rows = list(tquery(
         tenant, f"SELECT id, scope_type, state, note FROM {JOBS_TABLE} "
                 f"WHERE state = 'running' ORDER BY id") or [])
+    return rows if include_live else [r for r in rows if r.get("note") != LIVE_NOTE]
 
 
 # ---------------------------------------------------------------------------
@@ -308,9 +320,11 @@ def reap_orphans(tenant, stale_minutes: int = STALE_MINUTES) -> int:
     try:
         orphans = orphaned_jobs(tenant, stale_minutes)
         for job in orphans:
+            # 'running' too: an item claimed ahead of a batch (claim_live_item)
+            # whose review the restart cut short.
             texecute(tenant, f"""
                 UPDATE {ITEMS_TABLE} SET state = 'skipped', detail = %s
-                 WHERE job_id = %s AND state = 'pending'""",
+                 WHERE job_id = %s AND state IN ('pending', 'running')""",
                      (ORPHAN_DETAIL, int(job["id"])))
             set_job_state(tenant, int(job["id"]), "finished",
                           f"{job['note']} — closed: worker died, rows re-offered")
@@ -395,6 +409,50 @@ def has_pending(tenant, job_id: int) -> bool:
     return bool(rows)
 
 
+# ---------------------------------------------------------------------------
+# A STUDENT WHO JUST SUBMITTED GOES FIRST (04 Sep 2026).
+#
+# One worker, process-wide. While a sweep or a Grade-all batch was draining
+# — an hour for 200 rows — start_worker() said no to the live queue, and the
+# learner who had just pressed Submit waited behind the whole backlog, then
+# behind the NEXT learner's submit (which is what finally started a live
+# worker), or behind the next three-hourly sweep. "Instant feedback" was
+# instant only on an idle night.
+#
+# Fix at the cheapest point: the batch worker's own take(). Before it picks
+# the next backlog row it asks the live queue for a pending item and, under
+# the same lock that serialises the cursor, CLAIMS it (state 'running') so
+# the second thread cannot take it too. A live submission is therefore never
+# more than one review behind, whatever else is draining. When the batch
+# ends, whatever landed in the live queue in its last seconds is drained
+# before the worker exits.
+# ---------------------------------------------------------------------------
+
+def claim_live_item(tenant) -> Optional[dict]:
+    """The oldest pending item of the open live job, claimed, or None.
+
+    Claiming (state 'running') is what makes this safe from two threads: the
+    caller holds the cursor lock, and the item's state is changed before the
+    lock is released. Never raises — a dead query means "nothing live", not a
+    stopped batch.
+    """
+    try:
+        rows = tquery(tenant, f"""
+            SELECT i.id, i.job_id, i.scope_id, i.submission_id, i.state
+              FROM {ITEMS_TABLE} i
+              JOIN {JOBS_TABLE}  j ON j.id = i.job_id
+             WHERE j.note = %s AND j.state = 'running' AND i.state = 'pending'
+             ORDER BY i.id LIMIT 1""", (LIVE_NOTE,)) or []
+        if not rows:
+            return None
+        item = dict(rows[0])
+        mark_item(tenant, int(item["id"]), "running", "claimed ahead of the batch")
+        return item
+    except Exception as e:
+        print(f"   review-jobs: live-queue check failed ({e}) — batch continues")
+        return None
+
+
 # ─── the worker ─────────────────────────────────────────────────────────────
 
 _worker_lock = threading.Lock()
@@ -454,9 +512,11 @@ def drain(tenant, job_id: int, review_one: Callable, pause: float = PAUSE_SECOND
 
     while budget > 0:
         budget -= 1
-        item = next_item(job_items(tenant, job_id))
+        item = claim_live_item(tenant) or next_item(job_items(tenant, job_id))
         if item is None:
             break
+        if int(item.get("job_id") or job_id) != job_id:
+            budget += 1                    # a live item does not spend this job's budget
 
         state = _run_one(tenant, item, review_one)
         consecutive = consecutive + 1 if state == "failed" else 0
@@ -506,7 +566,14 @@ def drain_parallel(tenant, job_id: int, review_one: Callable,
 
     def take() -> Optional[dict]:
         with lock:
-            if stop.is_set() or shared["next"] >= len(rest):
+            if stop.is_set():
+                return None
+            # A learner who just pressed Submit goes before the backlog.
+            # Claimed under this lock, so the other thread cannot take it.
+            live = claim_live_item(tenant)
+            if live is not None:
+                return live
+            if shared["next"] >= len(rest):
                 return None
             item = rest[shared["next"]]
             shared["next"] += 1
@@ -570,6 +637,17 @@ def start_worker(tenant, job_id: int, review_one: Callable,
                 set_job_state(tenant, job_id, "running", LIVE_NOTE)
             print(f"[JOB {job_id}] finished — {final.done} reviewed, "
                   f"{final.skipped} skipped, {final.failed} failed")
+            # A batch took live items as it went (see claim_live_item); what
+            # arrived in its last seconds is still waiting. Drain it now
+            # rather than leave it for the next submit or the next sweep.
+            if not live:
+                for _round in range(LIVE_MAX_ROUNDS):
+                    live_id = open_live_job(tenant)
+                    if live_id is None or not has_pending(tenant, live_id):
+                        break
+                    print(f"[JOB {job_id}] draining live queue (job {live_id}) "
+                          f"before exit")
+                    drain_parallel(tenant, live_id, review_one)
         except Exception as e:
             print(f"[JOB {job_id}] worker crashed: {type(e).__name__}: {e}")
             try:

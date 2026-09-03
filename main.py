@@ -173,6 +173,10 @@ def _start_scheduler():
                 reaped += reap_orphans(t, stale_minutes=0)
             except Exception as e:
                 print(f"   review-jobs [{t.id}]: orphan check skipped ({e})")
+        # A submit that landed seconds before the restart is still waiting
+        # in the live queue with no worker. Start one before anything else.
+        from app.routes.review_jobs import resume_live_queue
+        resume_live_queue()
         if reaped and jobs_enabled():
             scheduler.add_job(sweep_all_tenants, "date",
                               run_date=datetime.now() + timedelta(minutes=2),

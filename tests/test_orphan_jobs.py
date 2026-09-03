@@ -62,7 +62,7 @@ def test_a_stale_job_is_closed_and_its_rows_re_offered():
         assert jobs.reap_orphans(_T(), stale_minutes=15) == 1
         item_w = [w for w in db.writes if "review_job_items" in w[0]]
         job_w = [w for w in db.writes if "UPDATE review_jobs SET state" in w[0]]
-        assert len(item_w) == 1 and "state = 'pending'" in item_w[0][0]
+        assert len(item_w) == 1 and "state IN ('pending', 'running')" in item_w[0][0]   # claimed-ahead items too
         assert item_w[0][1][0].startswith("our outage")      # ledger exclusion phrase
         assert item_w[0][1][1] == 821
         assert len(job_w) == 1 and job_w[0][1][0] == "finished"
