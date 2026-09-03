@@ -712,6 +712,20 @@ def re_review_assignment(
     stored_notes = clean_text(row.get("notes") or "")
     already_assembled = intake.from_stored_submission(stored_notes)
 
+    # A FAILURE ON RECORD IS NOT A RESULT (04 Sep 2026). Reuse is right only
+    # when the old read was complete. If its manifest says an item "could not
+    # be read", reusing it re-refuses the row with the same words no matter
+    # what was fixed since — 376 rows on one course sat in exactly that loop,
+    # and the 03 Sep requeue would have paid to walk them round it again.
+    # records_failed_read / typed_text_from were written for this on 21 Aug
+    # and never wired in. Re-open the sources; carry forward only the
+    # learner's own typed words, never our manifest or our old OCR.
+    reread_reason = ""
+    if already_assembled and intake.records_failed_read(already_assembled[0]):
+        stored_notes = intake.typed_text_from(already_assembled[1])
+        already_assembled = None
+        reread_reason = "stored assembly records a failed read"
+
     # READ ONCE, EVER (03 Sep 2026). Everything below the cache check is the
     # expensive part of a review — OCR, transcription, frame description, a
     # browser render — and it produces the same text every time the same
@@ -762,6 +776,10 @@ def re_review_assignment(
         manifest, content = intake.render(artefacts)
         if not dryRun:
             intake_cache.remember(tenant, submission_id, fp, artefacts)
+        if reread_reason:
+            print(f"[REGRADE] submission {submission_id}: re-read from source "
+                  f"({reread_reason}) — {len(artefacts)} artefact(s), "
+                  f"{sum(1 for a in artefacts if a.readable)} readable")
     word_count = count_words(content)
     inventory = ([{"kind": "stored", "label": "previously assembled submission",
                    "words": len(content.split()), "readable": bool(content),

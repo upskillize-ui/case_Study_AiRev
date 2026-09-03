@@ -44,7 +44,8 @@ TABLE = "airev_intake_cache"
 
 # Bump when intake itself changes shape or behaviour — a better OCR, a fixed
 # link path — so stale reads are re-done rather than served.
-INTAKE_VERSION = 2       # 2 = link-field URLs opened as pages (03 Sep 2026)
+INTAKE_VERSION = 3       # 3 = partial reads no longer cached; every v2 entry
+                         #     may hold an unopened link, so all must miss (04 Sep)
 
 _tables_ready: set = set()
 
@@ -119,6 +120,14 @@ def remember(tenant, submission_id: int, fp: str, artefacts: List[Artefact]) -> 
     actually READ: caching a row of nothing would make a transient failure
     permanent. Returns True on write."""
     if not artefacts or not any(a.readable or a.image_b64 for a in artefacts):
+        return False
+    # A PARTIAL READ IS A FAILED READ (04 Sep 2026). "Something was read" let a
+    # typed sentence beside an UNOPENED link into the cache — and every
+    # re-review then served the unopened link back from here, whatever the
+    # renderer could do by then. Only a read with every item open is worth
+    # keeping; a row with one unread item is re-read next time, at the price
+    # of one extraction, which is the cheap side of that trade.
+    if any(not (a.readable or a.image_b64) for a in artefacts):
         return False
     try:
         ensure_table(tenant)

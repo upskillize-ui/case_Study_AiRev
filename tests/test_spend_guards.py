@@ -217,6 +217,13 @@ def test_nothing_readable_is_never_cached():
               cache.remember("lms", 1, fp, dead) is False)
         check("nothing written", db.writes == 0)
         check("remember refuses an empty list", cache.remember("lms", 1, fp, []) is False)
+        # A typed line beside an unopened link is NOT a complete read. Caching
+        # it served the unopened link back on every re-review (04 Sep).
+        partial = dead + [Artefact(kind="typed text", label="typed answer",
+                                   text="here is my design https://canva.com/x")]
+        check("remember refuses a partial read (one item unread)",
+              cache.remember("lms", 1, fp, partial) is False)
+        check("still nothing written", db.writes == 0)
     _with_cache_db(run)
 
 

@@ -953,8 +953,14 @@ def records_failed_read(manifest: str) -> bool:
     return "could not be read" in m or "could not be retrieved" in m
 
 
+# Whitespace-TOLERANT, like _ITEM_RE and for the same reason: a stored row
+# comes back through clean_text(), which folds newline runs, so a pattern that
+# needs a literal "\n" after the header matches nothing and hands back "" —
+# and the learner's own words are dropped on the floor at the one moment they
+# are irreplaceable.
 _TYPED_BLOCK_RE = re.compile(
-    r"===\s*ITEM\s+\d+\s*:\s*TYPED TEXT[^\n]*===\s*\n(.*?)(?=\n===\s*ITEM\s+\d+\s*:|\Z)",
+    r"===\s*ITEM\s+\d+\s*:\s*TYPED TEXT\s*\([^)]*\)\s*===\s*"
+    r"(.*?)(?=\s*===\s*ITEM\s+\d+\s*:|\Z)",
     re.IGNORECASE | re.DOTALL)
 
 
