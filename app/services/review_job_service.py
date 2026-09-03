@@ -251,6 +251,78 @@ def running_jobs(tenant) -> list:
 
 
 # ---------------------------------------------------------------------------
+# THE ORPHANED JOB (04 Sep 2026).
+#
+# The worker is a thread in THIS process. When the Space restarts — a deploy,
+# a sleep, an OOM — the thread dies and its job stays 'running' in the
+# database with every unfinished item still 'pending'. Nothing ever touches
+# it again. Two consequences, both found live on 03 Sep:
+#
+#   * start_job() answers 409 "a review job is already running" to every
+#     Grade-all press, for ever. Four such jobs held 557 items that night; the
+#     admin pressed the button, saw nothing, and assumed grading was broken.
+#   * the items never re-enter the ledger as settled, so the rows sit in
+#     "to be graded" until someone notices.
+#
+# A live worker touches an item every few seconds. A 'running' job with no
+# item change in STALE_MINUTES has no worker. Close it, mark what it never
+# reached as OUR outage (so the attempt ceiling ignores it), and let the next
+# sweep re-select those rows — the sweep is the universal resume.
+# ---------------------------------------------------------------------------
+
+STALE_MINUTES = int(os.getenv("REVIEW_JOB_STALE_MINUTES", "15"))
+ORPHAN_DETAIL = "our outage — worker died on Space restart"
+
+
+def orphaned_jobs(tenant, stale_minutes: int = STALE_MINUTES) -> list:
+    """'running' jobs that no worker has touched for `stale_minutes`.
+
+    At startup every running job is an orphan by definition (the worker was
+    a thread of the process that just died), so callers pass 0 there. The
+    job THIS process is draining right now is never an orphan whatever its
+    age — a long review can go minutes without settling an item.
+    """
+    ensure_tables(tenant)
+    rows = tquery(tenant, f"""
+        SELECT j.id, j.note
+          FROM {JOBS_TABLE} j
+         WHERE j.state = 'running'
+           AND j.updated_at < NOW() - INTERVAL %s MINUTE
+           AND NOT EXISTS (SELECT 1 FROM {ITEMS_TABLE} i
+                            WHERE i.job_id = j.id
+                              AND i.updated_at >= NOW() - INTERVAL %s MINUTE)
+         ORDER BY j.id""", (int(stale_minutes), int(stale_minutes))) or []
+    mine = _worker_job_id if worker_is_running() else None
+    return [r for r in rows if int(r["id"]) != mine]
+
+
+def reap_orphans(tenant, stale_minutes: int = STALE_MINUTES) -> int:
+    """Close orphaned jobs and re-offer their unfinished rows. Never raises.
+
+    Returns how many jobs were closed. Items are marked 'skipped' with an
+    'our outage' detail — the ledger's own exclusion phrase — so the rows
+    keep their remaining attempts. The job is 'finished', not 'aborted':
+    'aborted' is the provider-down signal that puts the sweep on a six-hour
+    cool-off, and a dead worker is not a dead provider.
+    """
+    try:
+        orphans = orphaned_jobs(tenant, stale_minutes)
+        for job in orphans:
+            texecute(tenant, f"""
+                UPDATE {ITEMS_TABLE} SET state = 'skipped', detail = %s
+                 WHERE job_id = %s AND state = 'pending'""",
+                     (ORPHAN_DETAIL, int(job["id"])))
+            set_job_state(tenant, int(job["id"]), "finished",
+                          f"{job['note']} — closed: worker died, rows re-offered")
+            print(f"[JOB {job['id']}] orphan closed ({job['note']}) — "
+                  f"pending rows re-offered to the sweep")
+        return len(orphans)
+    except Exception as e:
+        print(f"   review-jobs: orphan check failed ({e}) — carrying on")
+        return 0
+
+
+# ---------------------------------------------------------------------------
 # THE LIVE QUEUE (23 Aug 2026) — auto-review on submit, without a spinner.
 #
 # Ranjana: "tomorrow onwards students submit and get instant feedback", and
@@ -327,6 +399,7 @@ def has_pending(tenant, job_id: int) -> bool:
 
 _worker_lock = threading.Lock()
 _worker_running = False
+_worker_job_id: Optional[int] = None     # which job this process is draining
 
 
 def worker_is_running() -> bool:
@@ -475,14 +548,15 @@ def start_worker(tenant, job_id: int, review_one: Callable,
     ONE at a time, process-wide. Two workers would race on the same rows and
     reintroduce exactly the contention this exists to remove.
     """
-    global _worker_running
+    global _worker_running, _worker_job_id
     with _worker_lock:
         if _worker_running:
             return False
         _worker_running = True
+        _worker_job_id = job_id
 
     def _run():
-        global _worker_running
+        global _worker_running, _worker_job_id
         try:
             print(f"[JOB {job_id}] worker started "
                   f"(concurrency {WORKER_CONCURRENCY})")
@@ -505,6 +579,7 @@ def start_worker(tenant, job_id: int, review_one: Callable,
         finally:
             with _worker_lock:
                 _worker_running = False
+                _worker_job_id = None
 
     threading.Thread(target=_run, name=f"review-job-{job_id}", daemon=True).start()
     return True

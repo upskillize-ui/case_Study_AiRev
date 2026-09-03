@@ -143,6 +143,10 @@ def start_job(req: JobRequest, tenant: Tenant = Depends(get_tenant),
                 "detail": "Nothing to review — every latest attempt with "
                           "content is already at or above the threshold."}
 
+    # A job whose worker died with the last restart must not block this one
+    # for ever. Close such orphans first; a job this process is draining is
+    # never touched.
+    jobs.reap_orphans(tenant)
     running = jobs.running_jobs(tenant)
     if jobs.worker_is_running() or running:
         raise HTTPException(

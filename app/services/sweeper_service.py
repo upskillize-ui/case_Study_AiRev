@@ -275,6 +275,10 @@ def sweep_all_tenants() -> dict:
     summary: dict = {}
     for tenant in TENANTS.values():
         try:
+            # Orphans first: a job left 'running' by a dead worker would make
+            # sweep() see a batch in progress and stand down. Their unfinished
+            # rows are re-offered below like any other ungraded row.
+            jobs.reap_orphans(tenant)
             if cooling_off(tenant):
                 summary[tenant.id] = {"skipped": "cooling off after an aborted sweep"}
                 print(f"   sweep [{tenant.id}]: last sweep aborted (provider down?) — "

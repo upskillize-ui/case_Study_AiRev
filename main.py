@@ -159,6 +159,26 @@ def _start_scheduler():
         # cohort finds nothing, and MAX_PER_RUN caps a bad night.
         scheduler.add_job(sweep_all_tenants, CronTrigger(hour="*/3", minute=30),
                           id="unreviewed_sweep", replace_existing=True)
+        # RESUME AFTER RESTART (04 Sep 2026). The worker is a thread of this
+        # process; a restart kills it mid-batch and leaves the job 'running'
+        # with its unfinished rows pending — for ever, and blocking every new
+        # batch with 409. Close those orphans now and sweep once, soon, so the
+        # rows they never reached are picked up in minutes, not at the next
+        # three-hourly tick.
+        from datetime import datetime, timedelta
+        from app.services.review_job_service import reap_orphans, jobs_enabled
+        reaped = 0
+        for t in TENANTS.values():
+            try:
+                reaped += reap_orphans(t, stale_minutes=0)
+            except Exception as e:
+                print(f"   review-jobs [{t.id}]: orphan check skipped ({e})")
+        if reaped and jobs_enabled():
+            scheduler.add_job(sweep_all_tenants, "date",
+                              run_date=datetime.now() + timedelta(minutes=2),
+                              id="resume_after_restart", replace_existing=True)
+            print(f"   ♻️  {reaped} job(s) left running by the last restart closed — "
+                  f"resume sweep in 2 minutes")
         scheduler.start()
         print("   🌙 Nightly consolidation scheduled (21:00 UTC / 02:30 IST)")
         print("   🧹 Unreviewed sweep scheduled (every 3h) — no submission "
