@@ -97,6 +97,15 @@ def read_page(page, url: str) -> tuple[str, str, str]:
             raise
         page.wait_for_timeout(2000)
         page.goto(url, wait_until="commit", timeout=LOAD_TIMEOUT_MS)
+    # THE TAB THAT NEVER LEFT (04 Sep 2026, run 2). Every claude.ai/share
+    # link and every Notion portfolio link came back with the text of the
+    # FIRST such page read, and the Space refused them all as one shell:
+    # the navigation had not happened and the old page was read again. A
+    # fresh tab per link (see main) starts blank, so a navigation that did
+    # not land is caught here instead of being posted as another student's
+    # work.
+    if page.url in ("", "about:blank"):
+        raise RuntimeError("the page did not navigate")
     deadline = time.time() + SETTLE_S
     hinted = False
     while is_challenge(page.title()) and time.time() < deadline:
@@ -195,6 +204,18 @@ def open_browser(pw):
         return pw.chromium.launch_persistent_context(**kwargs)
 
 
+def _read_in_fresh_tab(context, url: str) -> tuple[str, str, str]:
+    """read_page in a tab opened for this link alone and closed after it."""
+    page = context.new_page()
+    try:
+        return read_page(page, url)
+    finally:
+        try:
+            page.close()
+        except Exception:
+            pass
+
+
 def _browser_gone(err: Exception) -> bool:
     low = str(err).lower()
     return "has been closed" in low or "browser has been closed" in low or \
@@ -232,14 +253,16 @@ def main() -> int:
     t0 = time.time()
     with sync_playwright() as pw:
         context = open_browser(pw)
-        page = context.new_page()
         for i, l in enumerate(links, 1):
             sid, url = l["submissionId"], l["url"]
             tag = f"[{i}/{len(links)}] {sid} {urlparse(url).hostname}"
+            # One fresh tab per link. A private Gamma deck keeps redirecting
+            # to its sign-in page after we have moved on, and that redirect
+            # interrupted the NEXT link's navigation ("interrupted by another
+            # navigation to https://gamma.app/...") — nine links lost on
+            # run 2. A closed tab cannot interrupt anything.
             try:
-                if page.is_closed():
-                    raise RuntimeError("browser has been closed")
-                title, text, shot = read_page(page, url)
+                title, text, shot = _read_in_fresh_tab(context, url)
             except Exception as e:
                 if _browser_gone(e):
                     # The window was closed or Chrome crashed. Reopen it
@@ -250,9 +273,8 @@ def main() -> int:
                     except Exception:
                         pass
                     context = open_browser(pw)
-                    page = context.new_page()
                     try:
-                        title, text, shot = read_page(page, url)
+                        title, text, shot = _read_in_fresh_tab(context, url)
                     except Exception as e2:
                         tally["failed"] += 1
                         print(f"{tag}: could not open - {str(e2).splitlines()[0][:120]}")

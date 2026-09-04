@@ -59,3 +59,25 @@ def test_every_refusal_branch_uses_it():
                encoding="utf-8").read()
     assert src.count("grade_guard.READER_BLOCKED_MESSAGE") == 3
     assert src.count("grade_guard.reader_blocked(") == 3
+
+
+def test_an_unopened_link_names_its_own_reason():
+    """Six Figma files (04 Sep) were filed under "nothing to read"; each was
+    a sign-in wall drawn by JavaScript. The notice now follows the reader's
+    recorded reason, with that site's share steps."""
+    from app.routes import assignment_review as route
+    from app.utils.submission_intake import Artefact
+    figma = Artefact(kind="link", label="https://www.figma.com/design/iQKK/x",
+                     note="the page rendered empty", confirmed=True)
+    msg = route._unassessable_notice([figma], "", "")
+    assert "asks whoever visits it to sign in" in msg and "In Figma click Share" in msg
+    gone = Artefact(kind="link", label="https://claude.ai/public/artifacts/a",
+                    note="the page no longer exists at that address", confirmed=True)
+    assert "no longer opens" in route._unassessable_notice([gone], "", "")
+    # An empty page on an ordinary site is still the generic wording.
+    plain = Artefact(kind="link", label="https://example.org/p",
+                     note="the page rendered empty", confirmed=True)
+    assert route._unassessable_notice([plain], "", "") == route._UNASSESSABLE_GENERIC
+    # Reader-blocked stays ours, whatever the link.
+    cf = "the page was still showing a human-check (Cloudflare) when the browser gave up"
+    assert route._unassessable_notice([figma], "", cf) == route.grade_guard.READER_BLOCKED_MESSAGE

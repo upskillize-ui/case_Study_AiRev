@@ -859,13 +859,7 @@ def re_review_assignment(
         ours = grade_guard.reads_as_our_outage(f"{first_why} {manifest}")
         if previous_grade is None and not dryRun and not ours:
             assignment_db_service.mark_not_graded(
-                tenant, submission_id,
-                grade_guard.READER_BLOCKED_MESSAGE
-                if grade_guard.reader_blocked(f"{first_why} {manifest}") else
-                "Your link or file would not open for us, and there is no "
-                "written answer with it, so there are no marks yet. Add a few "
-                "lines about what you made, or attach the file itself, then "
-                "submit again.")
+                tenant, submission_id, _unassessable_notice(artefacts, manifest, first_why))
         print(f"[REGRADE] submission {submission_id}: deliverable present but "
               f"unreadable ({intake.substantive_words(content)} words of answer) — "
               + ("OUR outage, learner not told, row retryable"
@@ -1014,6 +1008,34 @@ def _remember_student_assignment(req, submission, r):
                          r["scores"]["totalScore"], r["conceptsMissing"], ai_pct)
     except Exception as e:
         print(f"[ASSIGNMENT] person-memory update failed (review unaffected): {e}")
+
+
+_UNASSESSABLE_GENERIC = (
+    "Your link or file would not open for us, and there is no written answer "
+    "with it, so there are no marks yet. Add a few lines about what you made, "
+    "or attach the file itself, then submit again.")
+
+
+def _unassessable_notice(artefacts, manifest: str, first_why: str) -> str:
+    """What the learner reads when the only deliverable could not be opened.
+
+    THE REASON WAS THROWN AWAY (04 Sep 2026, Ranjana: six Figma links filed
+    under "nothing to read", every one a sign-in wall). The reader records
+    why each link gave nothing; this notice used to ignore it and say
+    "would not open for us" for everything. Now: reader-blocked first (ours,
+    never the learner's), then the link's own reason — private, gone —
+    with the share steps for THAT site, and the generic wording only when
+    the reason is not one we can name. Pure.
+    """
+    from app.services import student_notices
+    if grade_guard.reader_blocked(f"{first_why} {manifest}"):
+        return grade_guard.READER_BLOCKED_MESSAGE
+    for a in artefacts or []:
+        if a.kind == "link" and not a.readable:
+            named = student_notices.unreadable_link_notice(a.label, a.note)
+            if named:
+                return named
+    return _UNASSESSABLE_GENERIC
 
 
 def _wrong_task_response(tenant, submission, r, start_time, task_title: str,

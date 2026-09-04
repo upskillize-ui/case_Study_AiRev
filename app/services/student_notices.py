@@ -57,6 +57,10 @@ _HOST_STEPS = {
                      "artifact's Download option."),
     "gamma.app":    ("In Gamma open Share, turn on public access, then copy the "
                      "link."),
+    "figma.com":    ("In Figma click Share, change \"Only people invited\" to "
+                     "\"Anyone with the link\" (can view), then copy the link."),
+    "miro.com":     ("In Miro click Share, set \"Anyone with the link\" to can "
+                     "view, then copy the link."),
     "canva.com":    ("In Canva click Share, choose \"Anyone with the link\", set it "
                      "to view, then copy the link."),
     "lovable.app":  ("Open your project, publish it, and copy the published URL."),
@@ -303,6 +307,40 @@ def wrong_task_points(what_it_is: str, task_title: str, out_of: int = 100) -> li
 def wrong_task(what_it_is: str, task_title: str, out_of: int = 100) -> str:
     """wrong_task_points as one paragraph."""
     return " ".join(wrong_task_points(what_it_is, task_title, out_of))
+
+
+# A LINK THAT DID NOT OPEN IS NOT "NOTHING TO READ" (04 Sep 2026, Ranjana:
+# six Figma files filed under "link opened, nothing to read" — every one of
+# them a sign-in wall). The renderer records WHY a link gave nothing; the
+# unassessable notice used to throw that reason away and send a generic
+# "would not open for us". These are design apps that draw their sign-in
+# box with JavaScript, so a visitor gets no words at all — an empty page
+# from one of them is a private link, not an empty one.
+_SIGN_IN_APPS = ("figma.com", "canva.com", "miro.com", "lucid.app")
+_PRIVATE_MARKS = ("sign-in", "sign in", "log in", "login", "private",
+                  "need access", "request access", "you need to sign")
+_GONE_MARKS = ("no longer exists", "not found", "404")
+
+
+def _is_sign_in_app(url: str) -> bool:
+    host = (urlparse(str(url or "")).hostname or "").lower().lstrip(".")
+    return any(host == h or host.endswith("." + h) for h in _SIGN_IN_APPS)
+
+
+def unreadable_link_notice(url: str, why: str) -> str:
+    """The learner's notice for ONE link that gave us nothing, chosen from
+    the reader's own reason. "" when the reason is not one we can name —
+    the caller then falls back to the generic wording. Pure."""
+    low = (why or "").lower()
+    if any(m in low for m in _PRIVATE_MARKS):
+        return link_never_opened(url)
+    if "rendered empty" in low and _is_sign_in_app(url):
+        return link_never_opened(url)
+    if any(m in low for m in _GONE_MARKS):
+        return ("Your link no longer opens — the page is not at that address "
+                "any more. Check the link still works for you, or attach the "
+                "file itself, then submit again. " + NO_MARK)
+    return ""
 
 
 # Hosts whose bot protection refuses a server outright. Nothing we can do

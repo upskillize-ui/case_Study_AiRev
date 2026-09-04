@@ -141,6 +141,35 @@ def test_a_gate_page_stores_nothing_and_touches_no_row(monkeypatch):
     assert not stored and not executed and not forgotten
 
 
+def test_a_sign_in_wall_seed_tells_the_learner_with_that_sites_steps(monkeypatch):
+    """Run 3 (04 Sep): 36 private Gamma decks were refused correctly and
+    left carrying "site blocked our reader". The learner's fault is stamped
+    on the row now, with the share steps for that site."""
+    told = []
+    monkeypatch.setattr("app.services.assignment_db_service.mark_not_graded",
+                        lambda tenant, sid, msg, **kw: told.append((sid, msg)))
+    res, stored, executed, forgotten = _post(monkeypatch, {
+        "submissionId": 5272, "url": "https://gamma.app/docs/x-abc",
+        "title": "Sign in - Google Accounts",
+        "text": "Use your Google Account. Email or phone. Forgot email?"})
+    assert res["accepted"] is False and res["row"] == "told"
+    assert not stored and not executed and not forgotten
+    assert told[0][0] == 5272
+    assert "asks whoever visits it to sign in" in told[0][1]
+    assert "In Gamma open Share" in told[0][1]
+
+
+def test_a_sign_in_wall_seed_never_touches_a_graded_row(monkeypatch):
+    told = []
+    monkeypatch.setattr("app.services.assignment_db_service.mark_not_graded",
+                        lambda tenant, sid, msg, **kw: told.append(sid))
+    res, *_ = _post(monkeypatch, {
+        "submissionId": 5272, "url": "https://gamma.app/docs/x-abc",
+        "title": "Sign in - Google Accounts",
+        "text": "Use your Google Account. Email or phone. Forgot email?"}, grade=6.5)
+    assert res["accepted"] is False and res["row"] == "graded" and not told
+
+
 def test_a_graded_row_is_never_reset_by_a_seed(monkeypatch):
     res, stored, executed, forgotten = _post(monkeypatch, {
         "submissionId": 5378, "url": URL, "title": "Data Science", "text": PAGE}, grade=6.5)

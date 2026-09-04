@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from app.database import tquery
 from app.routes.assignment_review import get_tenant
 from app.routes.review_jobs import _require_staff
-from app.services import link_renderer, link_seed_service
+from app.services import link_renderer, link_seed_service, student_notices
 from app.tenants import Tenant
 from app.utils.submission_intake import find_urls, is_web_page
 
@@ -118,7 +118,14 @@ def seed_link(body: SeedBody, tenant: Tenant = Depends(get_tenant),
     gate = (link_renderer.interstitial_reason(body.title, body.text)
             or link_renderer.note_page(url, body.text, body.screenshotB64))
     if gate:
-        return {"accepted": False, "why": gate, "row": "untouched"}
+        # A home browser saw the same wall a visitor would. When that wall
+        # is the learner's to fix — private link, page gone — say so on the
+        # row now, with the share steps for that site; the "site blocked our
+        # reader" notice it carried was wrong the moment a person was refused.
+        notice = student_notices.unreadable_link_notice(url, gate)
+        row = (link_seed_service.tell_learner(tenant, body.submissionId, notice)
+               if notice else "untouched")
+        return {"accepted": False, "why": gate, "row": row}
 
     link_seed_service.store(tenant, link_seed_service.Seed(
         url=url, title=body.title, text=body.text,

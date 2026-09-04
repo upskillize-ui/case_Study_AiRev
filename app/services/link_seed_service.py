@@ -145,3 +145,25 @@ def reoffer(tenant, submission_id: int, label: str) -> str:
     except Exception as e:
         print(f"[SEED] intake cache not cleared for {submission_id}: {e}")
     return "reoffered"
+
+
+def tell_learner(tenant, submission_id: int, notice: str) -> str:
+    """A refused seed that names the LEARNER's fault — private link, page
+    gone — is stamped on the row, so the panel stops showing it as "site
+    blocked our reader". Only a row with no mark is touched. Returns
+    "told", "graded" (untouched) or "missing".
+
+    Run 3 (04 Sep 2026): 36 private Gamma decks and 6 deleted claude.ai
+    artifacts were refused with the right reason and left carrying the
+    OLD reader-blocked notice — filed as our fault, waiting for a reader
+    that could never open them.
+    """
+    from app.services.assignment_db_service import mark_not_graded
+    rows = tquery(tenant, "SELECT grade FROM assignment_submissions WHERE id = %s",
+                  (int(submission_id),))
+    if not rows:
+        return "missing"
+    if rows[0].get("grade") is not None:
+        return "graded"
+    mark_not_graded(tenant, int(submission_id), notice)
+    return "told"
