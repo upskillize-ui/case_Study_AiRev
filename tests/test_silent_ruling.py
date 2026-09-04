@@ -220,3 +220,60 @@ def test_a_short_garbage_flag_still_hard_zeros_without_a_second_call(monkeypatch
     out, calls = _run(monkeypatch, [silent, silent], word_count=12)
     assert len(calls) == 2          # judge + escalation, no third pass
     assert out["isGarbage"] is True and out["scores"]["totalScore"] == 0
+
+
+# ─── the third silence: the ruling was voided, the zero it justified stayed ──
+# (job 868, 04 Sep 2026, submission 6929: "a guide to prompt engineering
+# methodology" on the prompt-engineering day — voided as naming this task's
+# own deliverable — every criterion 0 → 0.0/10 for 576 words.)
+
+def test_a_voided_own_deliverable_ruling_with_a_zero_behind_it_is_rejudged(monkeypatch):
+    out, calls = _run(monkeypatch, [
+        _scored(0, declare=True, what="a personal 5-year career plan as a lawyer"),
+        _scored(58)])
+    assert len(calls) == 2
+    assert "own deliverable" in calls[1][-1]["text"]
+    assert "0/100" in calls[1][-1]["text"]
+    assert out["wrongTask"]["declared"] is False
+    assert out["scores"]["totalScore"] == 58
+    assert "rejudged-without-ruling" in out["decisions"]["scoringPath"]
+
+
+def test_a_voided_ruling_with_real_marks_behind_it_costs_no_second_call(monkeypatch):
+    out, calls = _run(monkeypatch, [
+        _scored(45, declare=True, what="a personal 5-year career plan")])
+    assert len(calls) == 1
+    assert out["scores"]["totalScore"] == 45
+
+
+def test_a_thin_read_void_keeps_its_low_score_without_a_second_call(monkeypatch):
+    """'only 40 words read' does not assert the work is this task's — a low
+    score on thin content is honest, no extra call."""
+    out, calls = _run(monkeypatch, [
+        _scored(5, declare=True, what="an investment analysis slide deck")],
+        word_count=40)
+    assert len(calls) == 1
+    assert out["wrongTask"]["declared"] is False
+    assert out["scores"]["totalScore"] == 5
+
+
+def test_the_second_pass_is_never_asked_twice(monkeypatch):
+    """A silent ruling already re-judged once, still under 40: one extra
+    call, not two."""
+    out, calls = _run(monkeypatch, [
+        _silent_declaration("a personal 5-year career plan"), _scored(12)])
+    assert len(calls) == 2
+    assert out["scores"]["totalScore"] == 12
+
+
+def test_voided_ruling_contradiction_is_pure():
+    assert rp.voided_ruling_contradiction("", 0) == ""
+    assert rp.voided_ruling_contradiction("only 40 words read (need 120)", 0) == ""
+    assert rp.voided_ruling_contradiction("no identification of what the work is", 0) == ""
+    assert rp.voided_ruling_contradiction(
+        "identification names this task's own deliverable", 40) == ""
+    why = rp.voided_ruling_contradiction(
+        "identification names this task's own deliverable", 6)
+    assert "own deliverable" in why and "6/100" in why
+    assert rp.voided_ruling_contradiction(
+        "identified as a PERSONAL plan — career choice is never grounds", 0)

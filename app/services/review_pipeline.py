@@ -1018,6 +1018,94 @@ def _rejudge_without_ruling(review: dict, judge_blocks: list, reason: str) -> di
     return second
 
 
+# THE MARKER DOCKED THE WRAPPER ANYWAY (04 Sep 2026, job 868 live). Rule 12a
+# told the model a format miss is on-task and scored on content. It declared
+# the miss correctly (5333 .pptx, 5378 .pptx, 5380 PDF: "asked Gamma link,
+# arrived PPTX") — and then scored the one criterion, "Gamma presentation on
+# Data Science", at 0 because the file was not a Gamma link. Python took its
+# fixed 20 off a 0 and the learner read 0.0/10 for a 525-word deck. A
+# declaration that says "this IS the deliverable" cannot sit beside a score
+# that says "nothing of the deliverable is here": below this content score
+# the pipeline asks ONCE more, with the wrapper explicitly off the table.
+# 40 is rule 15's base for a present, on-topic deliverable.
+FORMAT_MISS_REJUDGE_BELOW = int(os.getenv("FORMAT_MISS_REJUDGE_BELOW", "40"))
+
+_CONTENT_NOTE = (
+    "Your previous answer declared a format miss (asked for: {asked}; arrived "
+    "as: {arrived}) and then scored the content {total}/100. A format miss "
+    "means the work IS this task's deliverable, so a content score under "
+    "{floor} contradicts your own declaration: the wrapper was charged "
+    "against the content. The format is handled separately by the system; "
+    "do not deduct for it. Re-score EVERY criterion on the CONTENT exactly as "
+    "if it had been delivered as {asked}: a criterion that names the tool or "
+    "the link is met by the deck, page or app itself, and its QUALITY decides "
+    "the mark (relevant, readable work starts around 40; quality moves it up "
+    "or holds it there). Quote evidence from the content that was read. "
+    "wrong_task.is_wrong_task MUST be false and is_garbage MUST be false.")
+
+
+# A voider that says "this IS the task's work" (own deliverable, personal
+# plan, domain exclusion) — as opposed to one that says "too little was read
+# to rule" (thin content, no identification). Only the first kind contradicts
+# a near-zero score. "Another format" is the same contradiction, handled by
+# format_miss_contradiction with its own, more specific note.
+_VOID_ASSERTS_THIS_TASK = ("own deliverable", "PERSONAL plan", "domain-exclusion")
+
+
+def voided_ruling_contradiction(blocked: str, content_total: float) -> str:
+    """Why a VOIDED wrong-task ruling and the score cannot both stand — or "".
+    Pure.
+
+    Job 868 (04 Sep 2026), submission 6929: the model called a prompt
+    engineering guide "a guide to prompt engineering methodology" on the
+    prompt-engineering day — voided as naming this task's own deliverable —
+    and had scored every criterion 0 to match the ruling it had just made.
+    576 words across 3 artefacts read 0.0/10. The ruling was rejected; the
+    zero it was written to justify must be too.
+    """
+    if not blocked or content_total >= FORMAT_MISS_REJUDGE_BELOW:
+        return ""
+    if not any(k in blocked for k in _VOID_ASSERTS_THIS_TASK):
+        return ""
+    return (f"{blocked} — yet the content scored {content_total:g}/100, "
+            f"under {FORMAT_MISS_REJUDGE_BELOW}")
+
+
+def format_miss_contradiction(review: dict, content_total: float) -> str:
+    """Why a format-miss declaration and the content score cannot both stand
+    — or "" when they agree. Pure. `content_total` is BEFORE the deduction."""
+    fm = format_miss_of(review)
+    if not fm or content_total >= FORMAT_MISS_REJUDGE_BELOW:
+        return ""
+    return (f"format miss declared ({fm.get('asked') or 'named tool'} -> "
+            f"{fm.get('arrived') or 'another format'}) but content scored "
+            f"{content_total:g}/100, under {FORMAT_MISS_REJUDGE_BELOW}")
+
+
+def _rejudge_on_content(review: dict, judge_blocks: list, content_total: float) -> dict:
+    """One more judging pass with the format taken off the scoring table.
+
+    Called only when the marker declared a format miss AND scored the
+    content below the on-task base. The declaration is kept from the first
+    pass (the deduction still applies); the second pass may not re-declare
+    wrong_task, and its scores are what count.
+    """
+    fm = format_miss_of(review)
+    print(f"[FORMAT] {format_miss_contradiction(review, content_total)} — "
+          f"re-judging the content with the wrapper off the table")
+    note = _CONTENT_NOTE.format(asked=fm.get("asked") or "the asked tool",
+                                arrived=fm.get("arrived") or "another format",
+                                total=f"{content_total:g}",
+                                floor=FORMAT_MISS_REJUDGE_BELOW)
+    second = normalise_review(ai_service.call_structured(
+        blocks=judge_blocks + [{"text": note, "cache": False}],
+        schema=REVIEW_SCHEMA, tier="default", max_tokens=3500))
+    second["format_miss"] = dict(fm)
+    second["wrong_task"] = {"is_wrong_task": False, "what_it_is": ""}
+    second["is_garbage"] = False
+    return second
+
+
 def _task_text_for(pack: dict, explicit: str = "") -> str:
     """The words that describe THIS task, for the contradiction check.
 
@@ -1436,10 +1524,17 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
     # not fire). Deriving both from the same fact stops them disagreeing.
     artefact_deliverable = has_nontext_evidence(student_answer, images)
 
-    gated = apply_gates(review["criteria"], rubric_criteria,
-                        review["concepts_missing"], review["concepts_covered"],
-                        review["factual_errors"], gates=gate_overrides,
-                        nontext_evidence=artefact_deliverable)
+    def _gate(r: dict) -> dict:
+        return apply_gates(r["criteria"], rubric_criteria,
+                           r["concepts_missing"], r["concepts_covered"],
+                           r["factual_errors"], gates=gate_overrides,
+                           nontext_evidence=artefact_deliverable)
+
+    def _total(g: dict) -> dict:
+        return aggregate(g, word_count, word_limit_min, word_limit_max,
+                         artefact_deliverable=artefact_deliverable)
+
+    gated = _gate(review)
 
     # TOO LITTLE OF THE TASK GOT A VERDICT (04 Sep 2026, job 860 live). When
     # the marker's rows cannot be paired with the requirement list — a
@@ -1451,14 +1546,33 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
             and "+rejudged" not in scoring_path):
         review = _rejudge_with_names(review, judge_blocks, rubric_criteria, gated)
         scoring_path += "+rejudged-with-names"
-        gated = apply_gates(review["criteria"], rubric_criteria,
-                            review["concepts_missing"], review["concepts_covered"],
-                            review["factual_errors"], gates=gate_overrides,
-                            nontext_evidence=artefact_deliverable)
+        gated = _gate(review)
+
+    scores = _total(gated)
+
+    # A FORMAT MISS SCORED AS A ZERO (04 Sep 2026, job 868 live). The marker
+    # declared "this is the deck, as PPTX" and then scored the deck 0 for not
+    # being a link. One more pass with the wrapper off the table; the second
+    # pass's content score is what the deduction comes off.
+    if format_miss_contradiction(review, scores["totalScore"]):
+        review = _rejudge_on_content(review, judge_blocks, scores["totalScore"])
+        scoring_path += "+rejudged-on-content"
+        gated = _gate(review)
+        scores = _total(gated)
+    # A VOIDED RULING SCORED AS A ZERO (job 868 live, 6929). The model wrote
+    # the ruling, then scored 0 everywhere to match it; Python rejected the
+    # ruling but kept the zero. Same repair as the silent ruling, one call.
+    elif (voided_ruling_contradiction(blocked, scores["totalScore"])
+            and "+rejudged-without-ruling" not in scoring_path):
+        review = _rejudge_without_ruling(
+            review, judge_blocks,
+            voided_ruling_contradiction(blocked, scores["totalScore"]))
+        scoring_path += "+rejudged-without-ruling"
+        blocked = ""
+        gated = _gate(review)
+        scores = _total(gated)
 
     review = tidy_review(review)
-    scores = aggregate(gated, word_count, word_limit_min, word_limit_max,
-                       artefact_deliverable=artefact_deliverable)
     scores = apply_format_miss(scores, review)
 
     # Wrong-task: the model DECLARES, the arithmetic CORROBORATES, Python
