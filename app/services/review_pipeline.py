@@ -531,6 +531,7 @@ NON-NEGOTIABLE METHOD:
 10. ONE WEAKNESS, ONE DEDUCTION. Judge each criterion strictly on what ITS OWN name asks and nothing else. If a rubric has "five steps are listed" and "the steps are specific", vague steps cost marks on the SECOND only — the first asks whether five steps exist, and they do. Charging one shortcoming against two criteria takes 60 marks for a single flaw and buries the part the learner actually did. Where two criteria overlap, credit the narrower reading of each.
 11. HOW THE WORK WAS MADE IS NOT A SCORING FACT. Never lower a criterion because you cannot tell which AI drafted it, which settings were toggled, or in what order the steps were taken. A finished artifact carries no record of its own making, so "no evidence ChatGPT was used" is a statement about your visibility, not about the learner's work — and deducting for it fails every learner equally, including the ones who followed the method exactly. Judge the OUTPUT the method was meant to produce. This is the same rule as the authorship estimate above: provenance is advisory, never scored.
 12a. FORMAT IS NOT SUBSTANCE. If the submitted work IS this task's deliverable but arrived in a different format or tool than the brief names — an exported PDF/PPTX of the deck instead of a Gamma share link, a Word or PDF file instead of a Notion page, screenshots instead of a live app link — it is ON-TASK: set format_miss.is_format_miss=true, name what was asked and what arrived, and SCORE EVERY CRITERION ON THE CONTENT exactly as if it had been delivered in the asked tool (a deck criterion is met by the deck, whatever file it came as). Never wrong_task, never a zero for the wrapper — the system takes a fixed deduction for the format; do not deduct for it yourself. Mention the format once in improvements.
+12b. THE LANGUAGE IS NOT THE WORK. Work written in Marathi, Hindi, Gujarati, Tamil, or any other language is THIS task's work and is judged on exactly the same criteria as English work: read it in its language, quote evidence_quotes in the original (add a short English gloss in the judgment), and score the content. Never wrong_task, never format_miss, never a deduction for the language itself. Deduct for language ONLY when a requirement's own name asks for a specific language (for example "a LinkedIn post in English"), and then only on that requirement. Note the language once in improvements if the brief's audience makes English advisable; that is coaching, not marks.
 12. WRONG WORK IS NOT LOW-QUALITY WORK. If the submission is recognizably a DIFFERENT task's deliverable — a slide deck of investment analysis where a 5-year career-plan image was asked for, another day's assignment resubmitted here — set wrong_task.is_wrong_task=true and name what it is in what_it_is. The policy for wrong work is NO grade, not a low grade — but that decision is made OUTSIDE this response: STILL FILL EVERY FIELD. Score each criterion from whatever evidence for THIS task you actually found (it will be low or zero — that is the honest reading), and still write strengths, improvements, feedback_points and hard_truth about what arrived. A declaration with empty criteria and empty feedback decides nothing and is discarded. Declare it ONLY from substantial content you actually READ that clearly belongs to another task — you must be able to say WHAT the work is, not merely that this task's evidence is missing. Empty, thin, fragmentary or unreadable content is NEVER wrong_task (that is a no-evidence low score); an unread or partially read link or file is NEVER wrong_task; and a weak, partial or badly formatted attempt AT THIS TASK is never wrong_task either — that is a low score with reasons. THE LEARNER'S OWN CHOICES WITHIN THE BRIEF ARE NEVER GROUNDS FOR wrong_task — topic, style, career, domain, tool settings: an attempt at THIS task about the learner's own subject IS this task. (Live rule for the 5-year-plan day: THE LEARNER'S CAREER CHOICE IS NEVER GROUNDS FOR wrong_task — a personal vision as lawyer, CA, teacher, government officer, writer, athlete, ANY field counts; policy: any career counts; domain alignment may be discussed in feedback but never used to un-grade. On that day wrong_task was reserved for content that is not a personal future-self plan AT ALL — study guides, exam-syllabus material, generic reference documents. Apply the same shape to every task: wrong_task is reserved for content that makes no attempt at THIS task's brief whatsoever.) CONTRADICTION CHECK before declaring: re-read your own what_it_is — if that description could equally describe THIS task's deliverable ("a personal 5-year career plan" on the 5-year-plan day), then is_wrong_task MUST be false: you have just identified the work as the task itself, and its shortcomings are a score, not an un-grading. An image depicting a person in ANY professional role (lawyer, teacher, officer, artist...) on a future-self task IS the future-self image — score the missing pieces (steps, reasoning) on their own criteria, never wrong_task. A submission MISSING one required element (no image, no steps) is an incomplete attempt — low score on that element's criteria, never wrong_task.
 13. MORE THAN ASKED IS NOT LESS THAN ASKED. When a criterion requires N items and the learner provides N OR MORE that clearly include the required N, the count requirement is FULLY met — score that aspect as satisfied. Never deduct for exceeding a requested count, length, or scope. (Live failure: a learner listed 8 career steps containing the required 5 and was scored 30% on "5 distinct steps are listed" — the five steps were right there, plus three the task didn't ask for.) Extra material may still be judged for QUALITY under the criteria that measure quality — but existence criteria are met by inclusion.
 14. BUILT ARTIFACTS AND PUBLISHED LINKS. When the task's deliverable is something the learner BUILT — a web page, an app, an artifact, a slide deck: (a) whatever was READ from it IS the deliverable — extracted slide text, OCR of its screenshots, a page's visible text, or a page's SOURCE CODE all count in full; source code of a client-rendered page is that page, judge the built thing from its code exactly as you would from its screen. (b) A link the manifest confirms as submitted but unreadable from the server (browser-only pages such as Claude artifact links) is evidence the learner PUBLISHED a deliverable: it fully satisfies any criterion that asks for the artifact to be created, published, shared or linked. Judge the remaining quality criteria only from what IS readable — the screenshots, pasted content, and the learner's own description — and state plainly which parts could not be seen. Never charge a criterion for OUR inability to open the learner's published page (the same visibility rule as 9c and 11), and never rule wrong_task from a link you could not read. (c) THE DELIVERABLE IS THE MARK. When the built artifact is present and matches the brief, the absence of research notes, ideation history, tool choice explanations, or a process narrative the brief did not require — or marked optional — must never reduce the score, and a link-plus-short-caption submission is a COMPLETE submission for a build-and-share task, never "a statement of intent". Judge the built thing itself.
@@ -714,10 +715,30 @@ WRONG_TASK_MIN_WORDS = int(os.getenv("WRONG_TASK_MIN_WORDS", "120"))
 FORMAT_MISS_PENALTY = int(os.getenv("FORMAT_MISS_PENALTY", "20"))
 
 
+# Words that describe a container. A declaration whose "arrived" names one of
+# these is about the wrapper; one that names only a language is not.
+_CONTAINER_RE = re.compile(
+    r"\b(pdf|pptx?|docx?|xlsx?|csv|word|powerpoint|excel|slide|deck|document|"
+    r"file|upload|attachment|image|photo|screenshot|picture|png|jpe?g|video|"
+    r"audio|mp[34]|link|url|page|site|website|app|notebook|export|zip|"
+    r"text\s+box|typed)\b", re.I)
+
+
 def format_miss_of(review: dict) -> dict:
-    """The marker's format-miss declaration, or {} when none. Pure."""
+    """The marker's format-miss declaration, or {} when none. Pure.
+
+    A "miss" that names only a LANGUAGE (asked English, arrived Marathi) is
+    not a format miss: the work arrived in the asked container, in the
+    learner's language. No deduction — language is never scored unless a
+    requirement names it, and then that requirement carries it.
+    """
     fm = review.get("format_miss")
-    return fm if isinstance(fm, dict) and fm.get("is_format_miss") else {}
+    if not (isinstance(fm, dict) and fm.get("is_format_miss")):
+        return {}
+    arrived = str(fm.get("arrived") or "")
+    if names_a_language(arrived) and not _CONTAINER_RE.search(arrived):
+        return {}
+    return fm
 
 
 def apply_format_miss(scores: dict, review: dict) -> dict:
@@ -886,17 +907,51 @@ _COURSE_MATERIAL = re.compile(
     r"\bpromotional\s+(poster|material|flyer)\b", re.I)
 
 
+# THE LANGUAGE OF THE WORK IS NOT THE WORK (04 Sep 2026, owner's ruling).
+# A learner did the assignment in Marathi; the marker ruled it "a Marathi
+# essay, not the English ... asked for" and the row went to the wrong-task
+# bucket. Any language counts. A ruling that identifies the work BY its
+# language has recognised the task and objected to the wrapper — voided, and
+# the zero behind it re-judged like every other voided ruling.
+_LANGS = (r"(?:marathi|hindi|gujarati|tamil|telugu|kannada|malayalam|bengali|"
+          r"bangla|punjabi|odia|urdu|assamese|konkani|sanskrit|nepali|"
+          r"devanagari|hinglish|vernacular|regional)")
+# Four shapes, each one a ruling ABOUT THE LANGUAGE rather than about what
+# the work is. Deliberately narrow: "a Hindi film review, not a data science
+# deck" names different work and still stands.
+_LANGUAGE_RE = re.compile(
+    r"\b(?:not|rather\s+than|instead\s+of|than)\s+(?:in\s+|written\s+in\s+)?english\b"
+    r"|\bnon-english\b"
+    r"|\b(?:written|composed|typed|submitted|presented|delivered|answered)\s+in\s+"
+    r"(?:the\s+)?(?:a\s+)?(?:\w+\s+)?" + _LANGS + r"\b"
+    r"|^\s*(?:an?\s+)?" + _LANGS + r"(?:-language|\s+language)?\s+"
+    r"(?:essay|document|text|answer|response|submission|write-?up|content|"
+    r"note|notes|reflection|summary|report|version|translation|explanation|"
+    r"description|paragraph|piece|entry)\b"
+    r"|^\s*(?:in\s+)?(?:the\s+)?" + _LANGS + r"(?:\s+language|\s+script)?\s*$",
+    re.I)
+
+
+def names_a_language(text: str) -> bool:
+    """Does this description identify the work by the language it is in,
+    rather than by what it is? Pure."""
+    return bool(_LANGUAGE_RE.search((text or "").strip()))
+
+
 def wrong_task_void_reason(what_it_is: str, task_text: str) -> str:
     """Why this declaration carries no ruling — or "" when it stands. Pure.
 
-    Three independent voiders, any one final:
+    Four independent voiders, any one final:
       1. The pre-negation identification names THIS task's own deliverable
          (word overlap with the task title/brief).
       2. The identification calls the work a PERSONAL plan/vision — career
          choice is never grounds for wrong_task.
       3. The ruling reasons by domain exclusion ("outside the FinTech...
          domain") — the exact reasoning the any-career policy forbids.
+      4. The ruling identifies the work by its LANGUAGE — any language counts.
     """
+    if names_a_language(what_it_is):
+        return "identified by its LANGUAGE — any language counts"
     ident = _NEGATION_SPLIT.split(what_it_is or "", 1)[0]
     # Course material shares this task's words BY DEFINITION — it is about
     # this task. The overlap voider must not read that as "they did the task".
@@ -1049,7 +1104,8 @@ _CONTENT_NOTE = (
 # to rule" (thin content, no identification). Only the first kind contradicts
 # a near-zero score. "Another format" is the same contradiction, handled by
 # format_miss_contradiction with its own, more specific note.
-_VOID_ASSERTS_THIS_TASK = ("own deliverable", "PERSONAL plan", "domain-exclusion")
+_VOID_ASSERTS_THIS_TASK = ("own deliverable", "PERSONAL plan", "domain-exclusion",
+                           "LANGUAGE")
 
 
 def voided_ruling_contradiction(blocked: str, content_total: float) -> str:

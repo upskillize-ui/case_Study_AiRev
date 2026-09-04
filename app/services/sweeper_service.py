@@ -251,13 +251,32 @@ def sweep(tenant, review_one: Callable, course_ids: Optional[list] = None,
     """Queue everything unreviewed and start the worker. Returns a summary."""
     from app.services import review_job_service as jobs
 
-    # A busy worker means a job created now would sit 'running' with every
-    # item pending until the orphan reaper closed it — a phantom that also
-    # made Grade-all answer 409. Say "busy" and let the next tick try again;
-    # the rows are still unreviewed then and still selected.
-    if jobs.worker_is_running():
+    # A busy BATCH worker means a job created now would only duplicate the
+    # rows it is already on. Say "busy" and let the next tick try again.
+    #
+    # A busy LIVE worker is different (04 Sep 2026, report day): students
+    # submitting all afternoon kept a one-row live job open at the exact
+    # second every manual sweep landed, and twelve sweeps in a row queued
+    # nothing while 25 rows sat ready. A live worker is gone in a minute and
+    # picks up parked batches on its way out (start_worker), so the sweep
+    # queues the batch and lets that hand-off happen.
+    busy = jobs.worker_is_running()
+    if busy and not jobs.worker_is_live(tenant):
         return {"queued": 0, "detail": "a worker is busy — nothing queued; "
                                        "the next sweep picks these up"}
+
+    # A batch already parked holds these same rows. Never queue them twice:
+    # wait for the hand-off if a live worker is on its way out, or start the
+    # parked batch ourselves if nothing is running at all.
+    parked = jobs.parked_jobs(tenant)
+    if parked:
+        if busy:
+            return {"jobId": parked[0], "queued": 0, "workerStarted": False,
+                    "detail": "a batch is already parked behind the live "
+                              "worker — it starts when that worker exits"}
+        started = jobs.start_worker(tenant, parked[0], review_one)
+        return {"jobId": parked[0], "queued": 0, "workerStarted": started,
+                "detail": "resumed a parked batch"}
 
     rows = find_unreviewed(tenant, course_ids, limit)
     if not rows:
@@ -269,8 +288,8 @@ def sweep(tenant, review_one: Callable, course_ids: Optional[list] = None,
     started = jobs.start_worker(tenant, job_id, review_one)
     return {"jobId": job_id, "queued": len(rows), "workerStarted": started,
             "detail": ("draining" if started else
-                       "queued — a worker is busy; it will be picked up on "
-                       "the next sweep or restart")}
+                       "parked — a live review is finishing; its worker "
+                       "picks this batch up on exit")}
 
 
 # After the brake stops a job for a dead provider, the next tick is three hours

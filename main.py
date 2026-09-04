@@ -18,6 +18,7 @@ from app.routes.assignment_review import router as assignment_router
 from app.routes.industry_session_review import router as industry_session_router   # ← ADD THIS
 from app.routes.exceptions import router as exceptions_router
 from app.routes.review_jobs import router as review_jobs_router
+from app.routes.link_seeds import router as link_seeds_router
 from app.services.capacity import CapacityFull, BUSY_MESSAGE, RETRY_AFTER_SECONDS, snapshot as capacity_snapshot
 from app.tenants import resolve_tenant_by_key, all_tenant_ids, configured_tenant_ids, TENANTS, Tenant
 from app.database import test_all_tenants, set_current_tenant
@@ -83,6 +84,7 @@ app.include_router(assignment_router,        dependencies=[Depends(require_auth_
 app.include_router(industry_session_router,  dependencies=[Depends(require_auth_and_tenant)])   # ← ADD THIS
 app.include_router(exceptions_router,        dependencies=[Depends(require_auth_and_tenant)])
 app.include_router(review_jobs_router,       dependencies=[Depends(require_auth_and_tenant)])
+app.include_router(link_seeds_router,        dependencies=[Depends(require_auth_and_tenant)])
 
 
 # ===== Public endpoints (no auth) =====

@@ -706,19 +706,38 @@ def duplicate_shell_reason(seen: dict, url: str, text: str) -> str:
     return ""
 
 
-def note_page(url: str, text: str) -> str:
+def shell_key(text: str, screenshot_b64: str = "") -> str:
+    """What identifies a page for the shell check. Pure.
+
+    THE IMAGE SHARE THAT LOOKED LIKE A SHELL (04 Sep 2026). Two learners'
+    ChatGPT image shares carry the SAME readable text — the app's own
+    sidebar and footer, 47 words — and different pictures. By text alone the
+    second is "the same page as another student's link" and refused. When
+    the text is too thin to be the work, the picture is the work, so the
+    picture is part of the identity. Pages with real text keep the text-only
+    key: that is the Day 07 case (identical 120-word signed-out shells) and
+    it must keep matching.
+    """
+    if screenshot_b64 and len((text or "").split()) < LINK_RENDER_OCR_MIN_WORDS:
+        digest = hashlib.sha1(screenshot_b64.encode("utf-8")).hexdigest()[:16]
+        return f"{text or ''}\n[picture:{digest}]"
+    return text or ""
+
+
+def note_page(url: str, text: str, screenshot_b64: str = "") -> str:
     """Record this page and report whether it is a shared shell. Not pure.
 
     Process-wide and deliberately unbounded within a run: a cohort sweep is
     the unit of comparison, and the map is small (one entry per distinct page).
     """
-    reason = duplicate_shell_reason(_seen_pages, url, text)
+    key = shell_key(text, screenshot_b64)
+    reason = duplicate_shell_reason(_seen_pages, url, key)
     if reason:
         print(f"[link] SHELL: {url} returned the same page as "
-              f"{_seen_pages.get(page_signature(text))} — not graded")
+              f"{_seen_pages.get(page_signature(key))} — not graded")
         return reason
     if len((text or "").split()) >= _SHELL_MIN_WORDS:
-        _seen_pages.setdefault(page_signature(text), url)
+        _seen_pages.setdefault(page_signature(key), url)
     return ""
 
 
@@ -773,6 +792,12 @@ def forget_links() -> None:
     """Drop every cached page. For tests, and for a sweep that wants a fresh
     look at links it was told about yesterday."""
     _link_cache.clear()
+
+
+def forget_link(url: str) -> None:
+    """Drop one cached verdict — a seed for this url must not be outranked
+    by the refusal our own browser remembered an hour ago."""
+    _link_cache.pop(url, None)
 
 
 # Reasons that describe US, not the learner's page. Never cached: the next
@@ -931,6 +956,15 @@ def read_rendered_link(url: str, walk: bool = False) -> Tuple[str, str]:
         print(f"[link] cache hit: {url}")
         return hit
 
+    # A page someone read for us from a home connection (link_seed_service)
+    # beats our own browser: the whole point of the seed is that our browser
+    # was refused. It still goes through every check below — a seed that
+    # turns out to be a sign-in wall is refused like any other page.
+    seeded = _seeded_page(url)
+    if seeded is not None:
+        print(f"[link] seeded page used: {url}")
+        return _accept_page(url, seeded)
+
     rendered, why = render_link(url, walk=walk)
     if rendered is None:
         # OUR failures are not facts about the page. Caching "the browser was
@@ -941,6 +975,29 @@ def read_rendered_link(url: str, walk: bool = False) -> Tuple[str, str]:
             print(f"[link] not cached (our side): {why}")
             return "", why
         return _remember(url, "", why)
+    return _accept_page(url, rendered)
+
+
+def _seeded_page(url: str) -> Optional[Rendered]:
+    """The home-read copy of this url as a Rendered, or None."""
+    try:
+        from app.database import get_current_tenant
+        from app.services import link_seed_service
+        seed = link_seed_service.lookup(get_current_tenant(), url)
+    except Exception as e:
+        print(f"[link] seed lookup skipped: {e}")
+        return None
+    if seed is None:
+        return None
+    return Rendered(title=seed.title, text=seed.text,
+                    screenshot_b64=seed.screenshot_b64, final_url=url)
+
+
+def _accept_page(url: str, rendered: Rendered) -> Tuple[str, str]:
+    """Everything that happens to a page AFTER it was obtained — gate checks,
+    the picture for the marker, vision when the text is thin. One tail for
+    both sources so a seeded page can never skip a check our own render
+    would have made."""
     if not rendered.text.strip() and not rendered.screenshot_b64:
         return _remember(url, "", "the page rendered empty")
 
@@ -953,7 +1010,7 @@ def read_rendered_link(url: str, walk: bool = False) -> Tuple[str, str]:
 
     # A page identical to one already served for a different link is the
     # site's own shell, whatever it says. Checked before vision spend.
-    shell = note_page(url, rendered.text)
+    shell = note_page(url, rendered.text, rendered.screenshot_b64)
     if shell:
         return _remember(url, "", shell)
 

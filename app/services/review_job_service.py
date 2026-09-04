@@ -476,6 +476,23 @@ def worker_is_running() -> bool:
     return _worker_running
 
 
+def worker_is_live(tenant) -> bool:
+    """Is the busy worker draining the LIVE queue (one student's submit)?
+
+    A live worker is done in a minute and looks for parked batches on its
+    way out, so a sweep that lands on it should QUEUE and step back, not
+    give up. A batch worker is the opposite case: queuing a second batch
+    behind it would only duplicate rows. Fails closed to False.
+    """
+    if not _worker_running or _worker_job_id is None:
+        return False
+    try:
+        return open_live_job(tenant) == _worker_job_id
+    except Exception as e:
+        print(f"   review-jobs: live-worker check failed ({e}) — treating as busy")
+        return False
+
+
 def _run_one(tenant, item: dict, review_one: Callable) -> str:
     """Review one item, record the outcome, return the state. Never raises —
     a failing row is data for the abort counter, not a queue-stopper."""

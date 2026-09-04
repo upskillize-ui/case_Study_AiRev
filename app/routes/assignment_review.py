@@ -1063,6 +1063,14 @@ def _pipeline_assignment_response(tenant, submission, r, word_count, start_time,
                             or r["authorship"]["aiLikelihoodPercent"] >= 90,
         "summary":          summary,
         "plagiarismFlag":   "high" if duplicate else "low",
+        # THE AUDIT RECORD WAS WRITTEN EMPTY (04 Sep 2026). review_payload
+        # .audit_record reads decisions.scoringPath / gatesHit and
+        # facultyView.howYouScored from THIS dict, and neither key was ever
+        # put here — so every assignment mark since 23 Aug stored
+        # scoringPath "" and gatesHit [], and a format-miss deduction could
+        # not be found in the database afterwards.
+        "decisions":        r.get("decisions") or {},
+        "facultyView":      {"howYouScored": r.get("howYouScored", "")},
         **r["authorship"],
     }
     # THE RETURN VALUE IS THE POINT. update_... runs grade_guard and answers
