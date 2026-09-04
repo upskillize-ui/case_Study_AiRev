@@ -177,12 +177,18 @@ def _start_scheduler():
         # in the live queue with no worker. Start one before anything else.
         from app.routes.review_jobs import resume_live_queue
         resume_live_queue()
-        if reaped and jobs_enabled():
+        # ALWAYS, not only when something was reaped (04 Sep 2026): two
+        # restarts inside the two-minute window left no sweep scheduled at
+        # all, and the batch sat until the next 3-hour tick. The sweep is
+        # bounded (ceiling, stamps, SWEEP_MAX_PER_RUN) and answers "nothing
+        # unreviewed" for free, so scheduling it unconditionally costs nothing.
+        if jobs_enabled():
             scheduler.add_job(sweep_all_tenants, "date",
                               run_date=datetime.now() + timedelta(minutes=2),
                               id="resume_sweep", replace_existing=True)
-            print(f"   ♻️  {reaped} job(s) left running by the last restart closed — "
-                  f"resume sweep in 2 minutes")
+            print((f"   ♻️  {reaped} job(s) left running by the last restart closed — "
+                   if reaped else "   ♻️  nothing was left running — ")
+                  + "resume sweep in 2 minutes")
         scheduler.start()
         print("   🌙 Nightly consolidation scheduled (21:00 UTC / 02:30 IST)")
         print("   🧹 Unreviewed sweep scheduled (every 3h) — no submission "

@@ -250,6 +250,18 @@ def set_job_state(tenant, job_id: int, state: str, note: str = "") -> None:
              (state, note[:255], job_id))
 
 
+def parked_jobs(tenant, exclude: int = 0, limit: int = 3) -> list:
+    """Ids of batch jobs left 'running' with rows still pending and no worker
+    on them — created while a worker was busy. Oldest first, bounded."""
+    try:
+        out = [int(j["id"]) for j in running_jobs(tenant, include_live=False)
+               if int(j["id"]) != exclude and has_pending(tenant, int(j["id"]))]
+        return out[:limit]
+    except Exception as e:
+        print(f"   review-jobs: parked-job check failed ({e}) — carrying on")
+        return []
+
+
 def running_jobs(tenant, include_live: bool = True) -> list:
     """Jobs in state 'running'. The live queue is one of them by design — it
     stays open between submits — so a caller deciding whether a BATCH may
@@ -648,6 +660,14 @@ def start_worker(tenant, job_id: int, review_one: Callable,
                     print(f"[JOB {job_id}] draining live queue (job {live_id}) "
                           f"before exit")
                     drain_parallel(tenant, live_id, review_one)
+            # A BATCH PARKED BEHIND US (04 Sep 2026, job 855 live). The sweep
+            # queued 388 rows while a one-item live worker was busy, and
+            # nothing picked the batch up until the next 3-hour tick. Whoever
+            # exits last looks for a queued batch with pending rows and
+            # drains it — the same worker, one job after another.
+            for parked in parked_jobs(tenant, exclude=job_id):
+                print(f"[JOB {job_id}] picking up parked job {parked} before exit")
+                drain_parallel(tenant, parked, review_one)
         except Exception as e:
             print(f"[JOB {job_id}] worker crashed: {type(e).__name__}: {e}")
             try:

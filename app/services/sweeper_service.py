@@ -63,6 +63,11 @@ SWEEP_NOTE = "sweep — submissions with no mark"
 # and resets nothing, but gives the marker different input), or a human presses
 # re-review, which never consults this ceiling.
 MAX_SWEEP_ATTEMPTS = int(os.getenv("SWEEP_MAX_ATTEMPTS", "2"))
+# The hard stop. Attempts that failed on OUR side do not spend the ceiling
+# above — but a row that has been through the queue this many times in total,
+# whoever's fault, is not going to change by being offered again. It waits for
+# a code change (a new RULES_VERSION re-offers stamped rows) or a resubmit.
+MAX_TOTAL_ATTEMPTS = int(os.getenv("SWEEP_MAX_TOTAL_ATTEMPTS", "6"))
 
 # A REFUSAL IS RE-OFFERED ONLY WHEN THE THING THAT CAUSED IT MIGHT HAVE CHANGED
 # (03 Sep 2026).
@@ -131,7 +136,7 @@ def find_unreviewed(tenant, course_ids: Optional[list] = None,
     # the sweep would pay to re-refuse work the learner has been asked to fix.
     stamp = f'%"rulesVersion": {RULES_VERSION}%'
     sql = """
-        SELECT s.id, s.assignment_id, s.student_id, s.submitted_at
+        SELECT s.id, s.assignment_id, s.student_id, s.submitted_at, a.title
         FROM assignment_submissions s
         JOIN assignments a ON a.id = s.assignment_id
         WHERE a.status = 'active'
@@ -160,14 +165,42 @@ def find_unreviewed(tenant, course_ids: Optional[list] = None,
     for r in rows:
         latest.setdefault((r["assignment_id"], r["student_id"]), r)
     # Oldest first: a learner who has been waiting since Day 02 is served
-    # before one who submitted an hour ago.
-    picked = sorted(latest.values(), key=lambda r: r["id"])
+    # before one who submitted an hour ago — unless the owner has named the
+    # assignments that must go first (or not at all) for this run.
+    picked = order_for_run(list(latest.values()))
 
     # Drop anything that has already had its attempts. One membership test per
     # row against a set built in a single query — never a query inside the loop.
     spent = attempts_spent(tenant, [r["id"] for r in picked])
     picked = [r for r in picked if spent.get(r["id"], 0) < MAX_SWEEP_ATTEMPTS]
     return picked[:max(0, limit)]
+
+
+# WHICH DAYS GO FIRST (04 Sep 2026, owner's call on report day): Space env
+# SWEEP_PRIORITY_TITLES="Gamma,Lovable,Claude" puts every row whose assignment
+# title contains one of those words at the front, in that order;
+# SWEEP_SKIP_TITLES="Suno" leaves a day out entirely (faculty marking it by
+# hand). Substrings, case-insensitive, read at each sweep so a secret change
+# is enough. Empty = the plain oldest-first order.
+def _title_list(env: str) -> list:
+    return [t.strip().lower() for t in os.getenv(env, "").split(",") if t.strip()]
+
+
+def order_for_run(rows: list) -> list:
+    """Priority titles first (in the order given), skipped titles dropped,
+    oldest first within a group. Pure."""
+    priority, skip = _title_list("SWEEP_PRIORITY_TITLES"), _title_list("SWEEP_SKIP_TITLES")
+
+    def rank(r) -> int:
+        title = str(r.get("title") or "").lower()
+        for i, p in enumerate(priority):
+            if p in title:
+                return i
+        return len(priority)
+
+    kept = [r for r in rows
+            if not any(k in str(r.get("title") or "").lower() for k in skip)]
+    return sorted(kept, key=lambda r: (rank(r), r["id"]))
 
 
 def attempts_spent(tenant, submission_ids: list) -> dict:
@@ -192,17 +225,22 @@ def attempts_spent(tenant, submission_ids: list) -> dict:
         # they are excluded here: a quota cap that lasts a week must not burn
         # through every row's two tries and park the cohort until resubmit.
         rows = tquery(tenant, f"""
-            SELECT submission_id, COUNT(*) AS n
+            SELECT submission_id,
+                   SUM(detail NOT LIKE 'our outage %%') AS n,
+                   COUNT(*) AS total
               FROM {ITEMS_TABLE}
              WHERE submission_id IN ({marks})
                AND state IN ('done', 'skipped', 'failed')
-               AND detail NOT LIKE 'our outage %%'
              GROUP BY submission_id
         """, tuple(submission_ids)) or []
         # Parsing is inside the guard on purpose. A driver that returns an
         # unexpected row shape is the same class of problem as one that cannot
         # answer at all, and neither is a reason to stop marking a cohort.
-        return {int(r["submission_id"]): int(r["n"]) for r in rows}
+        # A row past the hard stop reports as fully spent whatever its label.
+        return {int(r["submission_id"]):
+                (MAX_SWEEP_ATTEMPTS if int(r.get("total") or 0) >= MAX_TOTAL_ATTEMPTS
+                 else int(r.get("n") or 0))
+                for r in rows}
     except Exception as e:
         print(f"   sweep: attempt ledger unreadable ({e}) — ceiling not applied")
         return {}

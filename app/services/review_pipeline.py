@@ -491,7 +491,7 @@ _JUDGE_INSTRUCTIONS = """You are AiRev's examiner. Judge the student's answer ag
 
 NON-NEGOTIABLE METHOD:
 0. THE CRITERIA LIST IS THE ENTIRE STANDARD. It is not a rubric someone designed — it is what THIS TASK asked for, in the task's own words. Judge the submission against those requirements and NOTHING ELSE. Never lower a score because the work lacks depth, structure, citations, analysis, length or polish that the requirements do not name. If you find yourself writing "could have been more detailed" about something no requirement asks for, that belongs in improvements, never in a score.
-1. For every rubric criterion, FIRST extract verbatim evidence_quotes from the student's answer. Judge ONLY from that evidence. No evidence = say so and score accordingly (the system caps it regardless).
+1. For every rubric criterion, FIRST extract verbatim evidence_quotes from the student's answer. Return ONE criteria row per requirement, in the order listed, and copy the requirement's quoted NAME into `name` exactly as written — never the "fully done when" sentence, never a paraphrase (a row we cannot pair with its requirement is a row the student loses). Judge ONLY from that evidence. No evidence = say so and score accordingly (the system caps it regardless).
 2. case_specific=true ONLY if the evidence engages the specificity markers — this material's actual facts, figures, names, constraints. Fluent generic prose about the topic is case_specific=false.
 3. Score each criterion strictly on what its NAME demands. Do not let fluency halo into substance scores.
 4. concepts_covered/missing: check against the MUST concepts in the knowledge. Mentioning a term is not covering a concept — the student must USE it correctly.
@@ -524,12 +524,16 @@ def apply_gates(criteria: list, rubric_criteria: list, concepts_missing: list,
     defaults to the static GATES config. Pure function either way."""
     GATES_ACTIVE = {**GATES, **(gates or {})}
     gates_hit = []
-    by_name = { (c.get("name") or "").lower(): c for c in criteria }
+    paired = pair_criteria(criteria, rubric_criteria)
     results = []
 
-    for rc in rubric_criteria:
+    for rc, judged in zip(rubric_criteria, paired):
         name, max_score = rc["name"], rc["maxScore"]
-        judged = _match(by_name, name)
+        if judged is not None and judged.get("_positional"):
+            gates_hit.append({"gate": "positional_match", "criterion": name,
+                              "from": 0, "to": 0,
+                              "detail": f"matched by position to the marker's "
+                                        f"'{str(judged.get('name', ''))[:60]}'"})
         pct = int(judged.get("score_pct", 0)) if judged else 0
         evidence = judged.get("evidence_quotes", []) if judged else []
 
@@ -904,6 +908,34 @@ def advisory_garbage_reason(review: dict, word_count: int) -> str:
             f"the rubric scores the work")
 
 
+_NAMES_NOTE = (
+    "Your previous answer could not be paired with the requirement list: "
+    "{missing} of {total} requirements received no row. Return EXACTLY {total} "
+    "criteria rows, in this order, and copy each name below into `name` "
+    "verbatim:\n{names}\nJudge and score every one from the evidence present "
+    "(low or zero where there is none); never omit a row.")
+
+
+def _rejudge_with_names(review: dict, judge_blocks: list, rubric_criteria: list,
+                        gated: dict) -> dict:
+    """One more judging pass with the requirement names and count spelled
+    out. Called only when too little of the task was paired to a verdict."""
+    rows = gated.get("breakdown") or []
+    missing = sum(1 for r in rows if r.get("unjudged"))
+    names = "\n".join(f"{i + 1}. {rc['name']}" for i, rc in enumerate(rubric_criteria))
+    print(f"[REVIEW] only {len(rows) - missing}/{len(rows)} requirements paired "
+          f"to a verdict — re-judging with the names spelled out")
+    blocks = judge_blocks + [{"text": _NAMES_NOTE.format(
+        missing=missing, total=len(rubric_criteria), names=names), "cache": False}]
+    second = normalise_review(ai_service.call_structured(
+        blocks=blocks, schema=REVIEW_SCHEMA, tier="default", max_tokens=3500))
+    # The first pass's rulings were already evaluated; the second pass is
+    # about pairing, not about un-grading.
+    second["wrong_task"] = review.get("wrong_task") or {}
+    second["is_garbage"] = False
+    return second
+
+
 def _rejudge_without_ruling(review: dict, judge_blocks: list, reason: str) -> dict:
     """One more judging pass with the wrong-task ruling off the table.
 
@@ -1068,6 +1100,36 @@ def _gate_explanation(g: dict) -> str:
     if g["gate"] == "factual_errors":
         return f"Deduction of {-g['to']} points for factual errors ({g.get('detail','')})."
     return ""
+
+
+def pair_criteria(criteria: list, rubric_criteria: list) -> list:
+    """One marker row (or None) per rubric requirement, in rubric order. Pure.
+
+    THE MARKER ANSWERED IN ITS OWN WORDS (04 Sep 2026, job 860 live). The
+    prompt lists each requirement as `"name" (max N) / fully done when: …`,
+    and on the dashboard days the model handed back one row per requirement
+    but NAMED them after the "fully done when" sentence, or paraphrased. Name
+    matching (exact / substring / half the tokens) found nothing, every row
+    became `unjudged`, and grade_guard refused the mark as "no judgement for
+    any part of this task" — on dozens of rows the model had in fact judged,
+    with evidence and scores, in the right order.
+
+    So: names first, then POSITION. When the marker returned exactly as many
+    rows as the rubric has, an unmatched requirement takes the marker's row
+    at the same index, provided that row was not already claimed by name.
+    The pairing is flagged `_positional` so the gate trace records it.
+    """
+    by_name = {(c.get("name") or "").lower(): c for c in criteria if isinstance(c, dict)}
+    paired = [_match(by_name, rc["name"]) for rc in rubric_criteria]
+    if all(p is not None for p in paired) or len(criteria) != len(rubric_criteria):
+        return paired
+    claimed = {id(p) for p in paired if p is not None}
+    for i, p in enumerate(paired):
+        row = criteria[i]
+        if p is None and isinstance(row, dict) and id(row) not in claimed:
+            paired[i] = {**row, "_positional": True}
+            claimed.add(id(row))
+    return paired
 
 
 def _match(by_name: dict, rubric_name: str) -> Optional[dict]:
@@ -1276,6 +1338,21 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
                         review["concepts_missing"], review["concepts_covered"],
                         review["factual_errors"], gates=gate_overrides,
                         nontext_evidence=artefact_deliverable)
+
+    # TOO LITTLE OF THE TASK GOT A VERDICT (04 Sep 2026, job 860 live). When
+    # the marker's rows cannot be paired with the requirement list — a
+    # different count, names in its own words — the guard refuses the mark
+    # ("only N% of what this task asks for received a verdict") and the row
+    # comes back next sweep to the same answer. Ask ONCE more, with the exact
+    # names and count spelled out, before giving up on the row.
+    if (grade_guard.judged_share(gated["breakdown"]) < grade_guard.MIN_JUDGED_SHARE
+            and "+rejudged" not in scoring_path):
+        review = _rejudge_with_names(review, judge_blocks, rubric_criteria, gated)
+        scoring_path += "+rejudged-with-names"
+        gated = apply_gates(review["criteria"], rubric_criteria,
+                            review["concepts_missing"], review["concepts_covered"],
+                            review["factual_errors"], gates=gate_overrides,
+                            nontext_evidence=artefact_deliverable)
 
     review = tidy_review(review)
     scores = aggregate(gated, word_count, word_limit_min, word_limit_max,

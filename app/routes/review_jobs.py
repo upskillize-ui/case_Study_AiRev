@@ -121,6 +121,19 @@ def make_review_one(tenant, admin_key: str):
             return "failed", f"HTTP {e.status_code}: {e.detail}"[:255], None
 
         state = jobs.outcome_state(res)
+        if state == "done" and res.get("notGraded"):
+            # NOT A MARK, NOT AN ATTEMPT SPENT (04 Sep 2026). A guard refusal
+            # used to be recorded as "done: None -> None": it counted toward
+            # the 2-attempt ceiling, so a row refused twice for OUR reasons
+            # was parked for ever, silently. A wrong-task ruling is the
+            # learner's (a policy skip); anything else refused is ours — the
+            # "our outage" prefix keeps it out of the ledger, and "skipped"
+            # keeps it away from the consecutive-failure brake.
+            if res.get("wrongTask"):
+                return "skipped", "wrong_task: " + str(
+                    (res.get("wrongTask") or {}).get("whatItIs", ""))[:200], None
+            msg = str((res.get("feedback") or {}).get("summary") or "not graded")
+            return "skipped", f"our outage — not graded: {msg}"[:255], None
         if state == "done":
             score = (res.get("feedback") or {}).get("scoreMarks")
             prev = res.get("previousGrade")
