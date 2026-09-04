@@ -25,7 +25,7 @@ import re
 import os
 from typing import Optional
 
-from app.services import ai_service
+from app.services import ai_service, grade_guard
 from app.services.knowledge_service import render_for_prompt
 from app.services.feedback_service import ai_verdict
 from app.prompts import AI_DETECTION_CALIBRATION
@@ -505,7 +505,7 @@ NON-NEGOTIABLE METHOD:
 9c. NEVER DEDUCT FOR UNPROVABLE PROVENANCE. "No evidence the image was AI-generated", "cannot confirm which tool made this", "no AI prompt is provided", "prompt engineering cannot be assessed" — a finished artifact carries no record of its maker OR of the prompt that made it, so these statements are about YOUR visibility, not the learner's work. If the task asked for an AI-generated artifact and a plausible artifact is present, the generation requirement is satisfied in full. Deduct for a missing prompt ONLY when the task text explicitly asks the learner to submit the prompt. (Live failure: a complete professional 5-year poster lost 35% of its image criterion for "no AI prompt provided" on a task that never asked for one.)
 10. ONE WEAKNESS, ONE DEDUCTION. Judge each criterion strictly on what ITS OWN name asks and nothing else. If a rubric has "five steps are listed" and "the steps are specific", vague steps cost marks on the SECOND only — the first asks whether five steps exist, and they do. Charging one shortcoming against two criteria takes 60 marks for a single flaw and buries the part the learner actually did. Where two criteria overlap, credit the narrower reading of each.
 11. HOW THE WORK WAS MADE IS NOT A SCORING FACT. Never lower a criterion because you cannot tell which AI drafted it, which settings were toggled, or in what order the steps were taken. A finished artifact carries no record of its own making, so "no evidence ChatGPT was used" is a statement about your visibility, not about the learner's work — and deducting for it fails every learner equally, including the ones who followed the method exactly. Judge the OUTPUT the method was meant to produce. This is the same rule as the authorship estimate above: provenance is advisory, never scored.
-12. WRONG WORK IS NOT LOW-QUALITY WORK. If the submission is recognizably a DIFFERENT task's deliverable — a slide deck of investment analysis where a 5-year career-plan image was asked for, another day's assignment resubmitted here — set wrong_task.is_wrong_task=true and name what it is in what_it_is. Do not stretch the rubric over it and do not score it as a weak attempt: the policy for wrong work is NO grade, not a low grade. Declare it ONLY from substantial content you actually READ that clearly belongs to another task — you must be able to say WHAT the work is, not merely that this task's evidence is missing. Empty, thin, fragmentary or unreadable content is NEVER wrong_task (that is a no-evidence low score); an unread or partially read link or file is NEVER wrong_task; and a weak, partial or badly formatted attempt AT THIS TASK is never wrong_task either — that is a low score with reasons. THE LEARNER'S OWN CHOICES WITHIN THE BRIEF ARE NEVER GROUNDS FOR wrong_task — topic, style, career, domain, tool settings: an attempt at THIS task about the learner's own subject IS this task. (Live rule for the 5-year-plan day: THE LEARNER'S CAREER CHOICE IS NEVER GROUNDS FOR wrong_task — a personal vision as lawyer, CA, teacher, government officer, writer, athlete, ANY field counts; policy: any career counts; domain alignment may be discussed in feedback but never used to un-grade. On that day wrong_task was reserved for content that is not a personal future-self plan AT ALL — study guides, exam-syllabus material, generic reference documents. Apply the same shape to every task: wrong_task is reserved for content that makes no attempt at THIS task's brief whatsoever.) CONTRADICTION CHECK before declaring: re-read your own what_it_is — if that description could equally describe THIS task's deliverable ("a personal 5-year career plan" on the 5-year-plan day), then is_wrong_task MUST be false: you have just identified the work as the task itself, and its shortcomings are a score, not an un-grading. An image depicting a person in ANY professional role (lawyer, teacher, officer, artist...) on a future-self task IS the future-self image — score the missing pieces (steps, reasoning) on their own criteria, never wrong_task. A submission MISSING one required element (no image, no steps) is an incomplete attempt — low score on that element's criteria, never wrong_task.
+12. WRONG WORK IS NOT LOW-QUALITY WORK. If the submission is recognizably a DIFFERENT task's deliverable — a slide deck of investment analysis where a 5-year career-plan image was asked for, another day's assignment resubmitted here — set wrong_task.is_wrong_task=true and name what it is in what_it_is. The policy for wrong work is NO grade, not a low grade — but that decision is made OUTSIDE this response: STILL FILL EVERY FIELD. Score each criterion from whatever evidence for THIS task you actually found (it will be low or zero — that is the honest reading), and still write strengths, improvements, feedback_points and hard_truth about what arrived. A declaration with empty criteria and empty feedback decides nothing and is discarded. Declare it ONLY from substantial content you actually READ that clearly belongs to another task — you must be able to say WHAT the work is, not merely that this task's evidence is missing. Empty, thin, fragmentary or unreadable content is NEVER wrong_task (that is a no-evidence low score); an unread or partially read link or file is NEVER wrong_task; and a weak, partial or badly formatted attempt AT THIS TASK is never wrong_task either — that is a low score with reasons. THE LEARNER'S OWN CHOICES WITHIN THE BRIEF ARE NEVER GROUNDS FOR wrong_task — topic, style, career, domain, tool settings: an attempt at THIS task about the learner's own subject IS this task. (Live rule for the 5-year-plan day: THE LEARNER'S CAREER CHOICE IS NEVER GROUNDS FOR wrong_task — a personal vision as lawyer, CA, teacher, government officer, writer, athlete, ANY field counts; policy: any career counts; domain alignment may be discussed in feedback but never used to un-grade. On that day wrong_task was reserved for content that is not a personal future-self plan AT ALL — study guides, exam-syllabus material, generic reference documents. Apply the same shape to every task: wrong_task is reserved for content that makes no attempt at THIS task's brief whatsoever.) CONTRADICTION CHECK before declaring: re-read your own what_it_is — if that description could equally describe THIS task's deliverable ("a personal 5-year career plan" on the 5-year-plan day), then is_wrong_task MUST be false: you have just identified the work as the task itself, and its shortcomings are a score, not an un-grading. An image depicting a person in ANY professional role (lawyer, teacher, officer, artist...) on a future-self task IS the future-self image — score the missing pieces (steps, reasoning) on their own criteria, never wrong_task. A submission MISSING one required element (no image, no steps) is an incomplete attempt — low score on that element's criteria, never wrong_task.
 13. MORE THAN ASKED IS NOT LESS THAN ASKED. When a criterion requires N items and the learner provides N OR MORE that clearly include the required N, the count requirement is FULLY met — score that aspect as satisfied. Never deduct for exceeding a requested count, length, or scope. (Live failure: a learner listed 8 career steps containing the required 5 and was scored 30% on "5 distinct steps are listed" — the five steps were right there, plus three the task didn't ask for.) Extra material may still be judged for QUALITY under the criteria that measure quality — but existence criteria are met by inclusion.
 14. BUILT ARTIFACTS AND PUBLISHED LINKS. When the task's deliverable is something the learner BUILT — a web page, an app, an artifact, a slide deck: (a) whatever was READ from it IS the deliverable — extracted slide text, OCR of its screenshots, a page's visible text, or a page's SOURCE CODE all count in full; source code of a client-rendered page is that page, judge the built thing from its code exactly as you would from its screen. (b) A link the manifest confirms as submitted but unreadable from the server (browser-only pages such as Claude artifact links) is evidence the learner PUBLISHED a deliverable: it fully satisfies any criterion that asks for the artifact to be created, published, shared or linked. Judge the remaining quality criteria only from what IS readable — the screenshots, pasted content, and the learner's own description — and state plainly which parts could not be seen. Never charge a criterion for OUR inability to open the learner's published page (the same visibility rule as 9c and 11), and never rule wrong_task from a link you could not read. (c) THE DELIVERABLE IS THE MARK. When the built artifact is present and matches the brief, the absence of research notes, ideation history, tool choice explanations, or a process narrative the brief did not require — or marked optional — must never reduce the score, and a link-plus-short-caption submission is a COMPLETE submission for a build-and-share task, never "a statement of intent". Judge the built thing itself.
 15. THE BUILT THING CARRIES THE MARKS — AND ITS QUALITY DECIDES HOW MANY. When the task's main deliverable (the app, the website, the deck) was built, published, readable, and is about this task's topic, that relevance earns a BASE of around 40% overall — never an automatic pass. From there, QUALITY sets the mark: real effort, working features, thoughtful content, and care push it up toward full marks; a bare template, a copy-paste job, or a minimal one-screen effort stays near the base even though it technically "works". Judge what the built thing actually shows, not the fact that it exists. Missing supporting items (research screenshots, process notes) cost only their own small share. When a task has a single criterion, the same scale applies to the whole mark. The reverse also holds: supporting paperwork with no real build never earns a passing mark.
@@ -844,6 +844,68 @@ def wrong_task_void_reason(what_it_is: str, task_text: str) -> str:
     return ""
 
 
+def ruling_blocked_reason(review: dict, word_count: int, task_text: str) -> str:
+    """Why the model's wrong-task declaration cannot stand BEFORE any score is
+    looked at — or "" when nothing pre-score blocks it. Pure.
+
+    The three pre-score corroborations (identification present, substantial
+    read content, not voided) lived inline in run_review as a boolean chain,
+    which meant the pipeline could only learn "declared / not declared" AFTER
+    scoring. It needs the answer BEFORE scoring — see _rejudge_without_ruling.
+    Returns "" also when nothing was declared at all.
+    """
+    wrong = review.get("wrong_task")
+    if not isinstance(wrong, dict) or not wrong.get("is_wrong_task"):
+        return ""
+    what_it_is = (wrong.get("what_it_is") or "").strip()
+    if not what_it_is:
+        return "no identification of what the work is"
+    if word_count < WRONG_TASK_MIN_WORDS:
+        return f"only {word_count} words read (need {WRONG_TASK_MIN_WORDS})"
+    return wrong_task_void_reason(what_it_is, task_text)
+
+
+# THE MARKER WENT SILENT BEHIND ITS OWN RULING (04 Sep 2026, job 849 live).
+# Rule 12 used to say "do not score it": so whenever the model declared
+# wrong_task it returned empty criteria and empty feedback — and then Python
+# VOIDED the declaration ("names this task's own deliverable", or under 120
+# words) and "scored normally"... from nothing. grade_guard refused every one
+# ("the reviewer produced no feedback at all"), the learner was told "our side,
+# not yours", and the sweep re-offered the row to the same silence. Dozens of
+# Day 01 / Day 07 / Day 08 / Day 09 rows in one job.
+#
+# Two repairs. Rule 12 now tells the model to score and write regardless (the
+# ruling is Python's to make). And when a model still answers with a rejected
+# ruling and NOTHING else, the pipeline asks ONCE more, with the ruling taken
+# off the table — one extra call on the rare row, instead of a refusal, a
+# false apology and a retry loop.
+_NO_RULING_NOTE = (
+    "A first reading declared this submission to be a different task's work. "
+    "That ruling was rejected: {reason}. Treat the submission as an attempt at "
+    "THIS task. wrong_task.is_wrong_task MUST be false. Score every criterion "
+    "from the evidence actually present (low or zero where there is none) and "
+    "write strengths, improvements, feedback_points and hard_truth about what "
+    "the learner actually submitted.")
+
+
+def _rejudge_without_ruling(review: dict, judge_blocks: list, reason: str) -> dict:
+    """One more judging pass with the wrong-task ruling off the table.
+
+    Called only when a declaration cannot stand AND the marker scored nothing
+    behind it. The second answer may not re-declare: the ruling was already
+    rejected on the first pass, and a review that re-declared would be the
+    same empty shape again.
+    """
+    print(f"[WRONG-TASK] declaration cannot stand ({reason}) and the marker "
+          f"scored nothing behind it — re-judging as this task's work")
+    blocks = judge_blocks + [{"text": _NO_RULING_NOTE.format(reason=reason),
+                              "cache": False}]
+    second = normalise_review(ai_service.call_structured(
+        blocks=blocks, schema=REVIEW_SCHEMA, tier="default", max_tokens=3500))
+    second["wrong_task"] = {"is_wrong_task": False, "what_it_is": ""}
+    return second
+
+
 def _task_text_for(pack: dict, explicit: str = "") -> str:
     """The words that describe THIS task, for the contradiction check.
 
@@ -1170,6 +1232,16 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
     if should_hard_zero(review, word_count):
         return _garbage_result(review, rubric_criteria, pack_version, scoring_path)
 
+    # A rejected ruling with nothing scored behind it is asked again, once,
+    # before any gate or total is computed from the empty shape. See
+    # _rejudge_without_ruling for the live incident.
+    full_task_text = _task_text_for(pack, task_text)
+    blocked = ruling_blocked_reason(review, word_count, full_task_text)
+    if blocked and not grade_guard.has_model_evidence(review["criteria"]):
+        review = _rejudge_without_ruling(review, judge_blocks, blocked)
+        scoring_path += "+rejudged-without-ruling"
+        blocked = ""
+
     # GATE ON THE FULL LISTS, then tidy for display. concepts_missing and
     # concepts_covered are NOT decoration — apply_gates divides one by their
     # sum to get the coverage ratio, and caps the whole score at 69 when it
@@ -1215,28 +1287,25 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
     # object the schema asks for (live 21 Aug: AttributeError crashed the
     # review to a bare 500). Anything that is not a dict carries no valid
     # declaration — treat it as absent, never crash a review over it.
-    wrong = review.get("wrong_task")
-    if not isinstance(wrong, dict):
-        wrong = {}
-    what_it_is = (wrong.get("what_it_is") or "").strip()
     #   4. the ruling must survive wrong_task_void_reason — declarations that
     #      NAME this task's own deliverable, call the work a PERSONAL plan,
     #      or reason by domain exclusion carry no ruling (22 Aug: "a personal
     #      5-year career plan ... outside the FinTech domain" un-graded real
     #      attempts; policy: any career counts).
-    void_reason = (wrong_task_void_reason(
-        what_it_is, _task_text_for(pack, task_text))
-        if wrong.get("is_wrong_task") and what_it_is else "")
+    # Corroborations 2-4 are the pre-score checks already run above
+    # (ruling_blocked_reason); only the score check is new here.
+    wrong = review.get("wrong_task")
+    if not isinstance(wrong, dict):
+        wrong = {}
+    what_it_is = (wrong.get("what_it_is") or "").strip()
     wrong_task = {
         "declared": (bool(wrong.get("is_wrong_task"))
                      and scores["totalScore"] < 40
-                     and word_count >= WRONG_TASK_MIN_WORDS
-                     and bool(what_it_is)
-                     and not void_reason),
+                     and not blocked),
         "whatItIs": what_it_is,
     }
-    if void_reason:
-        print(f"[WRONG-TASK] declaration VOIDED ({void_reason}) — "
+    if blocked:
+        print(f"[WRONG-TASK] declaration VOIDED ({blocked}) — "
               f"'{what_it_is[:80]}' — scoring normally")
 
     # Authorship is ADVISORY — a missing or malformed field must never crash

@@ -448,7 +448,8 @@ def submit_and_review_assignment(
                     tenant, submission, r, word_count, start_time,
                     duplicate=any(f.get("flag") == "cohort_duplicate"
                                   for f in reflex.get("flags", [])),
-                    max_marks=max_marks)
+                    max_marks=max_marks,
+                    task_title=assignment.get("title") or "")
         except Exception as e:
             print(f"[ASSIGNMENT] Pipeline failed: {e}")
             if not _LEGACY_FALLBACK_ON:
@@ -934,7 +935,8 @@ def re_review_assignment(
     submission = {"submissionId": submission_id,
                   "attemptNumber": row.get("attempt_number") or 1}
     response = _pipeline_assignment_response(
-        tenant, submission, r, word_count, start_time, max_marks=max_marks)
+        tenant, submission, r, word_count, start_time, max_marks=max_marks,
+        task_title=assignment.get("title") or "")
     response["reReviewed"] = True
     response["previousGrade"] = previous_grade
     response["artefacts"] = inventory
@@ -944,8 +946,9 @@ def re_review_assignment(
     # ungraded — and anyone reading the log concluded a real essay had been
     # zeroed.
     if response.get("notGraded"):
+        why = "different task's work" if response.get("wrongTask") else "guard refused"
         print(f"[REGRADE] submission {submission_id}: {previous_grade} -> NOT GRADED "
-              f"(guard refused; {word_count} words, {len(artefacts)} artefact(s))")
+              f"({why}; {word_count} words, {len(artefacts)} artefact(s))")
     else:
         print(f"[REGRADE] submission {submission_id}: {previous_grade} -> "
               f"{response['feedback'].get('scoreMarks')}/{max_marks} "
@@ -986,10 +989,45 @@ def _remember_student_assignment(req, submission, r):
         print(f"[ASSIGNMENT] person-memory update failed (review unaffected): {e}")
 
 
+def _wrong_task_response(tenant, submission, r, start_time, task_title: str) -> dict:
+    """Real work, belonging to a different task: NO mark, the learner told what
+    arrived and asked for the right deliverable.
+
+    THE RULING NOBODY ACTED ON (04 Sep 2026). review_pipeline has decided
+    wrongTask["declared"] since 18 Aug, student_notices.wrong_task() has held
+    the learner's sentence since then, and no route ever joined the two: a
+    corroborated ruling fell through to the grade guard, which refused the
+    empty review and wrote "we could not finish reviewing — our side, not
+    yours" on work that was the learner's own mistake. The LMS panel's
+    "Different work from the brief" group matched nothing, so staff never saw
+    these rows either. Stamped as final under the current rules: the row moves
+    only when the learner resubmits.
+    """
+    from app.services import student_notices
+    ruling = r.get("wrongTask") or {}
+    msg = student_notices.wrong_task(ruling.get("whatItIs", ""), task_title)
+    assignment_db_service.mark_not_graded(
+        tenant, submission["submissionId"], msg,
+        card=_empty_feedback(msg, helpful=False))
+    print(f"[WRONG-TASK] submission {submission['submissionId']}: NOT GRADED — "
+          f"'{ruling.get('whatItIs', '')[:80]}'")
+    return {
+        "success": True,
+        "notGraded": True,
+        "wrongTask": ruling,
+        "submission": submission,
+        "feedback": _empty_feedback(msg, helpful=False),
+        "processingTimeMs": int((time.time() - start_time) * 1000),
+    }
+
+
 def _pipeline_assignment_response(tenant, submission, r, word_count, start_time,
-                                  duplicate=False, max_marks: int = 100):
+                                  duplicate=False, max_marks: int = 100,
+                                  task_title: str = ""):
     """Persist + shape the assignment response from a pipeline result.
     Reuses _build_response for the envelope; adds the pipeline-only fields."""
+    if (r.get("wrongTask") or {}).get("declared"):
+        return _wrong_task_response(tenant, submission, r, start_time, task_title)
     scores = r["scores"]
     grade = scoring_service.get_grade(scores["totalScore"])
     awarded = assignment_db_service.scaled_marks(scores["totalScore"], max_marks)
