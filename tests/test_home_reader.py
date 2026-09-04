@@ -225,33 +225,80 @@ def test_the_courier_reports_a_400_as_a_refusal_not_a_crash(monkeypatch):
 
 SIDEBAR = ("ChatGPT New chat Images Library Scheduled Plugins Projects Codex More "
            "Pinned Recents upskillize Free Claim offer This is a copy of a shared "
-           "ChatGPT chat. Content created using ChatGPT. Report conversation Message ChatGPT")
+           "ChatGPT chat. Content created using ChatGPT. Report conversation Message ChatGPT ") * 2
+
+
+def _share_page(poster_seed, quality=70, cursor=False) -> str:
+    """A full-page JPEG the home reader would post for a ChatGPT share:
+    identical app chrome (sidebar, header) on every page, and — when
+    `poster_seed` is given — one 600 x 600 picture in the middle. Base64."""
+    import base64
+    import random
+    from io import BytesIO
+    from PIL import Image, ImageDraw
+    im = Image.new("RGB", (1366, 1100), "white")
+    d = ImageDraw.Draw(im)
+    d.rectangle([0, 0, 260, 1100], fill=(23, 23, 23))
+    for y in range(20, 1100, 34):
+        d.rectangle([16, y, 240, y + 14], fill=(60, 60, 60))
+    d.rectangle([260, 0, 1366, 56], fill=(245, 245, 245))
+    if cursor:
+        d.rectangle([900, 700, 912, 716], fill="black")
+    if poster_seed is not None:
+        rnd = random.Random(poster_seed)
+        for _ in range(12):
+            x, y = 560 + rnd.randint(0, 540), 160 + rnd.randint(0, 540)
+            d.rectangle([x, y, min(1160, x + rnd.randint(60, 300)),
+                         min(760, y + rnd.randint(60, 300))],
+                        fill=(rnd.randint(0, 255), rnd.randint(0, 255), rnd.randint(0, 255)))
+    buf = BytesIO()
+    im.save(buf, format="JPEG", quality=quality)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+POSTER_A = _share_page(1)
+POSTER_B = _share_page(2)
+LOGIN_1 = _share_page(None, quality=70)
+LOGIN_2 = _share_page(None, quality=45, cursor=True)   # re-encoded, a cursor
 
 
 def test_two_image_shares_with_the_same_sidebar_are_two_pages():
     """Owner's question, 04 Sep: 'students submitted a ChatGPT link with the
     real image of the assignment — can the agent read it?' Two such links
-    carry identical text (the app's sidebar) and different pictures."""
-    assert lr.note_page("https://chatgpt.com/s/m_1", SIDEBAR, "/9j/pictureONE") == ""
-    assert lr.note_page("https://chatgpt.com/s/m_2", SIDEBAR, "/9j/pictureTWO") == ""
+    carry identical text (the app's sidebar, ~97 words) and different
+    pictures. Job 911 refused 11 of them as 'the same page as another
+    student's link'."""
+    assert lr.note_page("https://chatgpt.com/s/m_1", SIDEBAR, POSTER_A) == ""
+    assert lr.note_page("https://chatgpt.com/s/m_2", SIDEBAR, POSTER_B) == ""
 
 
 def test_the_same_picture_behind_two_links_is_still_a_shell():
-    assert lr.note_page("https://chatgpt.com/s/m_1", SIDEBAR, "/9j/same") == ""
-    assert "same page" in lr.note_page("https://chatgpt.com/s/m_2", SIDEBAR, "/9j/same")
+    assert lr.note_page("https://chatgpt.com/s/m_1", SIDEBAR, LOGIN_1) == ""
+    assert "same page" in lr.note_page("https://chatgpt.com/s/m_2", SIDEBAR, LOGIN_2)
 
 
-def test_a_text_page_keeps_the_text_only_key():
+def test_a_text_only_shell_is_still_a_shell():
     """Day 07: seventeen signed-out Gemini shells, 120 identical words each,
-    screenshots that differ by a cursor. Still one shell."""
+    no picture kept. Still one shell."""
     shell = "Sign in to continue to Gemini. " * 30
-    assert lr.note_page("https://share.gemini/a", shell, "/9j/A") == ""
-    assert "same page" in lr.note_page("https://share.gemini/b", shell, "/9j/B")
+    assert lr.note_page("https://share.gemini/a", shell, "") == ""
+    assert "same page" in lr.note_page("https://share.gemini/b", shell, "")
+
+
+def test_picture_look_is_pure_and_tolerant():
+    assert lr.picture_look("") is None and lr.picture_look("not-an-image") is None
+    a, b = lr.picture_look(POSTER_A), lr.picture_look(POSTER_B)
+    assert a is not None and b is not None and lr.looks_differ(a, b)
+    # The same shell captured twice — different JPEG quality, a cursor.
+    assert not lr.looks_differ(lr.picture_look(LOGIN_1), lr.picture_look(LOGIN_2))
+    # The same poster captured twice is one page.
+    assert not lr.looks_differ(a, lr.picture_look(_share_page(1, quality=45)))
+    assert not lr.looks_differ(a, None)
 
 
 def test_a_thin_seeded_image_share_reaches_vision(monkeypatch):
     _seed_lookup(monkeypatch, seeds.Seed("https://chatgpt.com/s/m_9", "ChatGPT - Banking plan",
-                                         SIDEBAR, "/9j/plan", "home-reader"))
+                                         SIDEBAR[:300], POSTER_A, "home-reader"))
     _no_render(monkeypatch)
     seen = {}
     def fake_ocr(images, kind=""):
@@ -262,4 +309,28 @@ def test_a_thin_seeded_image_share_reaches_vision(monkeypatch):
     monkeypatch.setattr("app.utils.file_extractor._ocr_with_claude", fake_ocr)
     text, why = lr.read_rendered_link("https://chatgpt.com/s/m_9")
     assert why == "" and "Year 3 Prepare" in text
-    assert seen["images"] == [("image/jpeg", "/9j/plan")]
+    assert seen["images"] == [("image/jpeg", POSTER_A)]
+
+
+# ─── 7. a link our reader was refused on is not graded on its caption ──────
+
+def test_a_blocked_link_with_a_caption_is_reader_blocked_not_graded():
+    from app.utils import submission_intake as intake
+    art = [intake.Artefact(kind="typed text", label="answer box", text="Here is my Gamma deck on data science, please review it thank you sir."),
+           intake.Artefact(kind="link", label="https://gamma.app/docs/x", note=lr.GAVE_UP_MESSAGE, confirmed=True)]
+    assert intake.link_carries_the_work(art, art[0].text) is True
+
+
+def test_a_blocked_link_beside_a_real_answer_or_file_is_graded():
+    from app.utils import submission_intake as intake
+    essay = "word " * 200
+    art = [intake.Artefact(kind="typed text", label="answer box", text=essay),
+           intake.Artefact(kind="link", label="https://gamma.app/docs/x", note=lr.GAVE_UP_MESSAGE, confirmed=True)]
+    assert intake.link_carries_the_work(art, essay) is False
+    with_file = [intake.Artefact(kind="typed text", label="answer box", text="see deck"),
+                 intake.Artefact(kind="document", label="deck.pdf", text="Slide 1 " * 50, confirmed=True),
+                 intake.Artefact(kind="link", label="https://gamma.app/docs/x", note=lr.GAVE_UP_MESSAGE, confirmed=True)]
+    assert intake.link_carries_the_work(with_file, "see deck") is False
+    opened = [intake.Artefact(kind="typed text", label="answer box", text="see deck"),
+              intake.Artefact(kind="link", label="https://gamma.app/docs/x", text="Slide 1 " * 50, confirmed=True)]
+    assert intake.link_carries_the_work(opened, "see deck") is False

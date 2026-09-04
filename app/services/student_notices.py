@@ -24,6 +24,7 @@
 # usually done the work; something about the delivery stopped it reaching us.
 # ---------------------------------------------------------------------------
 
+import re
 from urllib.parse import urlparse
 
 NO_MARK = "No marks have been recorded for this attempt yet."
@@ -259,13 +260,49 @@ def link_missing_entirely() -> str:
             "https://, into the answer box and submit again. " + NO_MARK)
 
 
-def wrong_task(what_it_is: str, task_title: str) -> str:
-    """Real work, belonging to a different task."""
-    what = what_it_is or "work for a different task"
-    return (f"Not graded: what reached us looks like {what}, not the work this "
-            f"assignment asked for (\"{task_title}\"). Attach the correct work and "
-            f"submit again — nothing is lost, and this attempt has not been counted "
-            f"against you. " + NO_MARK)
+# The marker's identification usually ends with its own contrast — "…, not a
+# personal 5-year plan" / "… rather than a Data Science deck". The notice
+# already names this assignment, so that tail is dropped; without it the
+# sentence read "X, not Y, and this assignment is Y".
+_CONTRAST_TAIL = re.compile(r"\s*(?:[,;]|—|–|\s-\s)\s*(?:not|rather than|instead of|unrelated to)\b.*$",
+                            re.IGNORECASE)
+
+
+def _what_arrived(what_it_is: str) -> str:
+    """The marker's identification as a noun phrase fit for mid-sentence. Pure."""
+    what = _CONTRAST_TAIL.sub("", (what_it_is or "").strip()).strip().rstrip(".").strip()
+    if not what:
+        return "work for a different assignment"
+    # Lower-case a sentence-initial capital ("A poster", "An essay", "Study
+    # plan"); an acronym ("PDF document", "IBPS notes") keeps its case.
+    if len(what) > 1 and what[0].isupper() and not what[1].isupper():
+        what = what[0].lower() + what[1:]
+    return what
+
+
+def wrong_task_points(what_it_is: str, task_title: str, out_of: int = 100) -> list:
+    """Real work, belonging to a different task — the three lines the learner
+    reads, in order: what arrived · where the marks stand · what to do. Pure.
+
+    ZERO, SAID PLAINLY (04 Sep 2026, Ranjana). Day 17's poster sent for
+    Day 18 is not Day 18's work, and the mark says so: 0. The wording is a
+    statement of fact, nothing a learner can argue with or feel told off by —
+    no "this looks like", no "read the brief again", no apology either. The
+    system's own reading of the file is never mentioned.
+    """
+    what = _what_arrived(what_it_is)
+    return [
+        f"This submission is for a different assignment: what reached us is "
+        f"{what}, and this assignment is \"{task_title}\".",
+        f"Marks for this attempt: 0 out of {out_of}.",
+        f"To submit the work for \"{task_title}\", message the Upskillize team "
+        f"to reopen it, then submit again.",
+    ]
+
+
+def wrong_task(what_it_is: str, task_title: str, out_of: int = 100) -> str:
+    """wrong_task_points as one paragraph."""
+    return " ".join(wrong_task_points(what_it_is, task_title, out_of))
 
 
 # Hosts whose bot protection refuses a server outright. Nothing we can do

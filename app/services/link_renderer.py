@@ -706,22 +706,50 @@ def duplicate_shell_reason(seen: dict, url: str, text: str) -> str:
     return ""
 
 
-def shell_key(text: str, screenshot_b64: str = "") -> str:
-    """What identifies a page for the shell check. Pure.
+# THE IMAGE SHARE THAT LOOKED LIKE A SHELL (04 Sep 2026, twice). Two
+# learners' ChatGPT image shares carry the SAME readable text — the app's own
+# sidebar, ~97 words — and different pictures. By text alone the second is
+# "the same page as another student's link" and refused; 11 rows on the
+# night's home-reader run. A first fix keyed on the picture only below 80
+# words of text, and the real sidebar is longer than that. So the rule is
+# now: identical text is a shell UNLESS both pages carry pictures and the
+# pictures visibly differ.
+#
+# WHY A THUMBNAIL AND NOT A HASH. A 64-bit difference hash was tried first:
+# on a page that is mostly flat chrome (sidebar, header) the sign of a
+# near-zero gradient flips with JPEG quality alone — two captures of ONE
+# shell differed by 7 bits, two different posters by 12 — no safe line
+# between them. Comparing small grey thumbnails pixel by pixel has margin:
+# the same shell re-encoded differs in ~0 pixels, a different poster in
+# hundreds.
+_LOOK_SIDE = 32                                    # thumbnail is 32 x 32 grey
+_LOOK_PIXEL_STEP = 40                              # of 255: a visible change
+_LOOK_DIFFERENT_PCT = float(os.getenv("LINK_SHELL_PICTURE_PCT", "1.5"))   # of pixels
+_seen_looks: dict = {}        # text signature -> thumbnail of the first page
 
-    THE IMAGE SHARE THAT LOOKED LIKE A SHELL (04 Sep 2026). Two learners'
-    ChatGPT image shares carry the SAME readable text — the app's own
-    sidebar and footer, 47 words — and different pictures. By text alone the
-    second is "the same page as another student's link" and refused. When
-    the text is too thin to be the work, the picture is the work, so the
-    picture is part of the identity. Pages with real text keep the text-only
-    key: that is the Day 07 case (identical 120-word signed-out shells) and
-    it must keep matching.
-    """
-    if screenshot_b64 and len((text or "").split()) < LINK_RENDER_OCR_MIN_WORDS:
-        digest = hashlib.sha1(screenshot_b64.encode("utf-8")).hexdigest()[:16]
-        return f"{text or ''}\n[picture:{digest}]"
-    return text or ""
+
+def picture_look(screenshot_b64: str) -> Optional[bytes]:
+    """A 32 x 32 greyscale thumbnail of the picture, or None when there is no
+    usable picture. Pure. JPEG noise and a cursor leave it unchanged; a
+    different picture changes a block of it."""
+    if not screenshot_b64:
+        return None
+    try:
+        from io import BytesIO
+        from PIL import Image
+        im = Image.open(BytesIO(base64.b64decode(screenshot_b64))).convert("L")
+        return im.resize((_LOOK_SIDE, _LOOK_SIDE), Image.BILINEAR).tobytes()
+    except Exception:
+        return None
+
+
+def looks_differ(a: Optional[bytes], b: Optional[bytes]) -> bool:
+    """Do two thumbnails show different pictures? Pure. Missing thumbnails
+    can prove nothing, so they never rescue a page from the shell check."""
+    if a is None or b is None or len(a) != len(b):
+        return False
+    changed = sum(1 for x, y in zip(a, b) if abs(x - y) >= _LOOK_PIXEL_STEP)
+    return changed * 100.0 >= _LOOK_DIFFERENT_PCT * len(a)
 
 
 def note_page(url: str, text: str, screenshot_b64: str = "") -> str:
@@ -730,14 +758,21 @@ def note_page(url: str, text: str, screenshot_b64: str = "") -> str:
     Process-wide and deliberately unbounded within a run: a cohort sweep is
     the unit of comparison, and the map is small (one entry per distinct page).
     """
-    key = shell_key(text, screenshot_b64)
-    reason = duplicate_shell_reason(_seen_pages, url, key)
+    reason = duplicate_shell_reason(_seen_pages, url, text)
+    sig = page_signature(text)
     if reason:
+        if looks_differ(picture_look(screenshot_b64), _seen_looks.get(sig)):
+            print(f"[link] same text as {_seen_pages.get(sig)} but a different "
+                  f"picture — two pages, not a shell: {url}")
+            return ""
         print(f"[link] SHELL: {url} returned the same page as "
-              f"{_seen_pages.get(page_signature(key))} — not graded")
+              f"{_seen_pages.get(sig)} — not graded")
         return reason
-    if len((text or "").split()) >= _SHELL_MIN_WORDS:
-        _seen_pages.setdefault(page_signature(key), url)
+    if len((text or "").split()) >= _SHELL_MIN_WORDS and sig not in _seen_pages:
+        _seen_pages[sig] = url
+        look = picture_look(screenshot_b64)
+        if look is not None:
+            _seen_looks[sig] = look
     return ""
 
 
@@ -745,6 +780,7 @@ def forget_pages() -> None:
     """Clear the shell map. For tests, and for a long-lived process that wants
     each sweep judged on its own."""
     _seen_pages.clear()
+    _seen_looks.clear()
 
 
 # ---------------------------------------------------------------------------

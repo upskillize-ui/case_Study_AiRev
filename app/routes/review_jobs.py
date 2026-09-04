@@ -125,19 +125,20 @@ def make_review_one(tenant, admin_key: str):
             # NOT A MARK, NOT AN ATTEMPT SPENT (04 Sep 2026). A guard refusal
             # used to be recorded as "done: None -> None": it counted toward
             # the 2-attempt ceiling, so a row refused twice for OUR reasons
-            # was parked for ever, silently. A wrong-task ruling is the
-            # learner's (a policy skip); anything else refused is ours — the
-            # "our outage" prefix keeps it out of the ledger, and "skipped"
-            # keeps it away from the consecutive-failure brake.
-            if res.get("wrongTask"):
-                return "skipped", "wrong_task: " + str(
-                    (res.get("wrongTask") or {}).get("whatItIs", ""))[:200], None
+            # was parked for ever, silently. Anything refused here is ours —
+            # the "our outage" prefix keeps it out of the ledger, and
+            # "skipped" keeps it away from the consecutive-failure brake.
+            # (A wrong-task ruling is no longer a refusal: it is a 0, below.)
             msg = str((res.get("feedback") or {}).get("summary") or "not graded")
             return "skipped", f"our outage — not graded: {msg}"[:255], None
         if state == "done":
             score = (res.get("feedback") or {}).get("scoreMarks")
             prev = res.get("previousGrade")
-            return "done", f"{prev} -> {score}", score
+            why = ""
+            if res.get("wrongTask"):
+                why = " (wrong task: " + str(
+                    (res.get("wrongTask") or {}).get("whatItIs", ""))[:160] + ")"
+            return "done", f"{prev} -> {score}{why}"[:255], score
         reason = res.get("skipped") or "not reviewed"
         prefix = "our outage — " if res.get("ours") else ""
         return state, f"{prefix}{reason}: {res.get('detail', '')}"[:255], None

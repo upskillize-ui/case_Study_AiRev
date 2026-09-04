@@ -357,6 +357,55 @@ def mark_not_graded(tenant: Tenant, submission_id: int, message: str,
     )
 
 
+WRONG_TASK_MARK = "Not this task"      # the card's grade slot, LMS wording
+
+
+def mark_wrong_task(tenant: Tenant, submission_id: int, what_it_is: str,
+                    task_title: str, max_marks: int = 100) -> dict:
+    """Record a corroborated wrong-task ruling as a ZERO, and tell the learner
+    plainly. Returns the stored feedback payload.
+
+    A ZERO, NOT A REFUSAL (04 Sep 2026, Ranjana: "he submitted wrong
+    submission it should get zero"). Until today the ruling wrote
+    grade=NULL + "Not graded", which read as our failure and left the row in
+    the queue with nothing to wait for. The work for another assignment is
+    not this assignment's work; that is a mark, and the mark is 0.
+
+    The payload is shaped like the LMS's own zeroPayload (backend/services/
+    reviewBlockers.js) — `zeroed` + `blocker` are what its /reopen endpoint
+    reads, so staff can lift the 0 and the learner can submit the right
+    work past the deadline. `reviewedBy: "ai"` keeps it OURS: a re-review
+    with a corrected marker may overwrite it, which a mentor's 0 forbids.
+    status='graded' locks resubmission (student.js), so the notice says how
+    to get it reopened rather than "submit again".
+    """
+    from app.services import student_notices
+    from app.services.rubric_service import RUBRIC_VERSION
+    out_of = max(1, int(max_marks or 100))
+    points = student_notices.wrong_task_points(what_it_is, task_title, out_of)
+    text = " ".join(points)
+    payload = {
+        "zeroed": True, "reviewedBy": "ai", "blocker": "wrong_task",
+        "wrongTask": {"declared": True, "whatItIs": what_it_is or ""},
+        "grade": WRONG_TASK_MARK, "totalScore": 0, "scorePercent": 0,
+        "scoreMarks": 0, "outOf": out_of,
+        "message": text, "summary": points[0], "detailedFeedback": text,
+        "feedbackPoints": points, "strengths": [], "improvements": [],
+        "rulesVersion": RUBRIC_VERSION,
+        "zeroedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    texecute(
+        tenant,
+        """UPDATE assignment_submissions SET
+            grade    = 0,
+            feedback = %s,
+            status   = 'graded'
+          WHERE id = %s""",
+        (json.dumps(payload, ensure_ascii=False), submission_id),
+    )
+    return payload
+
+
 def scaled_marks(percent, max_marks: int) -> float:
     """0-100 rubric percentage -> the assignment's own marks scale.
 

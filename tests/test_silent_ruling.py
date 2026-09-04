@@ -20,6 +20,7 @@ Pinned here:
      sentence the LMS "Different work from the brief" bucket matches.
 """
 import os
+import json
 import re
 import sys
 
@@ -150,34 +151,51 @@ def test_ruling_blocked_reason_names_each_gate():
 
 # ─── the route acts on a standing ruling ──────────────────────────────────
 
-def test_route_writes_the_wrong_task_notice_not_a_guard_apology(monkeypatch):
+def test_route_writes_a_zero_for_a_wrong_task_said_plainly(monkeypatch):
+    """04 Sep evening (Ranjana): a wrong submission is a 0, not "Not graded",
+    and the learner reads a statement of fact — never "looks like", never
+    "read the brief again", never our own reading of the file."""
     from app.routes import assignment_review as route
     from app.services import assignment_db_service as dbs
 
     written = {}
 
-    def fake_mark(tenant, submission_id, message, card=None, stamp=True):
-        written.update(id=submission_id, message=message, stamp=stamp)
+    def fake_execute(tenant, sql, params):
+        written["sql"] = " ".join(sql.split())
+        written["params"] = params
 
-    monkeypatch.setattr(dbs, "mark_not_graded", fake_mark)
+    monkeypatch.setattr(dbs, "texecute", fake_execute)
     monkeypatch.setattr(
         dbs, "update_assignment_submission_with_ai_results",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not grade")))
+    monkeypatch.setattr(
+        dbs, "mark_not_graded",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("a wrong task is a mark")))
 
     r = {"wrongTask": {"declared": True,
-                       "whatItIs": "an investment analysis slide deck"},
+                       "whatItIs": "An investment analysis slide deck"},
          "scores": {"totalScore": 4, "rubricBreakdown": []}}
     res = route._pipeline_assignment_response(
         None, {"submissionId": 1151, "attemptNumber": 1}, r, 400, 0.0,
         max_marks=10, task_title="Day 01: Yourself in 5 years")
 
-    assert res["notGraded"] is True and res["success"] is True
-    assert written["id"] == 1151 and written["stamp"] is True
-    # The LMS classifier's "Different work from the brief" test, verbatim.
-    assert re.match(r"^Not graded: what reached us looks like", written["message"])
-    assert "investment analysis slide deck" in written["message"]
-    assert "Yourself in 5 years" in written["message"]
-    assert "our side" not in written["message"].lower()
+    assert res["success"] is True and res["zeroed"] is True
+    assert "notGraded" not in res
+    assert "grade = 0" in written["sql"] and "status = 'graded'" in written["sql"]
+    assert written["params"][1] == 1151
+    stored = json.loads(written["params"][0])
+    # The LMS /reopen endpoint reads exactly these two keys.
+    assert stored["zeroed"] is True and stored["blocker"] == "wrong_task"
+    assert stored["reviewedBy"] == "ai" and stored["scoreMarks"] == 0
+    assert stored["outOf"] == 10 and stored["rulesVersion"]
+    msg = stored["message"]
+    assert msg.startswith("This submission is for a different assignment")
+    assert "an investment analysis slide deck" in msg
+    assert "Yourself in 5 years" in msg and "0 out of 10" in msg
+    for banned in ("looks like", "not graded", "our side", "read the", "brief"):
+        assert banned not in msg.lower(), banned
+    assert res["feedback"]["scoreMarks"] == 0 and res["feedback"]["summary"] == stored["summary"]
+    assert res["feedback"]["encouragement"] == ""
 
 
 # ─── the second silence: judgments present, lists empty (job 852) ─────────
@@ -277,3 +295,16 @@ def test_voided_ruling_contradiction_is_pure():
     assert "own deliverable" in why and "6/100" in why
     assert rp.voided_ruling_contradiction(
         "identified as a PERSONAL plan — career choice is never grounds", 0)
+
+
+def test_the_wrong_task_notice_is_a_noun_phrase_without_the_markers_contrast():
+    from app.services import student_notices as sn
+    assert sn._what_arrived("A study plan infographic, not a personal 5-year plan") == "a study plan infographic"
+    assert sn._what_arrived("PDF document on the scientific method.") == "PDF document on the scientific method"
+    assert sn._what_arrived("A photograph of a workshop, unrelated to the deck") == "a photograph of a workshop"
+    assert sn._what_arrived("") == "work for a different assignment"
+    lines = sn.wrong_task_points("A Day 17 avatar poster", "Day 18: Landing page", 10)
+    assert lines[0] == ("This submission is for a different assignment: what reached us is "
+                        "a Day 17 avatar poster, and this assignment is \"Day 18: Landing page\".")
+    assert lines[1] == "Marks for this attempt: 0 out of 10."
+    assert "reopen" in lines[2]

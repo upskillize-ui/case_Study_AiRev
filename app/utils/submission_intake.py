@@ -1024,6 +1024,30 @@ def typed_text_from(assembled_content: str) -> str:
     ).strip()
 
 
+# Typed words below which a caption beside a link is a caption, not an
+# answer. 120 is WRONG_TASK_MIN_WORDS: the same line the pipeline draws for
+# "enough was read to judge".
+LINK_CAPTION_MAX_WORDS = 120
+
+
+def link_carries_the_work(artefacts: list, content: str,
+                          max_typed: int = LINK_CAPTION_MAX_WORDS) -> bool:
+    """Is a link the only place the substance could be? Pure.
+
+    True when no file, image or recording was read (only typed text and
+    links) and the typed text is a caption's length. Then a link that our
+    reader could not open IS the submission, and a mark computed from the
+    caption is a mark for our reach. (04 Sep 2026, job 911: Gamma decks
+    behind a Cloudflare check with a 27-word caption were graded 0.0/10
+    because 27 > MIN_GRADABLE_WORDS.)
+    """
+    if any(a.readable and a.kind not in ("typed text", "link") for a in artefacts or []):
+        return False
+    if any(a.kind == "link" and a.readable for a in artefacts or []):
+        return False
+    return substantive_words(content) < max_typed
+
+
 def is_unassessable(manifest: str, content: str) -> bool:
     """True when the only thing submitted is a deliverable we could not read.
 

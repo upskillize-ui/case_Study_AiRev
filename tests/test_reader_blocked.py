@@ -52,8 +52,10 @@ def test_the_message_is_plain_and_says_whose_side():
     assert not any(w in m.lower() for w in ("soon", "shortly", "within "))   # no promise of when
 
 
-def test_both_refusal_branches_use_it():
+def test_every_refusal_branch_uses_it():
+    """Three branches since 04 Sep: nothing readable, deliverable unreadable,
+    and a blocked link with only a caption beside it (job 911)."""
     src = open(os.path.join(os.path.dirname(_HERE), "app", "routes", "assignment_review.py"),
                encoding="utf-8").read()
-    assert src.count("grade_guard.READER_BLOCKED_MESSAGE") == 2
-    assert src.count("grade_guard.reader_blocked(") == 2
+    assert src.count("grade_guard.READER_BLOCKED_MESSAGE") == 3
+    assert src.count("grade_guard.reader_blocked(") == 3

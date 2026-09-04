@@ -880,6 +880,33 @@ def re_review_assignment(
                            "learner to add a few lines describing what they made "
                            "and how, then re-review.")}
 
+    # THE DECK BEHIND THE CHECK, GRADED ON ITS CAPTION (04 Sep 2026, job 911).
+    # A Gamma link our reader was refused on, plus 27 typed words, passed
+    # is_unassessable (27 > 12) and the caption was marked 0.0/10. The
+    # refusal was OURS (a site blocking our datacenter browser); the row
+    # belongs in the reader-blocked bucket — never zeroed, and the home
+    # reader's list — not in the marker's hands.
+    if (grade_guard.reader_blocked(manifest)
+            and intake.link_carries_the_work(artefacts if not already_assembled else [],
+                                             content)
+            and not already_assembled):
+        if previous_grade is None and not dryRun:
+            assignment_db_service.mark_not_graded(
+                tenant, submission_id, grade_guard.READER_BLOCKED_MESSAGE)
+        print(f"[REGRADE] submission {submission_id}: the link carries the work "
+              f"and a site refused our reader "
+              f"({intake.substantive_words(content)} typed words beside it) — "
+              f"reader-blocked, never zeroed, row left for the home reader")
+        return {"success": False, "skipped": "unreadable_published_link",
+                "ours": False,
+                "submissionId": submission_id,
+                "previousGrade": previous_grade,
+                "artefacts": inventory,
+                "detail": ("A site refused our automatic reader and the typed "
+                           "answer beside the link is a caption. Read from a "
+                           "home connection (tools/home_reader.py) or ask for "
+                           "a screenshot or PDF.")}
+
     if dryRun:
         return {"success": True, "dryRun": True,
                 "submissionId": submission_id,
@@ -946,12 +973,12 @@ def re_review_assignment(
     # ungraded — and anyone reading the log concluded a real essay had been
     # zeroed.
     if response.get("notGraded"):
-        why = "different task's work" if response.get("wrongTask") else "guard refused"
         print(f"[REGRADE] submission {submission_id}: {previous_grade} -> NOT GRADED "
-              f"({why}; {word_count} words, {len(artefacts)} artefact(s))")
+              f"(guard refused; {word_count} words, {len(artefacts)} artefact(s))")
     else:
+        why = " — a different task's work" if response.get("wrongTask") else ""
         print(f"[REGRADE] submission {submission_id}: {previous_grade} -> "
-              f"{response['feedback'].get('scoreMarks')}/{max_marks} "
+              f"{response['feedback'].get('scoreMarks')}/{max_marks}{why} "
               f"({word_count} words, {len(artefacts)} artefact(s))")
     return response
 
@@ -989,34 +1016,33 @@ def _remember_student_assignment(req, submission, r):
         print(f"[ASSIGNMENT] person-memory update failed (review unaffected): {e}")
 
 
-def _wrong_task_response(tenant, submission, r, start_time, task_title: str) -> dict:
-    """Real work, belonging to a different task: NO mark, the learner told what
-    arrived and asked for the right deliverable.
+def _wrong_task_response(tenant, submission, r, start_time, task_title: str,
+                         max_marks: int = 100) -> dict:
+    """Real work, belonging to a different task: a ZERO, and the learner told
+    plainly what arrived and what this assignment is.
 
     THE RULING NOBODY ACTED ON (04 Sep 2026). review_pipeline has decided
-    wrongTask["declared"] since 18 Aug, student_notices.wrong_task() has held
-    the learner's sentence since then, and no route ever joined the two: a
-    corroborated ruling fell through to the grade guard, which refused the
-    empty review and wrote "we could not finish reviewing — our side, not
-    yours" on work that was the learner's own mistake. The LMS panel's
-    "Different work from the brief" group matched nothing, so staff never saw
-    these rows either. Stamped as final under the current rules: the row moves
-    only when the learner resubmits.
+    wrongTask["declared"] since 18 Aug, and no route ever joined it to a
+    write: a corroborated ruling fell through to the grade guard, which
+    refused the empty review and wrote "our side, not yours" on work that was
+    the learner's own mistake. The first fix (this morning) wrote "Not
+    graded" with no mark; Ranjana's ruling the same evening: a wrong
+    submission is a 0, said as a fact, not as a suspicion.
     """
-    from app.services import student_notices
     ruling = r.get("wrongTask") or {}
-    msg = student_notices.wrong_task(ruling.get("whatItIs", ""), task_title)
-    assignment_db_service.mark_not_graded(
-        tenant, submission["submissionId"], msg,
-        card=_empty_feedback(msg, helpful=False))
-    print(f"[WRONG-TASK] submission {submission['submissionId']}: NOT GRADED — "
+    card = assignment_db_service.mark_wrong_task(
+        tenant, submission["submissionId"], ruling.get("whatItIs", ""),
+        task_title, max_marks)
+    print(f"[WRONG-TASK] submission {submission['submissionId']}: 0/{max_marks} — "
           f"'{ruling.get('whatItIs', '')[:80]}'")
+    feedback = {**_empty_feedback(card["message"], helpful=False), **card,
+                "encouragement": ""}
     return {
         "success": True,
-        "notGraded": True,
+        "zeroed": True,
         "wrongTask": ruling,
         "submission": submission,
-        "feedback": _empty_feedback(msg, helpful=False),
+        "feedback": feedback,
         "processingTimeMs": int((time.time() - start_time) * 1000),
     }
 
@@ -1027,7 +1053,8 @@ def _pipeline_assignment_response(tenant, submission, r, word_count, start_time,
     """Persist + shape the assignment response from a pipeline result.
     Reuses _build_response for the envelope; adds the pipeline-only fields."""
     if (r.get("wrongTask") or {}).get("declared"):
-        return _wrong_task_response(tenant, submission, r, start_time, task_title)
+        return _wrong_task_response(tenant, submission, r, start_time, task_title,
+                                    max_marks)
     scores = r["scores"]
     grade = scoring_service.get_grade(scores["totalScore"])
     awarded = assignment_db_service.scaled_marks(scores["totalScore"], max_marks)

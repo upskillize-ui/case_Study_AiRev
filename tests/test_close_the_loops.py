@@ -90,11 +90,14 @@ def test_guard_refusal_is_our_outage_in_the_ledger_and_wrong_task_is_a_skip(monk
     state, detail, score = review_one(17, 1)
     assert state == "skipped" and detail.startswith("our outage — not graded") and score is None
 
-    answers[2] = {"success": True, "notGraded": True,
+    # A wrong task is a MARK (0) since 04 Sep evening — done, attempt spent,
+    # the ruling named in the ledger so staff can read why it is a 0.
+    answers[2] = {"success": True, "zeroed": True, "previousGrade": None,
                   "wrongTask": {"declared": True, "whatItIs": "an investment deck"},
-                  "feedback": {"summary": "Not graded: what reached us looks like…"}}
-    state, detail, _ = review_one(17, 2)
-    assert state == "skipped" and detail.startswith("wrong_task")
+                  "feedback": {"scoreMarks": 0, "summary": "This submission is for a different assignment"}}
+    state, detail, score = review_one(17, 2)
+    assert state == "done" and score == 0
+    assert detail == "None -> 0 (wrong task: an investment deck)"
 
     answers[3] = {"success": True, "previousGrade": None, "feedback": {"scoreMarks": 6.1}}
     assert review_one(17, 3) == ("done", "None -> 6.1", 6.1)
