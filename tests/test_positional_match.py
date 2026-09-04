@@ -71,3 +71,27 @@ def test_a_row_claimed_by_name_is_not_reused_by_position():
     # rubric 0 is unmatched by name; positional row 0 is claimed, so it stays unjudged
     assert rows[0]["unjudged"]
     assert rows[2]["percentage"] == 30 and not rows[2]["unjudged"]
+
+
+def test_one_requirement_many_rows_are_averaged_without_a_second_call():
+    """Day 09: a single requirement, the marker answers with three aspects.
+    Nothing pairs by name; the aspects are averaged into the one verdict."""
+    one = [{"name": "Gamma presentation on Data Science", "maxScore": 100}]
+    criteria = [_row("Deck structure and flow", 60),
+                _row("Fact-checked statistics", 30),
+                _row("Visual design quality", 90)]
+    gated = rp.apply_gates(criteria, one, [], [], [], gates={"generic_answer_cap": 100})
+    row = gated["breakdown"][0]
+    assert not row["unjudged"]
+    assert row["percentage"] == 60                      # mean of 60, 30, 90
+    assert [g for g in gated["gates_hit"] if g["gate"] == "merged_rows"]
+    assert g.has_model_evidence(gated["breakdown"])
+    assert g.judged_share(gated["breakdown"]) == 1.0
+
+
+def test_one_requirement_that_matches_by_name_is_not_merged():
+    one = [{"name": "Gamma presentation on Data Science", "maxScore": 100}]
+    criteria = [_row("Gamma presentation on Data Science", 70), _row("Extra remark", 10)]
+    gated = rp.apply_gates(criteria, one, [], [], [], gates={"generic_answer_cap": 100})
+    assert gated["breakdown"][0]["percentage"] == 70
+    assert not [x for x in gated["gates_hit"] if x["gate"] == "merged_rows"]

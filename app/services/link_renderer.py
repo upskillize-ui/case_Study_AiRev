@@ -87,6 +87,27 @@ LINK_RENDER_MAX_RELOADS = int(os.getenv("LINK_RENDER_MAX_RELOADS", "3"))
 # few students instead of dragging all of them through the same failure.
 LINK_RENDER_CHALLENGE_GAP_MAX_MS = int(
     os.getenv("LINK_RENDER_CHALLENGE_GAP_MAX_MS", "60000"))
+# STOP KNOCKING (04 Sep 2026, Day 09 live). gamma.app answered the human-check
+# to every one of ~60 links in a row, and each one still cost the full visit:
+# goto, five settle waits, three reloads, a growing host gap, and the second
+# worker parked on the browser lock — three to four minutes per Gamma row for
+# a verdict that was known after the first three. After this many
+# consecutive bot-checks from one host the host is not opened again in this
+# process; the row gets the same reader-blocked verdict in a millisecond.
+# Resets on the next clean visit (note_challenge zeroes the count) and on
+# restart, so a host that starts letting us in is not written off for good.
+LINK_RENDER_GIVE_UP_AFTER = int(os.getenv("LINK_RENDER_GIVE_UP_AFTER", "3"))
+
+GAVE_UP_MESSAGE = ("the page was still showing a human-check (Cloudflare) when "
+                   "the browser gave up — this site has refused our automatic "
+                   "reader {n} times in a row, so it was not opened again")
+
+
+def host_given_up(host: str) -> int:
+    """How many consecutive bot-checks this host has served, if that number
+    has reached the give-up line; 0 otherwise. Pure over module state."""
+    n = _challenges.get((host or "").lower(), 0)
+    return n if LINK_RENDER_GIVE_UP_AFTER > 0 and n >= LINK_RENDER_GIVE_UP_AFTER else 0
 # How long a worker will wait for the browser to be free before giving up on
 # rendering and letting the review proceed without it. Day 05 (22 Aug) had two
 # items take 3,916,989ms and 3,941,830ms — 65 MINUTES each — and the run's
@@ -595,6 +616,11 @@ def render_link(url: str, walk: bool = False) -> Tuple[Optional[Rendered], str]:
     if not ok:
         return None, why
     host = (urlparse(url).hostname or "").lower()
+    given_up = host_given_up(host)
+    if given_up:
+        logger.warning("link not opened [%s]: %d consecutive human-checks — "
+                       "reader-blocked verdict without a visit: %s", host, given_up, url)
+        return None, GAVE_UP_MESSAGE.format(n=given_up)
     # One Chromium at a time — but never an unbounded wait. A review that
     # cannot get the browser reports that plainly and is left un-graded by
     # the caller, which is recoverable. A worker parked for an hour is not.

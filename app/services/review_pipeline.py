@@ -480,11 +480,36 @@ REVIEW_SCHEMA = {
             },
             "required": ["is_wrong_task", "what_it_is"],
         },
+        # FORMAT IS NOT SUBSTANCE (04 Sep 2026, owner's ruling). The same deck
+        # exported as PDF/PPTX instead of a Gamma link, a Word file instead of
+        # a Notion page, screenshots instead of a live link: the WORK arrived,
+        # in the wrong wrapper. Never wrong_task, never a zero — the content
+        # is scored as if delivered in the asked tool and Python takes a fixed
+        # deduction (FORMAT_MISS_PENALTY) for the format.
+        "format_miss": {
+            "type": "object",
+            "properties": {
+                "is_format_miss": {
+                    "type": "boolean",
+                    "description": ("TRUE only when the submitted work IS this task's "
+                                    "deliverable but in a different format or tool "
+                                    "than the brief names (an exported PDF/PPTX of the "
+                                    "deck instead of the tool's share link, a document "
+                                    "instead of a published page, screenshots instead "
+                                    "of a live link). FALSE when the format matches, "
+                                    "and FALSE when the content itself is not this "
+                                    "task's deliverable."),
+                },
+                "asked": {"type": "string", "description": "The format/tool the brief asked for, in a few words."},
+                "arrived": {"type": "string", "description": "The format that was actually submitted, in a few words."},
+            },
+            "required": ["is_format_miss", "asked", "arrived"],
+        },
     },
     "required": ["is_garbage", "garbage_reason", "criteria", "concepts_covered",
                  "concepts_missing", "factual_errors", "strengths", "improvements",
                  "feedback_points", "hard_truth", "language_report", "authorship",
-                 "wrong_task"],
+                 "wrong_task", "format_miss"],
 }
 
 _JUDGE_INSTRUCTIONS = """You are AiRev's examiner. Judge the student's answer against the AGENT KNOWLEDGE above — it is your only ground truth. Be exacting in judgement, constructive in wording.
@@ -505,6 +530,7 @@ NON-NEGOTIABLE METHOD:
 9c. NEVER DEDUCT FOR UNPROVABLE PROVENANCE. "No evidence the image was AI-generated", "cannot confirm which tool made this", "no AI prompt is provided", "prompt engineering cannot be assessed" — a finished artifact carries no record of its maker OR of the prompt that made it, so these statements are about YOUR visibility, not the learner's work. If the task asked for an AI-generated artifact and a plausible artifact is present, the generation requirement is satisfied in full. Deduct for a missing prompt ONLY when the task text explicitly asks the learner to submit the prompt. (Live failure: a complete professional 5-year poster lost 35% of its image criterion for "no AI prompt provided" on a task that never asked for one.)
 10. ONE WEAKNESS, ONE DEDUCTION. Judge each criterion strictly on what ITS OWN name asks and nothing else. If a rubric has "five steps are listed" and "the steps are specific", vague steps cost marks on the SECOND only — the first asks whether five steps exist, and they do. Charging one shortcoming against two criteria takes 60 marks for a single flaw and buries the part the learner actually did. Where two criteria overlap, credit the narrower reading of each.
 11. HOW THE WORK WAS MADE IS NOT A SCORING FACT. Never lower a criterion because you cannot tell which AI drafted it, which settings were toggled, or in what order the steps were taken. A finished artifact carries no record of its own making, so "no evidence ChatGPT was used" is a statement about your visibility, not about the learner's work — and deducting for it fails every learner equally, including the ones who followed the method exactly. Judge the OUTPUT the method was meant to produce. This is the same rule as the authorship estimate above: provenance is advisory, never scored.
+12a. FORMAT IS NOT SUBSTANCE. If the submitted work IS this task's deliverable but arrived in a different format or tool than the brief names — an exported PDF/PPTX of the deck instead of a Gamma share link, a Word or PDF file instead of a Notion page, screenshots instead of a live app link — it is ON-TASK: set format_miss.is_format_miss=true, name what was asked and what arrived, and SCORE EVERY CRITERION ON THE CONTENT exactly as if it had been delivered in the asked tool (a deck criterion is met by the deck, whatever file it came as). Never wrong_task, never a zero for the wrapper — the system takes a fixed deduction for the format; do not deduct for it yourself. Mention the format once in improvements.
 12. WRONG WORK IS NOT LOW-QUALITY WORK. If the submission is recognizably a DIFFERENT task's deliverable — a slide deck of investment analysis where a 5-year career-plan image was asked for, another day's assignment resubmitted here — set wrong_task.is_wrong_task=true and name what it is in what_it_is. The policy for wrong work is NO grade, not a low grade — but that decision is made OUTSIDE this response: STILL FILL EVERY FIELD. Score each criterion from whatever evidence for THIS task you actually found (it will be low or zero — that is the honest reading), and still write strengths, improvements, feedback_points and hard_truth about what arrived. A declaration with empty criteria and empty feedback decides nothing and is discarded. Declare it ONLY from substantial content you actually READ that clearly belongs to another task — you must be able to say WHAT the work is, not merely that this task's evidence is missing. Empty, thin, fragmentary or unreadable content is NEVER wrong_task (that is a no-evidence low score); an unread or partially read link or file is NEVER wrong_task; and a weak, partial or badly formatted attempt AT THIS TASK is never wrong_task either — that is a low score with reasons. THE LEARNER'S OWN CHOICES WITHIN THE BRIEF ARE NEVER GROUNDS FOR wrong_task — topic, style, career, domain, tool settings: an attempt at THIS task about the learner's own subject IS this task. (Live rule for the 5-year-plan day: THE LEARNER'S CAREER CHOICE IS NEVER GROUNDS FOR wrong_task — a personal vision as lawyer, CA, teacher, government officer, writer, athlete, ANY field counts; policy: any career counts; domain alignment may be discussed in feedback but never used to un-grade. On that day wrong_task was reserved for content that is not a personal future-self plan AT ALL — study guides, exam-syllabus material, generic reference documents. Apply the same shape to every task: wrong_task is reserved for content that makes no attempt at THIS task's brief whatsoever.) CONTRADICTION CHECK before declaring: re-read your own what_it_is — if that description could equally describe THIS task's deliverable ("a personal 5-year career plan" on the 5-year-plan day), then is_wrong_task MUST be false: you have just identified the work as the task itself, and its shortcomings are a score, not an un-grading. An image depicting a person in ANY professional role (lawyer, teacher, officer, artist...) on a future-self task IS the future-self image — score the missing pieces (steps, reasoning) on their own criteria, never wrong_task. A submission MISSING one required element (no image, no steps) is an incomplete attempt — low score on that element's criteria, never wrong_task.
 13. MORE THAN ASKED IS NOT LESS THAN ASKED. When a criterion requires N items and the learner provides N OR MORE that clearly include the required N, the count requirement is FULLY met — score that aspect as satisfied. Never deduct for exceeding a requested count, length, or scope. (Live failure: a learner listed 8 career steps containing the required 5 and was scored 30% on "5 distinct steps are listed" — the five steps were right there, plus three the task didn't ask for.) Extra material may still be judged for QUALITY under the criteria that measure quality — but existence criteria are met by inclusion.
 14. BUILT ARTIFACTS AND PUBLISHED LINKS. When the task's deliverable is something the learner BUILT — a web page, an app, an artifact, a slide deck: (a) whatever was READ from it IS the deliverable — extracted slide text, OCR of its screenshots, a page's visible text, or a page's SOURCE CODE all count in full; source code of a client-rendered page is that page, judge the built thing from its code exactly as you would from its screen. (b) A link the manifest confirms as submitted but unreadable from the server (browser-only pages such as Claude artifact links) is evidence the learner PUBLISHED a deliverable: it fully satisfies any criterion that asks for the artifact to be created, published, shared or linked. Judge the remaining quality criteria only from what IS readable — the screenshots, pasted content, and the learner's own description — and state plainly which parts could not be seen. Never charge a criterion for OUR inability to open the learner's published page (the same visibility rule as 9c and 11), and never rule wrong_task from a link you could not read. (c) THE DELIVERABLE IS THE MARK. When the built artifact is present and matches the brief, the absence of research notes, ideation history, tool choice explanations, or a process narrative the brief did not require — or marked optional — must never reduce the score, and a link-plus-short-caption submission is a COMPLETE submission for a build-and-share task, never "a statement of intent". Judge the built thing itself.
@@ -534,6 +560,11 @@ def apply_gates(criteria: list, rubric_criteria: list, concepts_missing: list,
                               "from": 0, "to": 0,
                               "detail": f"matched by position to the marker's "
                                         f"'{str(judged.get('name', ''))[:60]}'"})
+        if judged is not None and judged.get("_merged"):
+            gates_hit.append({"gate": "merged_rows", "criterion": name,
+                              "from": 0, "to": 0,
+                              "detail": f"one requirement; the marker's "
+                                        f"{judged['_merged']} rows were averaged into it"})
         pct = int(judged.get("score_pct", 0)) if judged else 0
         evidence = judged.get("evidence_quotes", []) if judged else []
 
@@ -676,6 +707,36 @@ GARBAGE_HARD_ZERO_MAX_WORDS = int(os.getenv("GARBAGE_HARD_ZERO_MAX_WORDS", "40")
 # content. Below it, "this isn't the task's work" usually means "I couldn't
 # see the work" — the 19 Aug false-positive storm.
 WRONG_TASK_MIN_WORDS = int(os.getenv("WRONG_TASK_MIN_WORDS", "120"))
+
+# Points (out of 100) taken when the deliverable arrived in the wrong
+# format or tool — 20 = two marks of ten. Owner's ruling, 04 Sep 2026: "if
+# format change then cut 1 or 2 marks, not complete zero".
+FORMAT_MISS_PENALTY = int(os.getenv("FORMAT_MISS_PENALTY", "20"))
+
+
+def format_miss_of(review: dict) -> dict:
+    """The marker's format-miss declaration, or {} when none. Pure."""
+    fm = review.get("format_miss")
+    return fm if isinstance(fm, dict) and fm.get("is_format_miss") else {}
+
+
+def apply_format_miss(scores: dict, review: dict) -> dict:
+    """Take the fixed format deduction off the total and record it. Pure.
+
+    The content was scored as if delivered in the asked tool; the wrapper
+    costs a fixed amount, never everything.
+    """
+    fm = format_miss_of(review)
+    if not fm:
+        return scores
+    before = scores.get("totalScore", 0)
+    after = max(0, round(before - FORMAT_MISS_PENALTY, 1))
+    scores["totalScore"] = after
+    scores.setdefault("gatesHit", []).append({
+        "gate": "format_miss", "criterion": "TOTAL", "from": before, "to": after,
+        "detail": (f"asked for {fm.get('asked') or 'the named tool'}; "
+                   f"arrived as {fm.get('arrived') or 'another format'}")})
+    return scores
 
 
 # Words that describe the MEDIUM or the setting, not the substance. They are
@@ -861,6 +922,8 @@ def ruling_blocked_reason(review: dict, word_count: int, task_text: str) -> str:
     wrong = review.get("wrong_task")
     if not isinstance(wrong, dict) or not wrong.get("is_wrong_task"):
         return ""
+    if format_miss_of(review):
+        return "the work is this task's deliverable in another format"
     what_it_is = (wrong.get("what_it_is") or "").strip()
     if not what_it_is:
         return "no identification of what the work is"
@@ -1047,6 +1110,8 @@ def normalise_review(review) -> dict:
 
     if not isinstance(review.get("authorship"), dict):
         review["authorship"] = {}
+    if not isinstance(review.get("format_miss"), dict):
+        review["format_miss"] = {}
     if not isinstance(review.get("language_report"), dict):
         review["language_report"] = {}
     review["is_garbage"] = bool(review.get("is_garbage"))
@@ -1099,6 +1164,10 @@ def _gate_explanation(g: dict) -> str:
                 f"core concepts are absent; no answer missing that much can reach the top bands.")
     if g["gate"] == "factual_errors":
         return f"Deduction of {-g['to']} points for factual errors ({g.get('detail','')})."
+    if g["gate"] == "format_miss":
+        return (f"Deduction of {g['from'] - g['to']} points for the format — "
+                f"{g.get('detail', '')}. The work itself was marked in full; next "
+                f"time submit it in the tool the brief names.")
     return ""
 
 
@@ -1121,7 +1190,18 @@ def pair_criteria(criteria: list, rubric_criteria: list) -> list:
     """
     by_name = {(c.get("name") or "").lower(): c for c in criteria if isinstance(c, dict)}
     paired = [_match(by_name, rc["name"]) for rc in rubric_criteria]
-    if all(p is not None for p in paired) or len(criteria) != len(rubric_criteria):
+    if all(p is not None for p in paired):
+        return paired
+    # ONE REQUIREMENT, SEVERAL ROWS (04 Sep 2026, Day 09 live). A single-
+    # requirement task ("Gamma presentation on Data Science") gets three or
+    # four rows back from the marker — it splits the one thing into aspects —
+    # none named after the requirement. Nothing pairs, and every Day 09 row
+    # paid a second call to re-judge with the name spelled out. The aspects
+    # ARE the verdict: average them into the one row, keep their evidence.
+    rows = [c for c in criteria if isinstance(c, dict)]
+    if len(rubric_criteria) == 1 and paired[0] is None and rows:
+        return [_merged_row(rows, rubric_criteria[0]["name"])]
+    if len(criteria) != len(rubric_criteria):
         return paired
     claimed = {id(p) for p in paired if p is not None}
     for i, p in enumerate(paired):
@@ -1130,6 +1210,28 @@ def pair_criteria(criteria: list, rubric_criteria: list) -> list:
             paired[i] = {**row, "_positional": True}
             claimed.add(id(row))
     return paired
+
+
+def _merged_row(rows: list, name: str) -> dict:
+    """One verdict from several: mean score, pooled evidence, joined
+    judgments. Flagged `_merged` so the gate trace records it. Pure."""
+    scores = []
+    for r in rows:
+        try:
+            scores.append(float(r.get("score_pct", 0) or 0))
+        except (TypeError, ValueError):
+            pass
+    evidence = [q for r in rows for q in (r.get("evidence_quotes") or []) if q]
+    judgments = [str(r.get("judgment") or "").strip() for r in rows]
+    return {
+        "name": name,
+        "score_pct": int(round(sum(scores) / len(scores))) if scores else 0,
+        "evidence_quotes": evidence[:6],
+        "case_specific": any(r.get("case_specific") for r in rows),
+        "judgment": " ".join(j for j in judgments if j)[:600],
+        "confidence": "medium",
+        "_merged": len(rows),
+    }
 
 
 def _match(by_name: dict, rubric_name: str) -> Optional[dict]:
@@ -1357,6 +1459,7 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
     review = tidy_review(review)
     scores = aggregate(gated, word_count, word_limit_min, word_limit_max,
                        artefact_deliverable=artefact_deliverable)
+    scores = apply_format_miss(scores, review)
 
     # Wrong-task: the model DECLARES, the arithmetic CORROBORATES, Python
     # decides. Policy (Ranjana, 18 Aug): work that belongs to a different task
