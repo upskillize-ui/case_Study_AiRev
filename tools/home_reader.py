@@ -125,7 +125,7 @@ def read_page(page, url: str) -> tuple[str, str, str]:
     page.mouse.wheel(0, -20000)
     page.wait_for_timeout(1200)
     title = page.title()
-    text = _inner_text(page)
+    text = _settled_text(page)
     for frame in page.frames[1:]:
         try:
             text += "\n" + (frame.evaluate("() => document.body ? document.body.innerText : ''") or "")
@@ -141,6 +141,29 @@ def read_page(page, url: str) -> tuple[str, str, str]:
     if len(shot) > 1_900_000:                 # keep under the Space's 2 MB cap
         shot = page.screenshot(type="jpeg", quality=45, full_page=False)
     return title, text.strip(), base64.b64encode(shot).decode("ascii")
+
+
+CONTENT_WAIT_S = 25     # how long to wait for a page that draws its words late
+
+
+def _settled_text(page) -> str:
+    """The page's text once it has stopped growing.
+
+    A claude.ai share page or a Notion site shows its frame first and draws
+    the conversation seconds later. Run 3 captured the frame — identical for
+    every link — and the Space rightly refused them all as one shell. Read
+    again every two seconds until the text holds still with real words in it,
+    or CONTENT_WAIT_S is up (a genuinely thin page costs that wait, no more).
+    """
+    last, deadline = None, time.time() + CONTENT_WAIT_S
+    while True:
+        text = _inner_text(page)
+        if text == last and len(text.split()) >= THIN_WORDS:
+            return text
+        if time.time() >= deadline:
+            return text
+        last = text
+        page.wait_for_timeout(2000)
 
 
 def _inner_text(page) -> str:
