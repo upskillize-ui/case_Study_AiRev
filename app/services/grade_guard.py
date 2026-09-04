@@ -110,6 +110,24 @@ def reader_blocked(text: str) -> bool:
     return any(m in low for m in _READER_BLOCKED_MARKERS)
 
 
+# AN EMPTY REVIEW IS A FAILED CALL, NOT A VERDICT (04 Sep 2026, seen live).
+# When the provider hit its spend cap at 03:30 UTC the model returned nothing,
+# may_write_grade() refused — correctly — and the refusal was stamped with
+# the rules version, which told the sweeper "a decision under current rules,
+# never retry". 233 rows were parked behind an outage that lifted two hours
+# later. A refusal whose only cause is "the reviewer produced nothing" says
+# nothing about the work; it must be written WITHOUT the stamp so the next
+# sweep re-offers it.
+_EMPTY_REVIEW_MARKERS = ("produced no feedback at all", "returned no judgement")
+
+
+def refusal_is_retryable(why: str) -> bool:
+    """Did the guard refuse because the review was EMPTY (our call failed),
+    rather than because of what it contained? Pure."""
+    low = str(why or "").lower()
+    return any(m in low for m in _EMPTY_REVIEW_MARKERS)
+
+
 def learner_facing(why: str) -> str:
     """The reason a learner sees, or a plain sentence when the real one is
     machine noise. Pure."""

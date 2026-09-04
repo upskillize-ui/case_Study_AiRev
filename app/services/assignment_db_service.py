@@ -254,13 +254,18 @@ def update_assignment_submission_with_ai_results(tenant: Tenant, submission_id: 
         review=result,
     )
     if not allowed:
-        print(f"[GRADE GUARD] submission {submission_id}: NO MARK — {why}")
+        retry = grade_guard.refusal_is_retryable(why)
+        print(f"[GRADE GUARD] submission {submission_id}: NO MARK — {why}"
+              + (" — left retryable (empty review)" if retry else ""))
         mark_not_graded(
             tenant, submission_id,
             # No "it will be reviewed again": that depends on a rules change,
             # and a date we cannot name is a promise we cannot keep.
             "We could not finish reviewing this attempt, so there are no "
-            "marks yet. Your work is saved. This is our side, not yours.")
+            "marks yet. Your work is saved. This is our side, not yours.",
+            # An empty review is a failed call, not a verdict: no rules stamp,
+            # so the sweeper re-offers the row instead of parking it.
+            stamp=not retry)
         return False
 
     awarded = scaled_marks(result.get("totalScore", 0), max_marks)
@@ -303,7 +308,7 @@ def update_assignment_submission_with_ai_results(tenant: Tenant, submission_id: 
 
 
 def mark_not_graded(tenant: Tenant, submission_id: int, message: str,
-                    card: dict | None = None) -> None:
+                    card: dict | None = None, stamp: bool = True) -> None:
     """Record that this submission is deliberately NOT graded, and tell the
     LEARNER why on their own review card.
 
@@ -329,13 +334,16 @@ def mark_not_graded(tenant: Tenant, submission_id: int, message: str,
     # permanent — sweeper_service re-offers a refusal exactly once per rules
     # change, which is bounded spend and the only sane retry trigger: nothing
     # else about the row has changed, but the marker has.
+    # `stamp=False` (04 Sep 2026): a refusal that is really OUR failed call
+    # — the reviewer returned nothing — carries no version, so the sweeper's
+    # escape arm (our refusal + no stamp) re-offers it next pass.
     from app.services.rubric_service import RUBRIC_VERSION
     payload = {
         **(card or {}),
         "notGraded": True,
         "reviewedBy": "airev",
         "message": message,
-        "rulesVersion": RUBRIC_VERSION,
+        **({"rulesVersion": RUBRIC_VERSION} if stamp else {}),
         "notGradedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     texecute(
