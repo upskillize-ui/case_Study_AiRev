@@ -632,28 +632,48 @@ def call_structured(blocks: list, schema: dict, tier: str = "default",
     # retry converts it from a user-visible 500 into a log line. On the
     # deterministic path the retry also FORCES the tool call — forcing is
     # only incompatible with thinking, which that path does not use.
+    # THE REVIEW THAT RAN OUT OF ROOM (04 Sep 2026, jobs 849-857 live). When
+    # the output hits max_tokens mid tool-call, the API still returns a
+    # tool_use block — with an EMPTY input. This loop returned that {} as the
+    # review; normalise_review made it a review with no criteria and no
+    # feedback; the grade guard refused it as "produced no feedback at all";
+    # the row was marked our-side and re-offered — and the same long
+    # submission truncated at the same point on every retry (8611, 3050,
+    # 1786, 1515, 1710: the same ids, sweep after sweep). A truncated answer
+    # is not an answer: retry once with double the room.
+    truncated = False
     for attempt in (1, 2):
         response, _provider = create_message(**kwargs)
         _report_usage(model, getattr(response, "usage", None))
-        for block in response.content:
-            if getattr(block, "type", None) == "tool_use" and block.name == "emit_result":
-                return block.input
-        # No tool call (rare) — try to parse a JSON object from any text block.
-        text = _first_text(response)
-        if text:
-            import json as _json, re as _re
-            m = _re.search(r"\{[\s\S]*\}", text)
-            if m:
-                try:
-                    return _json.loads(m.group(0))
-                except Exception:
-                    pass
+        truncated = getattr(response, "stop_reason", None) == "max_tokens"
+        if not truncated:
+            for block in response.content:
+                if (getattr(block, "type", None) == "tool_use"
+                        and block.name == "emit_result" and block.input):
+                    return block.input
+            # No tool call (rare) — try to parse a JSON object from any text block.
+            text = _first_text(response)
+            if text:
+                import json as _json, re as _re
+                m = _re.search(r"\{[\s\S]*\}", text)
+                if m:
+                    try:
+                        return _json.loads(m.group(0))
+                    except Exception:
+                        pass
         if attempt == 1:
-            print(f"[AI] no structured result from {model} — retrying once"
-                  + ("" if thinking_budget else " with forced tool choice"))
-            if not thinking_budget:
-                kwargs["tool_choice"] = {"type": "tool", "name": "emit_result"}
-    raise Exception(f"Model returned no structured result (model={model})")
+            if truncated:
+                kwargs["max_tokens"] = kwargs["max_tokens"] * 2
+                print(f"[AI] output from {model} truncated at max_tokens — "
+                      f"retrying once with {kwargs['max_tokens']}")
+            else:
+                print(f"[AI] no structured result from {model} — retrying once"
+                      + ("" if thinking_budget else " with forced tool choice"))
+                if not thinking_budget:
+                    kwargs["tool_choice"] = {"type": "tool", "name": "emit_result"}
+    raise Exception(f"Model returned no structured result (model={model}"
+                    + (", output truncated at max_tokens twice" if truncated else "")
+                    + ")")
 
 
 def call_claude(prompt: str, max_tokens: int = 2000, system: str = SYSTEM_MSG_CLAUDE) -> str:

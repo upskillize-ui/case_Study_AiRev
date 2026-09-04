@@ -48,3 +48,17 @@ def test_reader_blocked_beats_every_other_marker():
     # reader limit when the site refused the browser.
     assert not g.reads_as_our_outage(
         "connection timed out while the page was still showing a human-check (Cloudflare)")
+
+
+def test_a_broken_image_is_the_learners_file_not_our_outage():
+    why = ("inbound8232410315706722562.jpg: OCR failed on anthropic: BadRequestError: "
+           "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', "
+           "'message': 'Could not process image'}, 'request_id': 'req_011Cehx6q9YFyqB2fAG2LWtt'}")
+    assert not g.reads_as_our_outage(why)
+    # …and the learner still never sees the machinery.
+    assert g.learner_facing(why) == "the file could not be read"
+
+
+def test_a_provider_that_is_actually_down_is_still_ours():
+    assert g.reads_as_our_outage(
+        "OCR failed on anthropic: Error code: 400 - You have reached your specified API usage limits")

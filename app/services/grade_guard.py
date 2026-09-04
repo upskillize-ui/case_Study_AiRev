@@ -58,7 +58,30 @@ _TRANSPORT_MARKERS = (
     "error code:", "request_id", "invalid_request_error", "badrequesterror",
     "apistatuserror", "apiconnectionerror", "internalservererror",
     "ocr failed on", "transcription failed", "could not process this recording",
+    # OUR READER'S OWN MACHINERY (04 Sep 2026): the headless browser missing,
+    # busy or unable to start, every OCR provider refusing, our storage's
+    # signing failing. None of these is a fact about the learner's work.
+    "every provider refused", "playwright", "busy with another page",
+    "could not start", "render failed", "cloudinary sign failed",
 )
+
+
+# Provider errors that are verdicts ABOUT THE FILE, not about the provider.
+_LEARNER_FILE_MARKERS = ("could not process image", "image could not be decoded",
+                         "unsupported image", "invalid image")
+
+# What intake says when the LEARNER'S link would not open: a status from
+# their site, a timeout on their host, a redirect loop on their page. Their
+# site answering 503, or not answering at all, is not our outage — the status
+# digits and the exception name ("ReadTimeout") would otherwise match the
+# transport markers and loop the row through every sweep with the learner
+# never told. Stripped before markers are looked for; kept verbatim for the
+# learner (learner_facing), because "link returned HTTP 404" is plain enough
+# and is exactly what the LMS files as a dead link.
+_LEARNER_LINK_RE = re.compile(
+    r"link returned http \d+"
+    r"|could not open the link \([a-z]+\)"
+    r"|link redirected[^.;)]*", re.IGNORECASE)
 
 
 def reads_as_our_outage(text: str) -> bool:
@@ -82,10 +105,16 @@ def reads_as_our_outage(text: str) -> bool:
     # Cloudflare-refused links was filed as OUR outage — the learner never got
     # the "screenshot or PDF beside the link" note, and the row came back to
     # the renderer every sweep. Numbers inside a URL are not status codes.
-    blob = _URL_RE.sub(" ", str(text or "")).lower()
+    blob = _LEARNER_LINK_RE.sub(" ", _URL_RE.sub(" ", str(text or ""))).lower()
     if reader_blocked(blob):
         # A site refusing our browser is a limit, not an outage — retrying
         # gives the same answer. It has its own stamped message.
+        return False
+    if any(m in blob for m in _LEARNER_FILE_MARKERS):
+        # The provider answered, and what it said is "this file is broken".
+        # A 400 about the IMAGE is the learner's file, however much error
+        # envelope surrounds it (job 857: two inbound*.jpg WhatsApp saves,
+        # re-offered every sweep as "our outage").
         return False
     return any(marker in blob for marker in _TRANSPORT_MARKERS)
 
@@ -150,6 +179,14 @@ def learner_facing(why: str) -> str:
     text = str(why or "").strip()
     if not text:
         return "the file could not be read"
+    link = _LEARNER_LINK_RE.search(text)
+    if link:
+        # "link returned HTTP 404" is plain, true, and what the LMS files
+        # under the right heading; the generic sentence would hide it. An
+        # exception name ("ReadTimeout") is not for a learner.
+        phrase = link.group(0)
+        return ("the link did not respond" if phrase.lower().startswith("could not open")
+                else phrase)
     low = text.lower()
     if any(m in low for m in _MACHINERY) or reads_as_our_outage(text):
         return "the file could not be read"
