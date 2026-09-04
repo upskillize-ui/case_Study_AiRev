@@ -26,7 +26,12 @@
 # ---------------------------------------------------------------------------
 
 import os
+import re
 from typing import Optional, Tuple
+
+# A link, wherever it appears in a failure text. Stripped before any status-
+# code marker is looked for — see reads_as_our_outage.
+_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 
 # Exception text that means "the model never answered", as opposed to "the
 # model answered something we could not use". The first must never fall
@@ -70,7 +75,18 @@ def reads_as_our_outage(text: str) -> bool:
     shape is ours. The cost of a false positive is one row waiting for the next
     sweep; the cost of a false negative is a learner blamed in writing.
     """
-    blob = str(text or "").lower()
+    # THE UUID THAT LOOKED LIKE A 503 (04 Sep 2026, job 852 live). The failure
+    # text carries the link it is about, and claude.ai share ids are hex:
+    # ".../share/5036b082-…" matched "503", ".../artifacts/2b2fcce9-7504-…"
+    # matched "504", "d5364b6c-e44e-429a-…" matched "429". Every one of those
+    # Cloudflare-refused links was filed as OUR outage — the learner never got
+    # the "screenshot or PDF beside the link" note, and the row came back to
+    # the renderer every sweep. Numbers inside a URL are not status codes.
+    blob = _URL_RE.sub(" ", str(text or "")).lower()
+    if reader_blocked(blob):
+        # A site refusing our browser is a limit, not an outage — retrying
+        # gives the same answer. It has its own stamped message.
+        return False
     return any(marker in blob for marker in _TRANSPORT_MARKERS)
 
 

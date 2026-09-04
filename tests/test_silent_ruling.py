@@ -178,3 +178,45 @@ def test_route_writes_the_wrong_task_notice_not_a_guard_apology(monkeypatch):
     assert "investment analysis slide deck" in written["message"]
     assert "Yourself in 5 years" in written["message"]
     assert "our side" not in written["message"].lower()
+
+
+# ─── the second silence: judgments present, lists empty (job 852) ─────────
+
+def test_per_criterion_judgments_become_feedback_points_when_lists_are_empty(monkeypatch):
+    """3050 / 1786 / 1515 / 8611 / 1710: six honest judgments, empty
+    strengths / improvements / feedback_points / hard_truth — refused as
+    'no feedback at all' because the fallback read a key (`note`) the schema
+    never had (`judgment`)."""
+    answer = _scored(45)
+    answer.update(strengths=[], improvements=[], feedback_points=[], hard_truth="")
+    out, calls = _run(monkeypatch, [answer])
+    assert len(calls) == 1
+    assert out["feedbackPoints"], "judgments must surface as feedback points"
+    assert all("Judged." in p for p in out["feedbackPoints"])
+    assert out["detailedFeedback"]
+
+
+def test_an_advisory_garbage_flag_with_nothing_scored_is_rejudged(monkeypatch):
+    """The model says 'not genuine', scores nothing; at 400 words the flag is
+    advisory, so the work must actually be scored — second pass."""
+    silent = _silent_declaration("")
+    silent["wrong_task"] = {"is_wrong_task": False, "what_it_is": ""}
+    silent["is_garbage"] = True
+    silent["garbage_reason"] = "pasted tool output"
+    # A garbage flag first escalates to the strong tier (call 2, same answer),
+    # and only then is the unheld flag re-judged (call 3).
+    out, calls = _run(monkeypatch, [silent, silent, _scored(30)])
+    assert len(calls) == 3
+    assert "advisory" in calls[2][-1]["text"]
+    assert out["isGarbage"] is False
+    assert out["scores"]["totalScore"] > 0
+
+
+def test_a_short_garbage_flag_still_hard_zeros_without_a_second_call(monkeypatch):
+    silent = _silent_declaration("")
+    silent["wrong_task"] = {"is_wrong_task": False, "what_it_is": ""}
+    silent["is_garbage"] = True
+    silent["garbage_reason"] = "keyboard mash"
+    out, calls = _run(monkeypatch, [silent, silent], word_count=12)
+    assert len(calls) == 2          # judge + escalation, no third pass
+    assert out["isGarbage"] is True and out["scores"]["totalScore"] == 0

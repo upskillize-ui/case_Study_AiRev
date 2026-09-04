@@ -880,12 +880,28 @@ def ruling_blocked_reason(review: dict, word_count: int, task_text: str) -> str:
 # off the table — one extra call on the rare row, instead of a refusal, a
 # false apology and a retry loop.
 _NO_RULING_NOTE = (
-    "A first reading declared this submission to be a different task's work. "
-    "That ruling was rejected: {reason}. Treat the submission as an attempt at "
-    "THIS task. wrong_task.is_wrong_task MUST be false. Score every criterion "
+    "A first reading ruled this submission out (as another task's work, or as "
+    "not a genuine attempt). That ruling was rejected: {reason}. Treat the "
+    "submission as an attempt at THIS task. wrong_task.is_wrong_task MUST be "
+    "false and is_garbage MUST be false. Score every criterion "
     "from the evidence actually present (low or zero where there is none) and "
     "write strengths, improvements, feedback_points and hard_truth about what "
     "the learner actually submitted.")
+
+
+def advisory_garbage_reason(review: dict, word_count: int) -> str:
+    """Why a "not a genuine attempt" flag carries no ruling here — or "". Pure.
+
+    Above GARBAGE_HARD_ZERO_MAX_WORDS the flag is advisory and the rubric
+    scores the work (should_hard_zero). A model that flags garbage tends to
+    score nothing behind it — the same silence as a wrong-task declaration,
+    and it needs the same second pass.
+    """
+    if not review.get("is_garbage") or should_hard_zero(review, word_count):
+        return ""
+    return (f"'not a genuine attempt' is advisory above "
+            f"{GARBAGE_HARD_ZERO_MAX_WORDS} words ({word_count} read) — "
+            f"the rubric scores the work")
 
 
 def _rejudge_without_ruling(review: dict, judge_blocks: list, reason: str) -> dict:
@@ -903,6 +919,7 @@ def _rejudge_without_ruling(review: dict, judge_blocks: list, reason: str) -> di
     second = normalise_review(ai_service.call_structured(
         blocks=blocks, schema=REVIEW_SCHEMA, tier="default", max_tokens=3500))
     second["wrong_task"] = {"is_wrong_task": False, "what_it_is": ""}
+    second["is_garbage"] = False
     return second
 
 
@@ -1237,8 +1254,9 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
     # _rejudge_without_ruling for the live incident.
     full_task_text = _task_text_for(pack, task_text)
     blocked = ruling_blocked_reason(review, word_count, full_task_text)
-    if blocked and not grade_guard.has_model_evidence(review["criteria"]):
-        review = _rejudge_without_ruling(review, judge_blocks, blocked)
+    unheld = blocked or advisory_garbage_reason(review, word_count)
+    if unheld and not grade_guard.has_model_evidence(review["criteria"]):
+        review = _rejudge_without_ruling(review, judge_blocks, unheld)
         scoring_path += "+rejudged-without-ruling"
         blocked = ""
 
@@ -1323,8 +1341,13 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
     # card always renders discrete points rather than falling back to a blob.
     fb_points = [p for p in (review.get("feedback_points") or []) if p and p.strip()]
     if not fb_points:
-        fb_points = [f"{c['name']}: {c['note']}"
-                     for c in review.get("criteria", []) if c.get("note")][:6]
+        # The schema's per-criterion prose is `judgment`; `note` was a key from
+        # an older shape, so this fallback matched nothing and a review whose
+        # only prose was six honest judgments was refused as "no feedback at
+        # all" (04 Sep 2026, job 852: 3050, 1786, 1515, 8611, 1710).
+        fb_points = [f"{c.get('name', '')}: {c.get('judgment') or c.get('note')}"
+                     for c in review.get("criteria", [])
+                     if (c.get("judgment") or c.get("note"))][:6]
     if not fb_points:
         fb_points = [p for p in (review.get("improvements") or []) if p]
     hard_truth = simple_english((review.get("hard_truth") or "").strip())
