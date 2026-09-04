@@ -20,10 +20,14 @@ RUN:
     python tools/home_reader.py --course 55 --host gamma.app --limit 20
     python tools/home_reader.py --dry-run              # list only, open nothing
 
-A Chrome window opens and pages load one after another; leave it alone.
-Roughly 15 s a page. The window is a fresh profile — it is not signed in
-to anything, so a private page is refused exactly as it would be for a
-visitor. Do not sign in to it.
+A Chrome window opens and pages load one after another. Roughly 15 s a
+page. It uses YOUR installed Google Chrome with its own separate profile
+(kept under %LOCALAPPDATA%\airev-home-reader) — not signed in to anything,
+so a private page is refused exactly as it would be for a visitor. Do not
+sign in to it. If Cloudflare shows a "Verify you are human" CHECKBOX, click
+it once; the profile remembers the clearance for the rest of that site.
+Do not close the window while it runs — if it does close, the script
+reopens it and carries on.
 """
 from __future__ import annotations
 
@@ -32,6 +36,7 @@ import base64
 import json
 import os
 import sys
+import tempfile
 import time
 from urllib.parse import urlparse
 
@@ -43,7 +48,7 @@ ADMIN_KEY = os.getenv("ADMIN_JOB_KEY", "")
 
 CHALLENGE_TITLES = ("just a moment", "attention required", "checking your browser",
                     "verify you are human", "please wait")
-SETTLE_S = 45           # how long to wait for a human-check to pass on its own
+SETTLE_S = 90           # how long to wait for a human-check to pass (or be clicked)
 LOAD_TIMEOUT_MS = 45_000
 VIEWPORT = {"width": 1366, "height": 900}
 MAX_SHOT_PX = 5800      # tallest screenshot we send (vision models cap ~8000)
@@ -83,9 +88,21 @@ def is_challenge(title: str) -> bool:
 
 def read_page(page, url: str) -> tuple[str, str, str]:
     """(title, text, screenshot_b64) as a visitor would see them."""
-    page.goto(url, wait_until="domcontentloaded", timeout=LOAD_TIMEOUT_MS)
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=LOAD_TIMEOUT_MS)
+    except Exception as e:
+        # A share page that redirects mid-load aborts the first navigation;
+        # the second one lands.
+        if "ERR_ABORTED" not in str(e):
+            raise
+        page.wait_for_timeout(2000)
+        page.goto(url, wait_until="commit", timeout=LOAD_TIMEOUT_MS)
     deadline = time.time() + SETTLE_S
+    hinted = False
     while is_challenge(page.title()) and time.time() < deadline:
+        if not hinted:
+            print("      human-check showing - if the Chrome window shows a checkbox, click it once")
+            hinted = True
         page.wait_for_timeout(1500)
     try:
         page.wait_for_load_state("networkidle", timeout=15_000)
@@ -99,7 +116,7 @@ def read_page(page, url: str) -> tuple[str, str, str]:
     page.mouse.wheel(0, -20000)
     page.wait_for_timeout(1200)
     title = page.title()
-    text = page.evaluate("() => document.body ? document.body.innerText : ''") or ""
+    text = _inner_text(page)
     for frame in page.frames[1:]:
         try:
             text += "\n" + (frame.evaluate("() => document.body ? document.body.innerText : ''") or "")
@@ -115,6 +132,19 @@ def read_page(page, url: str) -> tuple[str, str, str]:
     if len(shot) > 1_900_000:                 # keep under the Space's 2 MB cap
         shot = page.screenshot(type="jpeg", quality=45, full_page=False)
     return title, text.strip(), base64.b64encode(shot).decode("ascii")
+
+
+def _inner_text(page) -> str:
+    """Body text, retried once — a challenge redirect landing mid-read
+    destroys the page's script context ("Execution context was destroyed")."""
+    for attempt in (1, 2):
+        try:
+            return page.evaluate("() => document.body ? document.body.innerText : ''") or ""
+        except Exception:
+            if attempt == 2:
+                return ""
+            page.wait_for_timeout(3000)
+    return ""
 
 
 def largest_image(page) -> bytes:
@@ -143,6 +173,32 @@ def largest_image(page) -> bytes:
         return el.screenshot(type="jpeg", quality=80, timeout=20000)
     except Exception:
         return b""
+
+
+PROFILE_DIR = os.path.join(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir(),
+                           "airev-home-reader")
+
+
+def open_browser(pw):
+    """A persistent context in the user's installed Chrome, automation flags
+    off. Persistent so a Cloudflare clearance (cf_clearance cookie) earned on
+    one claude.ai page carries to the next hundred. Falls back to the bundled
+    Chromium when Chrome is not installed."""
+    kwargs = dict(user_data_dir=PROFILE_DIR, headless=False, viewport=VIEWPORT,
+                  locale="en-IN", args=["--disable-blink-features=AutomationControlled"],
+                  ignore_default_args=["--enable-automation"])
+    try:
+        return pw.chromium.launch_persistent_context(channel="chrome", **kwargs)
+    except Exception as e:
+        print(f"installed Chrome not available ({str(e).splitlines()[0][:80]}) - "
+              f"using the bundled browser; Cloudflare may refuse it")
+        return pw.chromium.launch_persistent_context(**kwargs)
+
+
+def _browser_gone(err: Exception) -> bool:
+    low = str(err).lower()
+    return "has been closed" in low or "browser has been closed" in low or \
+           "target closed" in low or "connection closed" in low
 
 
 def main() -> int:
@@ -175,18 +231,36 @@ def main() -> int:
     tally = {"reoffered": 0, "graded": 0, "refused": 0, "failed": 0}
     t0 = time.time()
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=False)
-        context = browser.new_context(viewport=VIEWPORT, locale="en-IN")
+        context = open_browser(pw)
         page = context.new_page()
         for i, l in enumerate(links, 1):
             sid, url = l["submissionId"], l["url"]
             tag = f"[{i}/{len(links)}] {sid} {urlparse(url).hostname}"
             try:
+                if page.is_closed():
+                    raise RuntimeError("browser has been closed")
                 title, text, shot = read_page(page, url)
             except Exception as e:
-                tally["failed"] += 1
-                print(f"{tag}: could not open - {str(e).splitlines()[0][:120]}")
-                continue
+                if _browser_gone(e):
+                    # The window was closed or Chrome crashed. Reopen it
+                    # and try this page once more before moving on.
+                    print(f"{tag}: the browser closed - reopening it")
+                    try:
+                        context.close()
+                    except Exception:
+                        pass
+                    context = open_browser(pw)
+                    page = context.new_page()
+                    try:
+                        title, text, shot = read_page(page, url)
+                    except Exception as e2:
+                        tally["failed"] += 1
+                        print(f"{tag}: could not open - {str(e2).splitlines()[0][:120]}")
+                        continue
+                else:
+                    tally["failed"] += 1
+                    print(f"{tag}: could not open - {str(e).splitlines()[0][:120]}")
+                    continue
             if is_challenge(title):
                 tally["refused"] += 1
                 print(f"{tag}: still a human-check after {SETTLE_S}s - skipped")
@@ -203,7 +277,10 @@ def main() -> int:
             else:
                 tally["refused"] += 1
                 print(f"{tag}: refused by the Space - {res.get('why')}")
-        browser.close()
+        try:
+            context.close()
+        except Exception:
+            pass
 
     mins = (time.time() - t0) / 60
     print(f"\nDone in {mins:.0f} min: {json.dumps(tally)}")
