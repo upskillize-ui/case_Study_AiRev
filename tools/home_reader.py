@@ -126,11 +126,6 @@ def read_page(page, url: str) -> tuple[str, str, str]:
     page.wait_for_timeout(1200)
     title = page.title()
     text = _settled_text(page)
-    for frame in page.frames[1:]:
-        try:
-            text += "\n" + (frame.evaluate("() => document.body ? document.body.innerText : ''") or "")
-        except Exception:
-            continue
     shot = largest_image(page) if len(text.split()) < THIN_WORDS else b""
     if not shot:
         # One tall picture, capped: the marker's vision model refuses images
@@ -144,26 +139,48 @@ def read_page(page, url: str) -> tuple[str, str, str]:
 
 
 CONTENT_WAIT_S = 25     # how long to wait for a page that draws its words late
+MIN_DWELL_S = 6         # never call a page settled sooner than this
 
 
 def _settled_text(page) -> str:
-    """The page's text once it has stopped growing.
+    """The page's text, every frame included, once it has stopped growing.
 
     A claude.ai share page or a Notion site shows its frame first and draws
     the conversation seconds later. Run 3 captured the frame — identical for
     every link — and the Space rightly refused them all as one shell. Read
     again every two seconds until the text holds still with real words in it,
     or CONTENT_WAIT_S is up (a genuinely thin page costs that wait, no more).
+
+    ALL FRAMES, AND A MINIMUM DWELL (05 Sep 2026, run 5). A claude.ai public
+    artifact renders the work inside an iframe that arrives a few seconds
+    after the page's own chrome — and that chrome ("Content is user-generated
+    and unverified … Cookie settings … We use cookies") is ~100 words, over
+    THIN_WORDS, so the top document alone held still at once and 13 artifacts
+    were seeded as cookie banners. The frames were read only afterwards, once,
+    before they had drawn.
     """
-    last, deadline = None, time.time() + CONTENT_WAIT_S
+    last, start = None, time.time()
+    deadline = start + CONTENT_WAIT_S
     while True:
-        text = _inner_text(page)
-        if text == last and len(text.split()) >= THIN_WORDS:
+        text = _all_frames_text(page)
+        settled = text == last and len(text.split()) >= THIN_WORDS
+        if settled and time.time() - start >= MIN_DWELL_S:
             return text
         if time.time() >= deadline:
             return text
         last = text
         page.wait_for_timeout(2000)
+
+
+def _all_frames_text(page) -> str:
+    """Body text of the page and every frame in it, top document first."""
+    parts = [_inner_text(page)]
+    for frame in page.frames[1:]:
+        try:
+            parts.append(frame.evaluate("() => document.body ? document.body.innerText : ''") or "")
+        except Exception:
+            continue
+    return "\n".join(p for p in parts if p)
 
 
 def _inner_text(page) -> str:

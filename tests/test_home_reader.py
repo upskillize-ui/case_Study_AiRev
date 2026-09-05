@@ -387,3 +387,78 @@ def test_a_blocked_link_beside_a_real_answer_or_file_is_graded():
     opened = [intake.Artefact(kind="typed text", label="answer box", text="see deck"),
               intake.Artefact(kind="link", label="https://gamma.app/docs/x", text="Slide 1 " * 50, confirmed=True)]
     assert intake.link_carries_the_work(opened, "see deck") is False
+
+
+# ─── 6. Claude's own pages are not a student's work (05 Sep 2026) ──────────
+
+_CLAUDE_SHELL = ("Meet Claude\n\nPlatform\n\nSolutions\n\nPricing\n\nResources\n\n"
+                 "Contact sales\nTry Claude\nQuestion what’s next\n"
+                 "Your thinking partner for big ambitions\nContinue with Google\n"
+                 "Continue with Apple\n\nOR\n\nContinue with email\nContinue with SSO\n"
+                 "Download desktop app " + "marketing copy " * 400)
+_NOT_FOUND = ("Claude\nConversation not found\nThe requested conversation either "
+              "doesn’t exist or you don’t have permission to access it.")
+_ARTIFACT_CHROME = ("Content is user-generated and unverified.\n\n5\n\nCopy\n"
+                    "Learn about artifacts\nCookie settings\n\nWe use cookies to "
+                    "deliver and improve our services, analyze site usage, and if "
+                    "you agree, to customize or personalize your experience.")
+
+
+def test_claudes_signed_out_page_is_private_whatever_its_length():
+    """A claude.ai/chat link showed every visitor 200,494 characters of
+    claude.ai's front page; one student was graded 0.0 on it."""
+    from app.services import link_renderer as lr, student_notices as sn
+    why = lr.interstitial_reason("Claude", _CLAUDE_SHELL)
+    assert why and "private" in why and "claude.ai/public/artifacts" in why
+    notice = sn.unreadable_link_notice("https://claude.ai/chat/8c2d474b", why)
+    assert "asks whoever visits it to sign in" in notice      # LMS: link_private
+    assert "claude.ai/chat link only opens for your own account" in notice
+
+
+def test_a_deleted_share_link_is_gone_and_a_connection_error_is_nobodys():
+    from app.services import link_renderer as lr, student_notices as sn
+    why = lr.interstitial_reason("Claude", _NOT_FOUND)
+    assert "no longer exists" in why
+    assert "Your link no longer opens" in sn.unreadable_link_notice("https://claude.ai/share/091d", why)
+    why = lr.interstitial_reason("Claude", "Can’t reach Claude\nCheck your connection.\nTry again")
+    assert "connection error" in why
+    assert sn.unreadable_link_notice("https://claude.ai/public/artifacts/0da4", why) == ""
+
+
+def test_an_artifacts_own_chrome_is_not_a_wall():
+    """The banner round a public artifact is not private, not gone — the work
+    is in the iframe and it is the courier's job to wait for it."""
+    from app.services import link_renderer as lr
+    assert lr.interstitial_reason("Claude Artifact", _ARTIFACT_CHROME) == ""
+
+
+class _Frame:
+    def __init__(self, texts):
+        self._texts, self.calls = list(texts), 0
+    def evaluate(self, _js):
+        self.calls += 1
+        return self._texts[min(self.calls - 1, len(self._texts) - 1)]
+
+
+class _Page:
+    """A claude.ai artifact page: chrome at once, the work's iframe later."""
+    def __init__(self, clock):
+        self._clock = clock
+        self.top = _Frame([_ARTIFACT_CHROME * 2])           # ~110 words, over THIN_WORDS
+        self.work = _Frame(["", "", "Loan EMI calculator " * 60])
+        self.frames = [self.top, self.work]
+    def evaluate(self, js):
+        return self.top.evaluate(js)
+    def wait_for_timeout(self, ms):
+        self._clock[0] += ms / 1000
+
+
+def test_the_courier_waits_for_the_frame_the_work_is_in(monkeypatch):
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import home_reader as hr
+    clock = [1000.0]
+    monkeypatch.setattr(hr.time, "time", lambda: clock[0])
+    page = _Page(clock)
+    text = hr._settled_text(page)
+    assert "Loan EMI calculator" in text                    # the iframe's words, not just the banner
+    assert clock[0] - 1000.0 >= hr.MIN_DWELL_S              # it did not call the banner settled

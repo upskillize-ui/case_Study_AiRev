@@ -226,6 +226,24 @@ _STRONG_INTERSTITIALS = (
      "the link opened Gemini's own page instead of your shared work — a "
      "Gemini share link only shows the conversation to people who are "
      "signed in to your account"),
+    # Claude's SIGNED-OUT SHELL and its two dead ends (05 Sep 2026, Day 02).
+    # A claude.ai/chat/... link is a private conversation: any visitor without
+    # that account is shown claude.ai's own front page — 200,494 characters
+    # of it, identical for every such link — and one student was graded 0.0
+    # on that page. A share link that was deleted or never published shows
+    # "Conversation not found". Phrases verbatim from the seeds.
+    (("your thinking partner for big ambitions", "continue with sso"),
+     "this link is private — it opens Claude's own sign-in page instead of "
+     "the work. A claude.ai/chat link only opens for its own account; the "
+     "artifact has to be published (Publish -> copy the "
+     "claude.ai/public/artifacts link) and that link submitted"),
+    (("conversation not found",
+      "conversation either doesn't exist or you don't have permission"),
+     "the page no longer exists at that address — Claude shows "
+     "\"Conversation not found\" for it"),
+    (("can't reach claude",),
+     "the page did not load — Claude reported a connection error when the "
+     "browser gave up"),
     (("your browser is not compatible", "unsupported browser",
       "browser is not supported", "upgrade to the latest browser"),
      "the site refused to open this link in the reviewer's browser"),

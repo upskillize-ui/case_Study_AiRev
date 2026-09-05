@@ -52,8 +52,10 @@ _HOST_STEPS = {
     "claude.site":  ("Claude artifact links only open in a browser, so ALSO attach "
                      "a screenshot of your work, or the HTML file from the "
                      "artifact's Download option."),
-    "claude.ai":    ("Claude artifact links only open in a browser, so ALSO attach "
-                     "a screenshot of your work, or the HTML file from the "
+    "claude.ai":    ("A claude.ai/chat link only opens for your own account. In "
+                     "Claude open the artifact, click Publish, and submit the "
+                     "claude.ai/public/artifacts link — and ALSO attach a "
+                     "screenshot of your work, or the HTML file from the "
                      "artifact's Download option."),
     "gamma.app":    ("In Gamma open Share, turn on public access, then copy the "
                      "link."),
