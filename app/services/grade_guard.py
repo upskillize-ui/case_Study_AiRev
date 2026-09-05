@@ -136,7 +136,7 @@ _MACHINERY = ("error code", "request_id", "{'type'", '{"type"', "traceback",
 # the row must be STAMPED (not looped) and the learner told what actually
 # helps: a screenshot or PDF beside the link. The LMS classifier files the
 # phrase below as "never zeroed".
-_READER_BLOCKED_MARKERS = (
+READER_BLOCKED_MARKERS = (
     "human-check", "human check", "cloudflare",
     "tool's own page rather than your work",
     "blocked our automatic reader",
@@ -152,7 +152,7 @@ def reader_blocked(text: str) -> bool:
     """Did a site refuse our headless browser rather than the learner's link
     being wrong? Pure."""
     low = str(text or "").lower()
-    return any(m in low for m in _READER_BLOCKED_MARKERS)
+    return any(m in low for m in READER_BLOCKED_MARKERS)
 
 
 # AN EMPTY REVIEW IS A FAILED CALL, NOT A VERDICT (04 Sep 2026, seen live).

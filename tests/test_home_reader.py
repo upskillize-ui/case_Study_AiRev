@@ -223,8 +223,32 @@ def test_blocked_rows_keeps_the_latest_attempt_per_learner(monkeypatch):
     res = route.blocked_links(course_id=55, limit=400, tenant=_Tenant(), x_admin_key="k")
     assert [l["submissionId"] for l in res["links"]] == [15, 20]
     assert res["links"][0]["host"] == "claude.ai"
-    assert "lets us read it" in seen["params"][0] and seen["params"][-1] == 55
+    assert seen["params"][-1] == 55
     assert "%%notGraded%%" in seen["sql"]
+
+
+def test_blocked_rows_lists_every_wording_the_guard_calls_reader_blocked(monkeypatch):
+    """05 Sep: 20 claude.ai rows stamped with the renderer's raw Cloudflare
+    wording sat in the LMS 'never zeroed' bucket but never reached the home
+    reader — the list knew only the newest notice. One source of truth now."""
+    from app.services import grade_guard as gg
+    seen = {}
+    def fake_q(tenant, sql, params=()):
+        seen["params"] = params
+        return []
+    monkeypatch.setattr(route, "tquery", fake_q)
+    route.blocked_rows(_Tenant(), None, 10)
+    likes = [p.strip("%") for p in seen["params"]]
+    for marker in gg.READER_BLOCKED_MARKERS:
+        assert marker in likes
+    assert gg.reader_blocked(gg.READER_BLOCKED_MESSAGE)
+    assert gg.reader_blocked("the page was still showing a human-check (Cloudflare) when we gave up")
+    assert gg.reader_blocked("the link opened the tool's own page rather than your work")
+    # Every wording listed for the reader is one the guard files as ours,
+    # or one of the two guard refusals the sweeper treats as ours.
+    for w in likes:
+        assert gg.reader_blocked(w) or w in ("could not finish reviewing this attempt",
+                                             "could not complete a fair review")
 
 
 # ─── 5. the courier script ─────────────────────────────────────────────────

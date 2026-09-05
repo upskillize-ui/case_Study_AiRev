@@ -21,16 +21,21 @@ from pydantic import BaseModel
 from app.database import tquery
 from app.routes.assignment_review import get_tenant
 from app.routes.review_jobs import _require_staff
-from app.services import link_renderer, link_seed_service, student_notices
+from app.services import grade_guard, link_renderer, link_seed_service, student_notices
 from app.tenants import Tenant
 from app.utils.submission_intake import find_urls, is_web_page
 
 router = APIRouter(prefix="/api/review/links", tags=["link-seeds"])
 
 # The refusal wordings that mean OUR reader, not the learner, was the
-# problem. Reader-blocked (grade_guard.READER_BLOCKED_MESSAGE) and the two
-# guard refusals the sweeper already treats as ours.
-_OUR_WORDINGS = ("lets us read it",
+# problem: every marker the guard itself files as "reader blocked" — the
+# stamped notice ("lets us read it") AND the renderer's raw wordings older
+# rows still carry ("human-check (Cloudflare)", "the tool's own page rather
+# than your work") — plus the two guard refusals the sweeper treats as ours.
+# 05 Sep: 20 claude.ai artifact rows stamped with the raw Cloudflare wording
+# sat in the LMS "never zeroed" bucket but never reached the home reader,
+# because only the newest wording was listed here.
+_OUR_WORDINGS = (*grade_guard.READER_BLOCKED_MARKERS,
                  "could not finish reviewing this attempt",
                  "could not complete a fair review")
 
