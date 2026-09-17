@@ -4,8 +4,8 @@ Students submitting all afternoon kept a one-row live job open at the exact
 second each manual sweep landed; twelve sweeps in a row answered "a worker
 is busy" while 25 re-offered rows sat ready. A live worker is gone in a
 minute and drains parked batches on its way out, so the sweep must queue
-behind it. A busy BATCH worker still means "busy" — a second batch would
-only duplicate its rows.
+behind it. Since 07 Sep a busy BATCH worker no longer means "busy" either:
+the rows it already holds are left out and the rest is parked behind it.
 """
 import os
 import sys
@@ -20,14 +20,15 @@ from app.services import sweeper_service as sw
 ROWS = [{"id": 5378, "assignment_id": 33, "student_id": 7}]
 
 
-def _sweep(monkeypatch, running: bool, live: bool, parked=()):
+def _sweep(monkeypatch, running: bool, live: bool, parked=(), waiting=frozenset()):
     created, started = [], []
     monkeypatch.setattr(jobs, "parked_jobs", lambda tenant, exclude=0, limit=3: list(parked))
     monkeypatch.setattr(jobs, "worker_is_running", lambda: running)
-    monkeypatch.setattr(jobs, "worker_is_live", lambda tenant: live)
+    monkeypatch.setattr(jobs, "pending_submission_ids", lambda tenant: set(waiting))
+    monkeypatch.setattr(jobs, "night_for", lambda tenant, job_id: False)
     monkeypatch.setattr(sw, "find_unreviewed", lambda tenant, course_ids, limit: ROWS)
     monkeypatch.setattr(jobs, "create_job", lambda tenant, st, ids, note="": (created.append(ids), 901)[1])
-    monkeypatch.setattr(jobs, "start_worker", lambda tenant, job_id, fn: (started.append(job_id), not running)[1])
+    monkeypatch.setattr(jobs, "start_worker", lambda tenant, job_id, fn, workers=None, night=False: (started.append(job_id), not running)[1])
     return sw.sweep("lms", lambda a, b: ("done", "", 5.0)), created, started
 
 
@@ -38,34 +39,20 @@ def test_a_live_worker_does_not_stop_the_sweep_from_queuing(monkeypatch):
     assert created == [[(33, 5378)]]
 
 
-def test_a_batch_worker_still_means_busy(monkeypatch):
-    res, created, started = _sweep(monkeypatch, running=True, live=False)
-    assert res["queued"] == 0 and "busy" in res["detail"]
+def test_a_batch_worker_no_longer_means_busy_the_rest_is_parked(monkeypatch):
+    """THE QUEUE (07 Sep 2026): rows the running batch already holds are left
+    out; whatever is left parks behind it instead of waiting three hours."""
+    res, created, started = _sweep(monkeypatch, running=True, live=False, waiting={5378})
+    assert res["queued"] == 0 and "running worker" in res["detail"]
     assert created == [] and started == []
+    res, created, started = _sweep(monkeypatch, running=True, live=False)
+    assert res["queued"] == 1 and res["workerStarted"] is False and "parked" in res["detail"]
+    assert created == [[(33, 5378)]]
 
 
 def test_an_idle_worker_drains_at_once(monkeypatch):
     res, created, started = _sweep(monkeypatch, running=False, live=False)
     assert res["workerStarted"] is True and res["detail"] == "draining"
-
-
-def test_worker_is_live_reads_the_open_live_job(monkeypatch):
-    monkeypatch.setattr(jobs, "_worker_running", True)
-    monkeypatch.setattr(jobs, "_worker_job_id", 873)
-    monkeypatch.setattr(jobs, "open_live_job", lambda tenant: 873)
-    assert jobs.worker_is_live("lms") is True
-    monkeypatch.setattr(jobs, "open_live_job", lambda tenant: 860)
-    assert jobs.worker_is_live("lms") is False
-    monkeypatch.setattr(jobs, "_worker_running", False)
-    assert jobs.worker_is_live("lms") is False
-
-
-def test_worker_is_live_fails_closed(monkeypatch):
-    monkeypatch.setattr(jobs, "_worker_running", True)
-    monkeypatch.setattr(jobs, "_worker_job_id", 873)
-    def boom(tenant): raise RuntimeError("db")
-    monkeypatch.setattr(jobs, "open_live_job", boom)
-    assert jobs.worker_is_live("lms") is False
 
 
 def test_a_second_sweep_never_parks_the_same_rows_twice(monkeypatch):

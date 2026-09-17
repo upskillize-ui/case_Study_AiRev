@@ -54,15 +54,23 @@ def test_our_refusal_phrases_match_their_writers():
     print("\nthe sweep's idea of OUR refusal matches what we actually write")
     guard_writer = _src("app/services/assignment_db_service.py")
     route_writer = _src("app/routes/assignment_review.py")
-    check("grade guard (db service) phrase is real",
-          "could not finish reviewing this attempt" in guard_writer)
+    # 07 Sep 2026: the db-service refusal no longer carries our-side WORDS
+    # (owner's rule — a student never reads that we could not finish); it
+    # carries a machine marker, `"ourRefusal": true`, rendered by json.dumps.
+    import json as _json
+    marker = _json.dumps({"ourRefusal": True})[1:-1]
+    check("grade guard (db service) marker is real",
+          '"ourRefusal": True' in guard_writer and marker in sweeper.OUR_REFUSAL_PHRASES)
     check("grade guard (route envelope) phrase is real",
           "could not complete a fair review" in route_writer)
     check("rubric-unavailable phrase is real",
           "could not read this task" in route_writer)
+    # Rows written before 07 Sep still carry the old sentence; the sweep must
+    # keep recognising it, so it stays in the list though no writer emits it.
+    legacy = {"could not finish reviewing this attempt"}
     for ph in sweeper.OUR_REFUSAL_PHRASES:
         check(f"'{ph}' is written by us somewhere",
-              ph in guard_writer or ph in route_writer)
+              ph in guard_writer or ph in route_writer or ph == marker or ph in legacy)
     # And the STUDENT-side messages must NOT match, or they would be retried.
     for theirs in ["could not open your file", "Not graded: what reached us looks like",
                    "would not open for us", "the link returned a web page"]:

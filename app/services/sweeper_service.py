@@ -40,7 +40,9 @@ from app.services.rubric_service import RUBRIC_VERSION as RULES_VERSION
 # A runaway sweep must never be able to spend a night's budget. This is a
 # ceiling per run, not a target: a healthy cohort sweeps single digits.
 MAX_PER_RUN = int(os.getenv("SWEEP_MAX_PER_RUN", "200"))
-SWEEP_NOTE = "sweep — submissions with no mark"
+# The note lives with the worker (it decides a job's lane from it); kept here
+# by name because every sweep query and every log line reads it from here.
+from app.services.review_job_service import SWEEP_NOTE  # noqa: E402
 
 # ONE SUBMISSION, ONE REVIEW (03 Sep 2026).
 #
@@ -88,7 +90,8 @@ MAX_TOTAL_ATTEMPTS = int(os.getenv("SWEEP_MAX_TOTAL_ATTEMPTS", "6"))
 # silently turn a retryable failure into a permanent one.
 OUR_REFUSAL_PHRASES = (
     "could not complete a fair review",        # grade guard, route envelope
-    "could not finish reviewing this attempt", # grade guard, assignment_db_service
+    "could not finish reviewing this attempt", # grade guard, assignment_db_service (rows before 07 Sep)
+    '"ourRefusal": true',                      # grade guard, assignment_db_service (machine marker)
     "could not read this task",                # rubric cache unreadable
 )
 
@@ -247,49 +250,54 @@ def attempts_spent(tenant, submission_ids: list) -> dict:
 
 
 def sweep(tenant, review_one: Callable, course_ids: Optional[list] = None,
-          limit: int = MAX_PER_RUN) -> dict:
-    """Queue everything unreviewed and start the worker. Returns a summary."""
+          limit: int = MAX_PER_RUN, night: bool = False) -> dict:
+    """Queue everything unreviewed and start the worker. Returns a summary.
+
+    `night=True` puts this batch on the half-price batch lane (see
+    app/services/batch_lane.py) — the sweep is the one caller with nobody
+    waiting on the result.
+    """
     from app.services import review_job_service as jobs
 
-    # A busy BATCH worker means a job created now would only duplicate the
-    # rows it is already on. Say "busy" and let the next tick try again.
-    #
-    # A busy LIVE worker is different (04 Sep 2026, report day): students
-    # submitting all afternoon kept a one-row live job open at the exact
-    # second every manual sweep landed, and twelve sweeps in a row queued
-    # nothing while 25 rows sat ready. A live worker is gone in a minute and
-    # picks up parked batches on its way out (start_worker), so the sweep
-    # queues the batch and lets that hand-off happen.
-    busy = jobs.worker_is_running()
-    if busy and not jobs.worker_is_live(tenant):
-        return {"queued": 0, "detail": "a worker is busy — nothing queued; "
-                                       "the next sweep picks these up"}
-
-    # A batch already parked holds these same rows. Never queue them twice:
-    # wait for the hand-off if a live worker is on its way out, or start the
+    # A batch already parked holds the rows it holds. Never queue them twice:
+    # wait for the hand-off if a worker is on its way out, or start the
     # parked batch ourselves if nothing is running at all.
+    busy = jobs.worker_is_running()
     parked = jobs.parked_jobs(tenant)
     if parked:
         if busy:
             return {"jobId": parked[0], "queued": 0, "workerStarted": False,
-                    "detail": "a batch is already parked behind the live "
+                    "detail": "a batch is already parked behind the running "
                               "worker — it starts when that worker exits"}
-        started = jobs.start_worker(tenant, parked[0], review_one)
+        started = jobs.start_worker(tenant, parked[0], review_one,
+                                    night=jobs.night_for(tenant, parked[0]))
         return {"jobId": parked[0], "queued": 0, "workerStarted": started,
                 "detail": "resumed a parked batch"}
 
-    rows = find_unreviewed(tenant, course_ids, limit)
+    # THE QUEUE (07 Sep 2026). A sweep that lands on a busy worker used to
+    # stand down — "the next tick picks these up" — because a job created
+    # then would have duplicated the rows the worker was already on. Twelve
+    # sweeps in a row queued nothing on 04 Sep for that reason. Now the rows
+    # already waiting in, or being reviewed by, a running job are simply
+    # left out, and what is left is PARKED behind the worker, which drains
+    # it on its way out. Nothing is queued twice; nothing waits three hours.
+    waiting = jobs.pending_submission_ids(tenant)
+    rows = [r for r in find_unreviewed(tenant, course_ids, limit)
+            if int(r["id"]) not in waiting]
     if not rows:
-        return {"queued": 0, "detail": "nothing unreviewed"}
+        return {"queued": 0,
+                "detail": ("nothing unreviewed beyond the running worker's rows"
+                           if busy else "nothing unreviewed")}
 
     job_id = jobs.create_job(
         tenant, "assignment",
         [(r["assignment_id"], r["id"]) for r in rows], note=SWEEP_NOTE)
-    started = jobs.start_worker(tenant, job_id, review_one)
+    started = jobs.start_worker(tenant, job_id, review_one, night=night)
     return {"jobId": job_id, "queued": len(rows), "workerStarted": started,
+            "lane": "night" if night else "live",
             "detail": ("draining" if started else
-                       "parked — a live review is finishing; its worker "
-                       "picks this batch up on exit")}
+                       "parked behind the running worker — it picks this "
+                       "batch up on exit")}
 
 
 # After the brake stops a job for a dead provider, the next tick is three hours
@@ -349,8 +357,9 @@ def sweep_all_tenants() -> dict:
                 print(f"   sweep [{tenant.id}]: last sweep aborted (provider down?) — "
                       f"waiting {COOLOFF_HOURS:g}h before trying again")
                 continue
+            from app.services import batch_lane
             summary[tenant.id] = sweep(tenant, make_review_one(tenant, admin_key),
-                                       courses)
+                                       courses, night=batch_lane.enabled())
         except Exception as e:
             summary[tenant.id] = {"error": f"{type(e).__name__}: {e}"}
         print(f"   sweep [{tenant.id}]: {summary[tenant.id]}")

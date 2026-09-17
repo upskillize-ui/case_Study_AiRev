@@ -465,17 +465,56 @@ def _safe_target(url: str) -> Tuple[bool, str]:
     return check_public_url(url)
 
 
+# THE DRIVE LINK THAT WAS A VIEWER, NOT A FILE (07 Sep 2026). A learner
+# pastes drive.google.com/file/d/<id>/view — public, "anyone with the link" —
+# and a visitor sees the PDF. The reader asked the same URL for bytes and
+# got Drive's viewer: a JavaScript shell whose HTML says nothing. Verdict
+# "loads its content in the browser" → the row was refused as a link the
+# learner had, in fact, opened to everyone. Google serves every such file as
+# real bytes at a different, documented address; asking there turns a shell
+# into the PDF, deck, doc or sheet it always was, read by the same extractor
+# every upload goes through. A private file still answers with a sign-in
+# page here, and that verdict stays honest.
+_GOOGLE_ID = r"([A-Za-z0-9_-]{10,})"
+_GOOGLE_DIRECT = (
+    (re.compile(r"^https?://drive\.google\.com/file/d/" + _GOOGLE_ID, re.I),
+     "https://drive.google.com/uc?export=download&id={}"),
+    (re.compile(r"^https?://drive\.google\.com/open\?(?:.*&)?id=" + _GOOGLE_ID, re.I),
+     "https://drive.google.com/uc?export=download&id={}"),
+    (re.compile(r"^https?://docs\.google\.com/document/d/" + _GOOGLE_ID, re.I),
+     "https://docs.google.com/document/d/{}/export?format=docx"),
+    (re.compile(r"^https?://docs\.google\.com/presentation/d/" + _GOOGLE_ID, re.I),
+     "https://docs.google.com/presentation/d/{}/export/pptx"),
+    (re.compile(r"^https?://docs\.google\.com/spreadsheets/d/" + _GOOGLE_ID, re.I),
+     "https://docs.google.com/spreadsheets/d/{}/export?format=xlsx"),
+)
+
+
+def google_direct_url(url: str) -> str:
+    """The bytes address for a Drive/Docs/Slides/Sheets share link; any other
+    URL unchanged. Pure. Already-direct forms (uc?, /export) pass through."""
+    u = (url or "").strip()
+    for pattern, direct in _GOOGLE_DIRECT:
+        m = pattern.match(u)
+        if m:
+            return direct.format(m.group(1))
+    return u
+
+
 def fetch_link(url: str) -> Tuple[str, str]:
     """Fetch one link and return (readable_text, reason_if_empty).
 
     Redirects are followed by hand so that every hop is re-validated — a
     permitted public URL that 302s to 169.254.169.254 is the classic bypass of
-    a one-shot check.
+    a one-shot check. Each hop is also rewritten to Google's bytes address
+    (google_direct_url), so a share.google short link that lands on a Drive
+    viewer still ends at the file.
     """
     current = url
     with httpx.Client(timeout=LINK_TIMEOUT, follow_redirects=False,
                       headers={"User-Agent": "AiRev/3.1 (coursework review)"}) as client:
         for _ in range(LINK_MAX_REDIRECTS):
+            current = google_direct_url(current)
             ok, why = _safe_target(current)
             if not ok:
                 return "", why

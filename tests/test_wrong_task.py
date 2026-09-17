@@ -490,3 +490,28 @@ def test_a_career_choice_is_never_grounds():
     assert wrong_task_void_reason(
         "A personal 5-year career plan as a lawyer",
         "Day 01 Create an image of yourself in 5 years and list 5 steps")
+
+
+# THE FILE THAT NAMED THE TASK (07 Sep 2026).
+_MANIFEST = ("=== SUBMISSION MANIFEST ===\n"
+             " The learner submitted 1 item(s):\n"
+             "   1. DOCUMENT — AI_Transformation_in_India_Neha_Khadap.pdf — read (701 words of content, item 1 below)\n\n"
+             "=== ITEM 1: DOCUMENT (AI_Transformation_in_India_Neha_Khadap.pdf) ===\nbody")
+_TASK = "Day 03: Perplexity and Grok — AI Transformation in India. Research with Perplexity and compare with Grok."
+
+
+def test_submitted_names_reads_the_manifest_as_words():
+    from app.services.review_pipeline import submitted_names
+    assert submitted_names(_MANIFEST) == "AI Transformation in India Neha Khadap pdf"
+    assert submitted_names("just typed text") == ""
+
+
+def test_a_file_named_for_this_task_voids_a_wrong_task_ruling():
+    from app.services.review_pipeline import ruling_blocked_reason
+    review = {"wrong_task": {"is_wrong_task": True,
+                             "what_it_is": "a research essay on technology adoption"}}
+    assert ruling_blocked_reason(review, 701, _TASK, _MANIFEST) == \
+        "the submitted file is named for this task"
+    foreign = _MANIFEST.replace("AI_Transformation_in_India_Neha_Khadap", "inbound8832392314001727920")
+    assert ruling_blocked_reason(review, 701, _TASK, foreign) == ""   # a foreign name decides nothing
+    assert ruling_blocked_reason(review, 701, _TASK) == ""            # no manifest: unchanged

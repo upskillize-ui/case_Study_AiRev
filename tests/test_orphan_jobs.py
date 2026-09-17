@@ -70,16 +70,21 @@ def test_a_stale_job_is_closed_and_its_rows_re_offered():
     _with(db, run)
 
 
-def test_the_job_this_process_is_draining_is_never_reaped():
+def test_nothing_is_reaped_while_this_process_has_a_worker():
+    """The job being drained can wait half an hour on a night-lane batch;
+    every other running job is parked behind the worker, which drains it on
+    exit (07 Sep 2026). Reaping either would re-offer rows a worker was
+    about to review — a paid second pass."""
     db = _DB([{"id": 900, "note": "live — auto-review on submit"},
               {"id": 901, "note": "assignment 14"}])
     def run():
         jobs._worker_running, jobs._worker_job_id = True, 900
         try:
-            assert [j["id"] for j in jobs.orphaned_jobs(_T())] == [901]
-            assert jobs.reap_orphans(_T()) == 1
+            assert jobs.orphaned_jobs(_T()) == []
+            assert jobs.reap_orphans(_T()) == 0
         finally:
             jobs._worker_running, jobs._worker_job_id = False, None
+        assert [j["id"] for j in jobs.orphaned_jobs(_T())] == [900, 901]   # worker gone: both stale
     _with(db, run)
 
 
@@ -125,7 +130,12 @@ def test_startup_and_start_job_and_sweep_all_call_the_reaper():
     assert 'id="resume_sweep"' in main_src                         # and the rows are picked up in minutes
     assert "resume_after_restart()" not in main_src                # the old one-job resume is gone…
     assert "def resume_after_restart" not in route_src             # …not just unplugged
-    assert "jobs.reap_orphans(tenant)" in route_src                # before the 409 check
-    assert route_src.index("jobs.reap_orphans(tenant)") < route_src.index("status_code=409")
+    assert "jobs.reap_orphans(tenant)" in route_src                # before the queue decision
+    # 07 Sep: a batch is PARKED behind a running worker, never refused; the
+    # orphan reap still comes first so a dead worker's job cannot hold the
+    # queue.
+    start = route_src.split("def start_job(")[1].split("def ")[0]
+    assert "status_code=409" not in start
+    assert start.index("jobs.reap_orphans(tenant)") < start.index("jobs.create_job(")
     assert "jobs.reap_orphans(tenant)" in sweep_src
     assert sweep_src.index("jobs.reap_orphans(tenant)") < sweep_src.index("if cooling_off(tenant)")

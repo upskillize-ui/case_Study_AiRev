@@ -118,6 +118,7 @@ async def health():
         # the admin key, so it never reaches the LMS credit ledger and was
         # invisible until the invoice. Resets on restart — a gauge, not a ledger.
         "spend": _spend_snapshot(),
+        "nightLane": _night_lane_snapshot(),
     }
 
 
@@ -209,6 +210,15 @@ async def trigger_consolidation(x_admin_key: str = Header(default="")):
     import asyncio
     result = await asyncio.to_thread(run_all_tenants)
     return {"success": True, "summary": result}
+
+
+def _night_lane_snapshot():
+    """Batches sent at half price since boot; never fails /health."""
+    try:
+        from app.services.batch_lane import snapshot
+        return snapshot()
+    except Exception as e:
+        return {"error": str(e)[:120]}
 
 
 def _spend_snapshot():

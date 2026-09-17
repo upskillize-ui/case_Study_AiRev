@@ -364,3 +364,59 @@ def test_the_pipeline_keeps_the_manifest_out_of_the_untrusted_frame():
         "the manifest must be separated before framing"
     assert "frame_student_text(learner_text)" in src, \
         "only the learner's own content may go inside <student_submission>"
+
+
+# THE DRIVE LINK THAT WAS A VIEWER, NOT A FILE (07 Sep 2026).
+@pytest.mark.parametrize("share, direct", [
+    ("https://drive.google.com/file/d/1V_bLTZI9Vqpu7Ej3XWv3XM6dIS6334oT/view?usp=drivesdk",
+     "https://drive.google.com/uc?export=download&id=1V_bLTZI9Vqpu7Ej3XWv3XM6dIS6334oT"),
+    ("https://drive.google.com/open?id=10GguTgX_C6AZkwSk08VYGJFCwln_4kEY",
+     "https://drive.google.com/uc?export=download&id=10GguTgX_C6AZkwSk08VYGJFCwln_4kEY"),
+    ("https://docs.google.com/document/d/1AbCdEfGhIjKlMnOp/edit?usp=sharing",
+     "https://docs.google.com/document/d/1AbCdEfGhIjKlMnOp/export?format=docx"),
+    ("https://docs.google.com/presentation/d/1AbCdEfGhIjKlMnOp/edit#slide=id.p",
+     "https://docs.google.com/presentation/d/1AbCdEfGhIjKlMnOp/export/pptx"),
+    ("https://docs.google.com/spreadsheets/d/1AbCdEfGhIjKlMnOp/edit?gid=0",
+     "https://docs.google.com/spreadsheets/d/1AbCdEfGhIjKlMnOp/export?format=xlsx"),
+])
+def test_a_google_share_link_is_asked_for_its_bytes(share, direct):
+    assert intake.google_direct_url(share) == direct
+
+
+@pytest.mark.parametrize("url", [
+    "https://drive.google.com/uc?export=download&id=1V_bLTZI9Vqpu7Ej3XWv3XM6dIS6334oT",
+    "https://drive.google.com/drive/folders/1AbCdEfGhIjKlMnOp",       # a folder is a page
+    "https://gamma.app/docs/Data-Science-14cwk0omk4x120q",
+    "https://res.cloudinary.com/dirgd2vmv/image/upload/v1/x.png",
+    "",
+])
+def test_every_other_link_is_left_alone(url):
+    assert intake.google_direct_url(url) == url
+
+
+def test_fetch_link_rewrites_every_hop(monkeypatch):
+    """share.google -> Drive viewer -> the file. The viewer hop must be
+    rewritten too, or the short link still ends at the shell."""
+    asked = []
+
+    class _R:
+        def __init__(self, status, headers=None, content=b""):
+            self.status_code, self.headers, self.content = status, headers or {}, content
+
+    class _Client:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def get(self, url):
+            asked.append(url)
+            if url.startswith("https://share.google/"):
+                return _R(302, {"location": "https://drive.google.com/file/d/1AbCdEfGhIjKlMnOp/view"})
+            return _R(200, {"content-type": "application/pdf"}, b"%PDF-1.4 minimal")
+
+    monkeypatch.setattr(intake.httpx, "Client", _Client)
+    monkeypatch.setattr(intake, "_safe_target", lambda u: (True, ""))
+    monkeypatch.setattr(intake, "_read_response", lambda c, t, u: ("the pdf text", ""))
+    text, why = intake.fetch_link("https://share.google/RBCgqM8mnXIeUaGmS")
+    assert text == "the pdf text" and why == ""
+    assert asked == ["https://share.google/RBCgqM8mnXIeUaGmS",
+                     "https://drive.google.com/uc?export=download&id=1AbCdEfGhIjKlMnOp"]

@@ -22,6 +22,7 @@
 # ---------------------------------------------------------------------------
 
 import json
+import os
 from datetime import datetime, timezone
 
 from app.database import tquery, texecute
@@ -226,6 +227,35 @@ def _criteria_rows(result: dict) -> list:
             or [])
 
 
+# WHAT A LEARNER READS WHEN WE HAVE NO MARK YET (07 Sep 2026, owner's rule:
+# a student never reads that we could not open, read or finish something).
+# The two notices describe the learner's state only; whose fault it is lives
+# in the payload (`ourRefusal`) for the sweeper and the admin panel.
+REFUSAL_NOTICE = ("Your submission has been received and is being reviewed. "
+                  "No marks have been recorded for this attempt yet.")
+REFUSAL_NOTICE_MANUAL = ("Your submission has been received and is with the "
+                         "Upskillize team for review. No marks have been "
+                         "recorded for this attempt yet.")
+
+# THE BLANK-REVIEW LOOP (05 Sep 2026: 4824 and 10080 refused four times each,
+# a full-price call every sweep to reach the same silence). An empty review
+# is retried, but not for ever: after this many the row is stamped and
+# handed to a person.
+EMPTY_REVIEW_MAX_ATTEMPTS = int(os.getenv("EMPTY_REVIEW_MAX_ATTEMPTS", "2"))
+
+
+def _empty_reviews_so_far(tenant: Tenant, submission_id: int) -> int:
+    """How many empty reviews this row has already recorded — read from its
+    own stored notice, so no new table and no ledger scan."""
+    try:
+        rows = tquery(tenant, "SELECT feedback FROM assignment_submissions WHERE id = %s",
+                      (submission_id,)) or []
+        payload = json.loads(rows[0]["feedback"]) if rows and rows[0].get("feedback") else {}
+        return int(payload.get("emptyReviews") or 0) if isinstance(payload, dict) else 0
+    except (ValueError, TypeError, KeyError, IndexError):
+        return 0
+
+
 def update_assignment_submission_with_ai_results(tenant: Tenant, submission_id: int,
                                                 result: dict, max_marks: int = 100,
                                                 manifest: str = "",
@@ -255,17 +285,23 @@ def update_assignment_submission_with_ai_results(tenant: Tenant, submission_id: 
     )
     if not allowed:
         retry = grade_guard.refusal_is_retryable(why)
+        empties = _empty_reviews_so_far(tenant, submission_id) + (1 if retry else 0)
+        capped = retry and empties >= EMPTY_REVIEW_MAX_ATTEMPTS
         print(f"[GRADE GUARD] submission {submission_id}: NO MARK — {why}"
-              + (" — left retryable (empty review)" if retry else ""))
+              + (f" — empty review {empties}/{EMPTY_REVIEW_MAX_ATTEMPTS}"
+                 + (", parked for a manual check" if capped else ", left retryable")
+                 if retry else ""))
         mark_not_graded(
             tenant, submission_id,
-            # No "it will be reviewed again": that depends on a rules change,
-            # and a date we cannot name is a promise we cannot keep.
-            "We could not finish reviewing this attempt, so there are no "
-            "marks yet. Your work is saved. This is our side, not yours.",
+            REFUSAL_NOTICE_MANUAL if capped else REFUSAL_NOTICE,
+            # `ourRefusal` is the machine marker the sweeper and the admin
+            # panel read; the learner's text says nothing about our side.
+            card={"ourRefusal": True, "emptyReviews": empties,
+                  **({"manualCheck": True} if capped else {})},
             # An empty review is a failed call, not a verdict: no rules stamp,
-            # so the sweeper re-offers the row instead of parking it.
-            stamp=not retry)
+            # so the sweeper re-offers the row — until the cap, after which it
+            # is stamped and waits for a person instead of being re-bought.
+            stamp=(not retry) or capped)
         return False
 
     awarded = scaled_marks(result.get("totalScore", 0), max_marks)

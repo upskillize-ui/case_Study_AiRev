@@ -22,6 +22,7 @@
 
 import json
 import re
+import copy
 import os
 from typing import Optional
 
@@ -358,12 +359,15 @@ REVIEW_SCHEMA = {
                 "comment on it, it is not garbage."),
         },
         "garbage_reason": {
-            "type": "string",
+            "type": "string", "maxLength": 200,
             "description": ("Only when is_garbage is true: one sentence naming "
                             "what the text actually contains."),
         },
         "criteria": {
             "type": "array",
+            "description": ("One row per requirement, in the order listed, with "
+                            "the requirement's name copied exactly. Never omit "
+                            "a row and never add one."),
             "items": {
                 "type": "object",
                 "properties": {
@@ -371,12 +375,18 @@ REVIEW_SCHEMA = {
                     # precedes score — verdict-first rationalization is
                     # structurally discouraged.
                     "name":            {"type": "string"},
-                    "evidence_quotes": {"type": "array", "items": {"type": "string"},
-                                        "description": "Verbatim quotes from the student's answer that bear on this criterion. Empty if none exist."},
+                    # OUTPUT IS FIVE TIMES THE PRICE OF INPUT (07 Sep 2026).
+                    # Unbounded quote lists and judgments were pushing
+                    # reviews past max_tokens, and every overrun was a full
+                    # second call at double the ceiling. Three short quotes
+                    # prove a criterion as well as ten long ones.
+                    "evidence_quotes": {"type": "array", "maxItems": 3,
+                                        "items": {"type": "string", "maxLength": 200},
+                                        "description": "Up to 3 short verbatim quotes from the student's answer that bear on this criterion. Empty if none exist."},
                     "case_specific":   {"type": "boolean",
                                         "description": "True only if the evidence engages this material's specificity markers (its actual facts/figures/names), not generic topic talk."},
-                    "judgment":        {"type": "string",
-                                        "description": "1-2 sentences judging ONLY what the evidence shows."},
+                    "judgment":        {"type": "string", "minLength": 1, "maxLength": 240,
+                                        "description": "1-2 sentences judging ONLY what the evidence shows. Never empty: where no evidence exists, say so."},
                     "score_pct":       {"type": "integer", "minimum": 0, "maximum": 100},
                     "confidence":      {"type": "string", "enum": ["low", "medium", "high"]},
                 },
@@ -384,7 +394,8 @@ REVIEW_SCHEMA = {
                              "judgment", "score_pct", "confidence"],
             },
         },
-        "concepts_covered": {"type": "array", "items": {"type": "string"}},
+        "concepts_covered": {"type": "array", "maxItems": 6,
+                             "items": {"type": "string", "maxLength": 60}},
         "concepts_missing": {
             "type": "array", "maxItems": 4,
             "items": {"type": "string", "maxLength": 60},
@@ -393,12 +404,12 @@ REVIEW_SCHEMA = {
                             "discrete sequential steps'. No explanations here."),
         },
         "factual_errors": {
-            "type": "array",
+            "type": "array", "maxItems": 3,
             "items": {
                 "type": "object",
                 "properties": {
-                    "quote":    {"type": "string"},
-                    "issue":    {"type": "string"},
+                    "quote":    {"type": "string", "maxLength": 200},
+                    "issue":    {"type": "string", "maxLength": 200},
                     "severity": {"type": "string", "enum": ["minor", "major"]},
                 },
                 "required": ["quote", "issue", "severity"],
@@ -420,7 +431,7 @@ REVIEW_SCHEMA = {
         },
         "feedback_points": {
             "type": "array",
-            "items": {"type": "string"},
+            "items": {"type": "string", "maxLength": 200},
             "maxItems": 3,
             "description": ("At most 3 points. Each ONE specific observation tied to the student's actual text — not a paragraph, not a summary. " + STUDENT_VOICE),
         },
@@ -433,13 +444,15 @@ REVIEW_SCHEMA = {
         "language_report": {
             "type": "object",
             "properties": {
-                "grammar_issues":   {"type": "array", "items": {
+                "grammar_issues":   {"type": "array", "maxItems": 3, "items": {
                     "type": "object",
-                    "properties": {"quote": {"type": "string"}, "fix": {"type": "string"}},
+                    "properties": {"quote": {"type": "string", "maxLength": 120},
+                                   "fix":   {"type": "string", "maxLength": 120}},
                     "required": ["quote", "fix"]}},
-                "spelling_examples": {"type": "array", "items": {"type": "string"}},
-                "redundancy_note":  {"type": "string"},
-                "clarity_note":     {"type": "string"},
+                "spelling_examples": {"type": "array", "maxItems": 5,
+                                      "items": {"type": "string", "maxLength": 40}},
+                "redundancy_note":  {"type": "string", "maxLength": 200},
+                "clarity_note":     {"type": "string", "maxLength": 200},
             },
             "required": ["grammar_issues", "spelling_examples", "redundancy_note", "clarity_note"],
         },
@@ -447,7 +460,7 @@ REVIEW_SCHEMA = {
             "type": "object",
             "properties": {
                 "ai_likelihood_percent": {"type": "integer", "minimum": 0, "maximum": 100},
-                "reason":                {"type": "string"},
+                "reason":                {"type": "string", "maxLength": 200},
             },
             "required": ["ai_likelihood_percent", "reason"],
         },
@@ -472,7 +485,7 @@ REVIEW_SCHEMA = {
                         "however weak, partial or off-format."),
                 },
                 "what_it_is": {
-                    "type": "string",
+                    "type": "string", "maxLength": 200,
                     "description": ("Only when is_wrong_task is true: one plain "
                                     "sentence naming what the submitted work "
                                     "actually appears to be."),
@@ -497,13 +510,33 @@ REVIEW_SCHEMA = {
                                     "deck instead of the tool's share link, a document "
                                     "instead of a published page, screenshots instead "
                                     "of a live link). FALSE when the format matches, "
-                                    "and FALSE when the content itself is not this "
-                                    "task's deliverable."),
+                                    "FALSE when the content itself is not this "
+                                    "task's deliverable, and FALSE when only the raw "
+                                    "input arrived without the built output (a dataset "
+                                    "with no dashboard, a brief with no deck) — that is "
+                                    "an incomplete attempt, scored low on its own "
+                                    "criteria, not a format miss."),
                 },
-                "asked": {"type": "string", "description": "The format/tool the brief asked for, in a few words."},
-                "arrived": {"type": "string", "description": "The format that was actually submitted, in a few words."},
+                "asked": {"type": "string", "maxLength": 80, "description": "The format/tool the brief asked for, in a few words."},
+                "arrived": {"type": "string", "maxLength": 80, "description": "The format that was actually submitted, in a few words."},
+                # THE ATTESTATION (07 Sep 2026). Declaring a miss and then
+                # scoring the content 0 for the wrapper was the single most
+                # common reason for a second full-price call (102 of 482
+                # marks). The model now commits, in the same answer, that
+                # the scores below judge the content as delivered in the
+                # asked format. Always required, always true — a field it
+                # must fill before it writes a single score.
+                "content_scored_as_asked_format": {
+                    "type": "boolean", "enum": [True],
+                    "description": ("Always true. You confirm that every "
+                                    "criterion score below judges the CONTENT as "
+                                    "if it had been delivered in the asked format, "
+                                    "with no deduction for the wrapper — the system "
+                                    "applies the format deduction itself."),
+                },
             },
-            "required": ["is_format_miss", "asked", "arrived"],
+            "required": ["is_format_miss", "asked", "arrived",
+                         "content_scored_as_asked_format"],
         },
     },
     "required": ["is_garbage", "garbage_reason", "criteria", "concepts_covered",
@@ -511,6 +544,52 @@ REVIEW_SCHEMA = {
                  "feedback_points", "hard_truth", "language_report", "authorship",
                  "wrong_task", "format_miss"],
 }
+
+# DECLARE FIRST, THEN SCORE (07 Sep 2026). With wrong_task and format_miss at
+# the END of the schema the model scored every criterion 0 and only then
+# wrote "this IS the deliverable, as PPTX" — a contradiction Python repaired
+# with a second full-price call on 21 % of marks. Tool-use output follows
+# property order, so the two declarations now come BEFORE the criteria: the
+# model commits to what the work is, then scores it as that.
+_DECLARATIONS_FIRST = ("is_garbage", "garbage_reason", "wrong_task", "format_miss")
+
+
+def _declarations_first(schema: dict) -> dict:
+    """The same schema with the declarations ahead of the criteria. Pure."""
+    props = schema["properties"]
+    ordered = {k: props[k] for k in _DECLARATIONS_FIRST if k in props}
+    ordered.update((k, v) for k, v in props.items() if k not in ordered)
+    return {**schema, "properties": ordered}
+
+
+REVIEW_SCHEMA = _declarations_first(REVIEW_SCHEMA)
+
+
+def review_schema_for(rubric_criteria: list) -> dict:
+    """REVIEW_SCHEMA pinned to THIS rubric: exactly one criteria row per
+    requirement, each name drawn from the requirement names. Pure.
+
+    A row the pipeline cannot pair with its requirement is a row the
+    student loses, and until now pairing was asked for in prose (rule 1)
+    and repaired with a second call when the model returned four rows for
+    six requirements or names in its own words (6 % of marks). The schema
+    is the one instruction the model cannot paraphrase.
+    """
+    names = []
+    for c in rubric_criteria or []:
+        name = str(c.get("name") or "").strip()
+        if name and name not in names:
+            names.append(name)
+    if not names:
+        return REVIEW_SCHEMA
+    schema = copy.deepcopy(REVIEW_SCHEMA)
+    crit = schema["properties"]["criteria"]
+    crit["minItems"] = crit["maxItems"] = len(names)
+    crit["description"] = (f"Exactly {len(names)} rows, one per requirement, in "
+                           f"this order: " + " | ".join(names))
+    crit["items"]["properties"]["name"]["enum"] = names
+    return schema
+
 
 _JUDGE_INSTRUCTIONS = """You are AiRev's examiner. Judge the student's answer against the AGENT KNOWLEDGE above — it is your only ground truth. Be exacting in judgement, constructive in wording.
 
@@ -964,7 +1043,25 @@ def wrong_task_void_reason(what_it_is: str, task_text: str) -> str:
     return ""
 
 
-def ruling_blocked_reason(review: dict, word_count: int, task_text: str) -> str:
+# THE FILE THAT NAMED THE TASK (07 Sep 2026, course 55 rows 9399, 8879).
+# "AI_Transformation_in_India_Neha_Khadap.pdf" on "Day 03 — AI Transformation
+# in India" was ruled a different task's work; a CV export was ruled off-task
+# on the day that asked for a CV. The judge's own identification did not
+# repeat the title, so the overlap voider never fired — but the learner's file
+# name did. A name is not marks: voiding the ruling only sends the work to the
+# rubric, where off-topic content scores what it earns.
+_MANIFEST_ITEM = re.compile(r"^\s*\d+\.\s+[A-Z ]+ — (.+?) — ", re.M)
+
+
+def submitted_names(student_answer: str) -> str:
+    """The file/link names the manifest lists, as plain words. Pure."""
+    head, _ = intake.split_manifest(student_answer or "")
+    names = " ".join(_MANIFEST_ITEM.findall(head))
+    return re.sub(r"[_\-.]+", " ", names)
+
+
+def ruling_blocked_reason(review: dict, word_count: int, task_text: str,
+                          student_answer: str = "") -> str:
     """Why the model's wrong-task declaration cannot stand BEFORE any score is
     looked at — or "" when nothing pre-score blocks it. Pure.
 
@@ -984,6 +1081,9 @@ def ruling_blocked_reason(review: dict, word_count: int, task_text: str) -> str:
         return "no identification of what the work is"
     if word_count < WRONG_TASK_MIN_WORDS:
         return f"only {word_count} words read (need {WRONG_TASK_MIN_WORDS})"
+    names = submitted_names(student_answer)
+    if names and names_this_task(names, task_text):
+        return "the submitted file is named for this task"
     return wrong_task_void_reason(what_it_is, task_text)
 
 
@@ -1035,7 +1135,7 @@ _NAMES_NOTE = (
 
 
 def _rejudge_with_names(review: dict, judge_blocks: list, rubric_criteria: list,
-                        gated: dict) -> dict:
+                        gated: dict, schema: Optional[dict] = None) -> dict:
     """One more judging pass with the requirement names and count spelled
     out. Called only when too little of the task was paired to a verdict."""
     rows = gated.get("breakdown") or []
@@ -1046,7 +1146,7 @@ def _rejudge_with_names(review: dict, judge_blocks: list, rubric_criteria: list,
     blocks = judge_blocks + [{"text": _NAMES_NOTE.format(
         missing=missing, total=len(rubric_criteria), names=names), "cache": False}]
     second = normalise_review(ai_service.call_structured(
-        blocks=blocks, schema=REVIEW_SCHEMA, tier="default", max_tokens=3500))
+        blocks=blocks, schema=schema or REVIEW_SCHEMA, tier="default", max_tokens=3500))
     # The first pass's rulings were already evaluated; the second pass is
     # about pairing, not about un-grading.
     second["wrong_task"] = review.get("wrong_task") or {}
@@ -1054,7 +1154,8 @@ def _rejudge_with_names(review: dict, judge_blocks: list, rubric_criteria: list,
     return second
 
 
-def _rejudge_without_ruling(review: dict, judge_blocks: list, reason: str) -> dict:
+def _rejudge_without_ruling(review: dict, judge_blocks: list, reason: str,
+                            schema: Optional[dict] = None) -> dict:
     """One more judging pass with the wrong-task ruling off the table.
 
     Called only when a declaration cannot stand AND the marker scored nothing
@@ -1067,7 +1168,7 @@ def _rejudge_without_ruling(review: dict, judge_blocks: list, reason: str) -> di
     blocks = judge_blocks + [{"text": _NO_RULING_NOTE.format(reason=reason),
                               "cache": False}]
     second = normalise_review(ai_service.call_structured(
-        blocks=blocks, schema=REVIEW_SCHEMA, tier="default", max_tokens=3500))
+        blocks=blocks, schema=schema or REVIEW_SCHEMA, tier="default", max_tokens=3500))
     second["wrong_task"] = {"is_wrong_task": False, "what_it_is": ""}
     second["is_garbage"] = False
     return second
@@ -1108,7 +1209,30 @@ _VOID_ASSERTS_THIS_TASK = ("own deliverable", "PERSONAL plan", "domain-exclusion
                            "LANGUAGE")
 
 
-def voided_ruling_contradiction(blocked: str, content_total: float) -> str:
+# A RE-JUDGE IS FOR A CONTRADICTION, NOT FOR A LOW MARK (07 Sep 2026). The
+# trigger was "content under 40 beside a declaration", which also caught
+# honest low marks — a thin deck delivered as PDF scoring 30 — and bought a
+# second call that nudged them up. The contradiction the second pass exists
+# to repair has one shape: every criterion at or near zero, the scores written
+# to match the ruling rather than the evidence. Only that shape is re-judged.
+RULING_SHAPED_MAX_PCT = int(os.getenv("RULING_SHAPED_MAX_PCT", "10"))
+
+
+def ruling_shaped(criteria: list) -> bool:
+    """Do the scores look written to match a ruling — every criterion at or
+    under RULING_SHAPED_MAX_PCT? Pure. An empty list is ruling-shaped too."""
+    rows = [c for c in (criteria or []) if isinstance(c, dict)]
+    if not rows:
+        return True
+    try:
+        return all(float(c.get("score_pct") or 0) <= RULING_SHAPED_MAX_PCT
+                   for c in rows)
+    except (TypeError, ValueError):
+        return False
+
+
+def voided_ruling_contradiction(blocked: str, content_total: float,
+                                criteria: Optional[list] = None) -> str:
     """Why a VOIDED wrong-task ruling and the score cannot both stand — or "".
     Pure.
 
@@ -1123,6 +1247,8 @@ def voided_ruling_contradiction(blocked: str, content_total: float) -> str:
         return ""
     if not any(k in blocked for k in _VOID_ASSERTS_THIS_TASK):
         return ""
+    if criteria is not None and not ruling_shaped(criteria):
+        return ""
     return (f"{blocked} — yet the content scored {content_total:g}/100, "
             f"under {FORMAT_MISS_REJUDGE_BELOW}")
 
@@ -1133,12 +1259,15 @@ def format_miss_contradiction(review: dict, content_total: float) -> str:
     fm = format_miss_of(review)
     if not fm or content_total >= FORMAT_MISS_REJUDGE_BELOW:
         return ""
+    if not ruling_shaped(review.get("criteria")):
+        return ""
     return (f"format miss declared ({fm.get('asked') or 'named tool'} -> "
             f"{fm.get('arrived') or 'another format'}) but content scored "
             f"{content_total:g}/100, under {FORMAT_MISS_REJUDGE_BELOW}")
 
 
-def _rejudge_on_content(review: dict, judge_blocks: list, content_total: float) -> dict:
+def _rejudge_on_content(review: dict, judge_blocks: list, content_total: float,
+                        schema: Optional[dict] = None) -> dict:
     """One more judging pass with the format taken off the scoring table.
 
     Called only when the marker declared a format miss AND scored the
@@ -1155,7 +1284,7 @@ def _rejudge_on_content(review: dict, judge_blocks: list, content_total: float) 
                                 floor=FORMAT_MISS_REJUDGE_BELOW)
     second = normalise_review(ai_service.call_structured(
         blocks=judge_blocks + [{"text": note, "cache": False}],
-        schema=REVIEW_SCHEMA, tier="default", max_tokens=3500))
+        schema=schema or REVIEW_SCHEMA, tier="default", max_tokens=3500))
     second["format_miss"] = dict(fm)
     second["wrong_task"] = {"is_wrong_task": False, "what_it_is": ""}
     second["is_garbage"] = False
@@ -1263,12 +1392,24 @@ def normalise_review(review) -> dict:
     return review
 
 
-def needs_escalation(review: dict) -> bool:
-    """Low-confidence criteria or garbage suspicion warrant the strong model."""
+def needs_escalation(review: dict, word_count: int = 0,
+                     strong_is_default: bool = False) -> bool:
+    """Does a second, strong-tier look have anything to add? Pure.
+
+    Garbage suspicion on a SHORT answer is about to become a hard zero
+    (should_hard_zero) — worth a second opinion. On a long answer the flag
+    is advisory and the rubric scores the work anyway, so the escalation
+    was a call whose verdict the pipeline then ignored. Low confidence is
+    worth a stronger MODEL; when the strong tier is the same model (the
+    Haiku-everywhere policy since 11 Aug) the second call answers with the
+    same confidence at the same price, and 5 % of marks paid for it.
+    """
     if not GATES["low_confidence_escalate"]:
         return False
     if review.get("is_garbage"):
-        return True
+        return word_count <= GARBAGE_HARD_ZERO_MAX_WORDS
+    if strong_is_default:
+        return False
     low = sum(1 for c in review.get("criteria", []) if c.get("confidence") == "low")
     return low >= 2
 
@@ -1539,17 +1680,18 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
                     + picture_blocks
                     + [{"text": student_block, "cache": False}])
 
+    schema = review_schema_for(rubric_criteria)
     review = normalise_review(ai_service.call_structured(
         blocks=judge_blocks,
-        schema=REVIEW_SCHEMA, tier="default", max_tokens=3500,
+        schema=schema, tier="default", max_tokens=3500,
     ))
     scoring_path = "haiku-single"
 
-    if needs_escalation(review):
-        print("ℹ️  Escalating to strong model (low confidence / garbage suspicion)")
+    if needs_escalation(review, word_count, ai_service.strong_is_default()):
+        print("ℹ️  Escalating to strong model (garbage suspicion on a short answer / low confidence)")
         review = normalise_review(ai_service.call_structured(
             blocks=judge_blocks,
-            schema=REVIEW_SCHEMA, tier="strong", max_tokens=3500,
+            schema=schema, tier="strong", max_tokens=3500,
             thinking_budget=int(os.getenv("THINKING_BUDGET", "2000")),
         ))
         scoring_path = "strong-thinking-escalated"
@@ -1561,10 +1703,10 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
     # before any gate or total is computed from the empty shape. See
     # _rejudge_without_ruling for the live incident.
     full_task_text = _task_text_for(pack, task_text)
-    blocked = ruling_blocked_reason(review, word_count, full_task_text)
+    blocked = ruling_blocked_reason(review, word_count, full_task_text, student_answer)
     unheld = blocked or advisory_garbage_reason(review, word_count)
     if unheld and not grade_guard.has_model_evidence(review["criteria"]):
-        review = _rejudge_without_ruling(review, judge_blocks, unheld)
+        review = _rejudge_without_ruling(review, judge_blocks, unheld, schema)
         scoring_path += "+rejudged-without-ruling"
         blocked = ""
 
@@ -1600,7 +1742,7 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
     # names and count spelled out, before giving up on the row.
     if (grade_guard.judged_share(gated["breakdown"]) < grade_guard.MIN_JUDGED_SHARE
             and "+rejudged" not in scoring_path):
-        review = _rejudge_with_names(review, judge_blocks, rubric_criteria, gated)
+        review = _rejudge_with_names(review, judge_blocks, rubric_criteria, gated, schema)
         scoring_path += "+rejudged-with-names"
         gated = _gate(review)
 
@@ -1611,18 +1753,19 @@ def run_review(scope_type: str, pack: dict, pack_version: int,
     # being a link. One more pass with the wrapper off the table; the second
     # pass's content score is what the deduction comes off.
     if format_miss_contradiction(review, scores["totalScore"]):
-        review = _rejudge_on_content(review, judge_blocks, scores["totalScore"])
+        review = _rejudge_on_content(review, judge_blocks, scores["totalScore"], schema)
         scoring_path += "+rejudged-on-content"
         gated = _gate(review)
         scores = _total(gated)
     # A VOIDED RULING SCORED AS A ZERO (job 868 live, 6929). The model wrote
     # the ruling, then scored 0 everywhere to match it; Python rejected the
     # ruling but kept the zero. Same repair as the silent ruling, one call.
-    elif (voided_ruling_contradiction(blocked, scores["totalScore"])
+    elif (voided_ruling_contradiction(blocked, scores["totalScore"], review["criteria"])
             and "+rejudged-without-ruling" not in scoring_path):
         review = _rejudge_without_ruling(
             review, judge_blocks,
-            voided_ruling_contradiction(blocked, scores["totalScore"]))
+            voided_ruling_contradiction(blocked, scores["totalScore"], review["criteria"]),
+            schema)
         scoring_path += "+rejudged-without-ruling"
         blocked = ""
         gated = _gate(review)

@@ -175,6 +175,12 @@ MODEL_TIERS = {
 }
 
 
+def strong_is_default() -> bool:
+    """Is the 'strong' tier the same model as 'default'? Pure read of env.
+    When it is, a low-confidence escalation buys the same answer twice."""
+    return MODEL_TIERS["strong"]() == MODEL_TIERS["default"]()
+
+
 class Provider(NamedTuple):
     """One Claude-compatible endpoint, the credential for it, and how that
     endpoint expects to be spoken to."""
@@ -305,6 +311,18 @@ def create_message(_sleeper=None, **kwargs):
     """
     import time as _time
     sleep = _sleeper or _time.sleep
+
+    # THE NIGHT LANE (07 Sep 2026). A call made by the sweep's worker goes
+    # to the official API as part of a batch at half price; anything the
+    # lane cannot deliver falls through to the live chain below, so the
+    # lane can only ever save money, never lose a review.
+    from app.services import batch_lane
+    if batch_lane.active():
+        try:
+            return batch_lane.submit(dict(kwargs)), "anthropic-batch"
+        except batch_lane.BatchLaneError as exc:
+            print(f"⚠️  night lane could not deliver ({str(exc)[:120]}) — going live")
+
     chain = providers()
     if not chain:
         raise RuntimeError(

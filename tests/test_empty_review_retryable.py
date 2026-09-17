@@ -57,7 +57,9 @@ def test_the_guard_write_path_passes_the_flag():
                encoding="utf-8").read()
     body = src.split("def update_assignment_submission_with_ai_results(")[1].split("def ")[0]
     assert "refusal_is_retryable(why)" in body
-    assert "stamp=not retry" in body
+    # 07 Sep: retryable until EMPTY_REVIEW_MAX_ATTEMPTS, then stamped and
+    # handed to a person — the flag is `stamp=(not retry) or capped`.
+    assert "stamp=(not retry) or capped" in body
 
 
 def test_sweeper_still_recognises_the_message_as_ours():

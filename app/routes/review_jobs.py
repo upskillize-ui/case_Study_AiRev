@@ -37,6 +37,7 @@ from app.database import set_current_tenant, tquery
 from app.routes.assignment_review import get_tenant, re_review_assignment
 from app.services import ai_service
 from app.services import review_job_service as jobs
+from app.services import batch_lane
 from app.tenants import Tenant
 
 router = APIRouter(prefix="/api/review/jobs", tags=["review-jobs"])
@@ -161,27 +162,35 @@ def start_job(req: JobRequest, tenant: Tenant = Depends(get_tenant),
     # for ever. Close such orphans first; a job this process is draining is
     # never touched.
     jobs.reap_orphans(tenant)
-    # The live queue is always 'running' between submits; it is not a batch
-    # and must not answer 409 to one. Live on 03 Sep: one pending live item
-    # made every Grade-all press fail for the 15 minutes until it went stale.
-    running = jobs.running_jobs(tenant, include_live=False)
-    if jobs.worker_is_running() or running:
-        raise HTTPException(
-            status_code=409,
-            detail=f"A review job is already running "
-                   f"(job {running[0]['id'] if running else '?'}). One at a "
-                   f"time keeps the caches warm and the Space alive — poll "
-                   f"GET /api/review/jobs/{{id}} and start the next batch "
-                   f"when it finishes.")
+
+    # THE QUEUE (07 Sep 2026). Until now a batch started while another was
+    # running answered 409, and the admin's loop had to sleep and knock
+    # again (5/7/9 needed a second pass on 05 Sep). A batch is now PARKED
+    # behind the running worker — the same hand-off the sweep has used since
+    # 04 Sep — and the exiting worker drains parked batches oldest-first.
+    # Rows already waiting in another batch are left out, so a second click
+    # on the same Grade-all queues nothing and re-buys nothing.
+    waiting = jobs.pending_submission_ids(tenant)
+    rows = [r for r in rows if int(r["id"]) not in waiting]
+    if not rows:
+        return {"success": True, "queued": 0,
+                "detail": "Every row of this assignment is already waiting in "
+                          "a queued batch."}
 
     note = (f"assignment {req.assignmentId}"
             + (f", redo below {req.below}" if req.below is not None else ""))
     job_id = jobs.create_job(
         tenant, "assignment",
         [(req.assignmentId, r["id"]) for r in rows], note=note)
-    jobs.start_worker(tenant, job_id, make_review_one(tenant, x_admin_key))
+    running = jobs.running_jobs(tenant, include_live=False)
+    ahead = [int(j["id"]) for j in running if int(j["id"]) != job_id]
+    started = jobs.start_worker(tenant, job_id, make_review_one(tenant, x_admin_key))
     return {"success": True, "jobId": job_id, "queued": len(rows),
-            "note": note,
+            "note": note, "parked": not started,
+            "behind": ahead if not started else [],
+            "detail": ("draining" if started else
+                       f"queued behind job {ahead[0] if ahead else '?'} — "
+                       f"starts when the running worker exits"),
             "poll": f"/api/review/jobs/{job_id}"}
 
 
@@ -289,7 +298,8 @@ def sweep_now(tenant: Tenant = Depends(get_tenant),
                if c.strip().isdigit()] or None
     result = sweeper_service.sweep(
         tenant, make_review_one(tenant, x_admin_key), courses,
-        limit if limit and limit > 0 else sweeper_service.MAX_PER_RUN)
+        limit if limit and limit > 0 else sweeper_service.MAX_PER_RUN,
+        night=batch_lane.enabled())
     return {"success": True, **result,
             "poll": f"/api/review/jobs/{result.get('jobId')}"
                     if result.get("jobId") else None}

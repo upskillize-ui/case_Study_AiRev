@@ -221,11 +221,14 @@ def test_an_advisory_garbage_flag_with_nothing_scored_is_rejudged(monkeypatch):
     silent["wrong_task"] = {"is_wrong_task": False, "what_it_is": ""}
     silent["is_garbage"] = True
     silent["garbage_reason"] = "pasted tool output"
-    # A garbage flag first escalates to the strong tier (call 2, same answer),
-    # and only then is the unheld flag re-judged (call 3).
-    out, calls = _run(monkeypatch, [silent, silent, _scored(30)])
-    assert len(calls) == 3
-    assert "advisory" in calls[2][-1]["text"]
+    # Until 07 Sep a garbage flag first escalated to the strong tier (a call
+    # whose verdict the pipeline then ignored: at 400 words the flag is
+    # advisory either way) and only then re-judged. Now the escalation is
+    # reserved for a flag that is about to become a hard zero (a SHORT
+    # answer); here the unheld flag goes straight to the re-judge: two calls.
+    out, calls = _run(monkeypatch, [silent, _scored(30)])
+    assert len(calls) == 2
+    assert "advisory" in calls[1][-1]["text"]
     assert out["isGarbage"] is False
     assert out["scores"]["totalScore"] > 0
 

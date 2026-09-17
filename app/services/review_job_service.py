@@ -302,10 +302,17 @@ def orphaned_jobs(tenant, stale_minutes: int = STALE_MINUTES) -> list:
     """'running' jobs that no worker has touched for `stale_minutes`.
 
     At startup every running job is an orphan by definition (the worker was
-    a thread of the process that just died), so callers pass 0 there. The
-    job THIS process is draining right now is never an orphan whatever its
-    age — a long review can go minutes without settling an item.
+    a thread of the process that just died), so callers pass 0 there.
+
+    While THIS process has a worker alive, nothing is an orphan: the job it
+    is draining can go minutes without settling an item (a night-lane batch,
+    half an hour), and every other 'running' job is a batch PARKED behind it
+    — the worker drains those on its way out (start_worker). Reaping one of
+    them mid-wait would mark rows "our outage" that a worker was about to
+    review, and re-offer them to the next sweep as a paid second pass.
     """
+    if worker_is_running():
+        return []
     ensure_tables(tenant)
     rows = tquery(tenant, f"""
         SELECT j.id, j.note
@@ -316,8 +323,7 @@ def orphaned_jobs(tenant, stale_minutes: int = STALE_MINUTES) -> list:
                             WHERE i.job_id = j.id
                               AND i.updated_at >= NOW() - INTERVAL %s MINUTE)
          ORDER BY j.id""", (int(stale_minutes), int(stale_minutes))) or []
-    mine = _worker_job_id if worker_is_running() else None
-    return [r for r in rows if int(r["id"]) != mine]
+    return list(rows)
 
 
 def reap_orphans(tenant, stale_minutes: int = STALE_MINUTES) -> int:
@@ -369,6 +375,9 @@ def reap_orphans(tenant, stale_minutes: int = STALE_MINUTES) -> int:
 # ---------------------------------------------------------------------------
 
 LIVE_NOTE = "live — auto-review on submit"
+# The sweep's own batches carry this note. It lives here, not in the sweeper,
+# because the worker reads it to decide which LANE a job rides (night_for).
+SWEEP_NOTE = "sweep — submissions with no mark"
 # How many times a finished worker looks again for work that arrived WHILE it
 # was draining. Bounded because an unbounded loop on a daemon thread is how a
 # Space stops responding to /health.
@@ -411,6 +420,40 @@ def enqueue_live(tenant, scope_id: int, submission_id: int) -> tuple:
              f"INSERT INTO {ITEMS_TABLE} (job_id, scope_id, submission_id) "
              f"VALUES (%s, %s, %s)", (job_id, int(scope_id), int(submission_id)))
     return job_id, True
+
+
+def pending_submission_ids(tenant) -> set:
+    """Submission ids already waiting in, or being reviewed by, ANY running
+    job. A batch queued while another is running must not carry the same
+    rows twice — the second pass would be a paid re-review of a mark written
+    minutes before. 'running' items count: a live row claimed ahead of a
+    batch has no mark yet and would otherwise be selected again."""
+    try:
+        rows = tquery(tenant, f"""
+            SELECT i.submission_id FROM {ITEMS_TABLE} i
+              JOIN {JOBS_TABLE} j ON j.id = i.job_id
+             WHERE j.state = 'running' AND i.state IN ('pending', 'running')""") or []
+        return {int(r["submission_id"]) for r in rows}
+    except Exception as e:
+        print(f"   review-jobs: pending-ids check failed ({e}) — queuing anyway")
+        return set()
+
+
+def night_for(tenant, job_id: int) -> bool:
+    """Should this job's Claude calls ride the night lane (half price, minutes
+    of latency)? Only the sweep's own batches: nobody is waiting on those.
+    A Grade-all is an admin watching a page; the live queue is a student
+    watching a page. Fails closed to the live path."""
+    from app.services import batch_lane
+    if not batch_lane.enabled():
+        return False
+    try:
+        rows = tquery(tenant, f"SELECT note FROM {JOBS_TABLE} WHERE id = %s",
+                      (int(job_id),)) or []
+        return bool(rows) and rows[0].get("note") == SWEEP_NOTE
+    except Exception as e:
+        print(f"   review-jobs: lane check failed ({e}) — live path")
+        return False
 
 
 def has_pending(tenant, job_id: int) -> bool:
@@ -458,6 +501,7 @@ def claim_live_item(tenant) -> Optional[dict]:
         if not rows:
             return None
         item = dict(rows[0])
+        item["live"] = True          # a student is waiting: never the night lane
         mark_item(tenant, int(item["id"]), "running", "claimed ahead of the batch")
         return item
     except Exception as e:
@@ -476,28 +520,19 @@ def worker_is_running() -> bool:
     return _worker_running
 
 
-def worker_is_live(tenant) -> bool:
-    """Is the busy worker draining the LIVE queue (one student's submit)?
-
-    A live worker is done in a minute and looks for parked batches on its
-    way out, so a sweep that lands on it should QUEUE and step back, not
-    give up. A batch worker is the opposite case: queuing a second batch
-    behind it would only duplicate rows. Fails closed to False.
-    """
-    if not _worker_running or _worker_job_id is None:
-        return False
-    try:
-        return open_live_job(tenant) == _worker_job_id
-    except Exception as e:
-        print(f"   review-jobs: live-worker check failed ({e}) — treating as busy")
-        return False
-
-
-def _run_one(tenant, item: dict, review_one: Callable) -> str:
+def _run_one(tenant, item: dict, review_one: Callable, night: bool = False) -> str:
     """Review one item, record the outcome, return the state. Never raises —
-    a failing row is data for the abort counter, not a queue-stopper."""
+    a failing row is data for the abort counter, not a queue-stopper.
+
+    `night` puts the item's Claude calls on the batch lane (half price). It
+    is set HERE, in the thread that makes the calls, because the lane is a
+    context variable and a new thread inherits none. A live item claimed
+    ahead of a night batch stays on the live path: its student is waiting.
+    """
+    from app.services import batch_lane
     try:
-        state, detail, score = review_one(item["scope_id"], item["submission_id"])
+        with batch_lane.night_lane(night and not item.get("live")):
+            state, detail, score = review_one(item["scope_id"], item["submission_id"])
     except Exception as e:
         state, detail, score = "failed", f"{type(e).__name__}: {e}"[:255], None
     mark_item(tenant, item["id"], state, detail, score)
@@ -519,7 +554,7 @@ def _finalize(tenant, job_id: int) -> Progress:
 
 
 def drain(tenant, job_id: int, review_one: Callable, pause: float = PAUSE_SECONDS,
-          sleeper: Callable = time.sleep) -> Progress:
+          sleeper: Callable = time.sleep, night: bool = False) -> Progress:
     """Review every pending item in this job, one at a time.
 
     review_one(scope_id, submission_id) -> (state, detail, score)
@@ -547,7 +582,7 @@ def drain(tenant, job_id: int, review_one: Callable, pause: float = PAUSE_SECOND
         if int(item.get("job_id") or job_id) != job_id:
             budget += 1                    # a live item does not spend this job's budget
 
-        state = _run_one(tenant, item, review_one)
+        state = _run_one(tenant, item, review_one, night=night)
         consecutive = consecutive + 1 if state == "failed" else 0
 
         if should_abort(consecutive):
@@ -564,7 +599,7 @@ def drain(tenant, job_id: int, review_one: Callable, pause: float = PAUSE_SECOND
 
 def drain_parallel(tenant, job_id: int, review_one: Callable,
                    workers: Optional[int] = None, pause: float = PAUSE_SECONDS,
-                   sleeper: Callable = time.sleep) -> Progress:
+                   sleeper: Callable = time.sleep, night: bool = False) -> Progress:
     """drain() with a small pool — the shape the 21 Aug sweeps proved by hand.
 
     The FIRST item still runs alone: it derives the rubric and builds the
@@ -580,13 +615,13 @@ def drain_parallel(tenant, job_id: int, review_one: Callable,
     """
     workers = WORKER_CONCURRENCY if workers is None else workers
     if workers <= 1:
-        return drain(tenant, job_id, review_one, pause, sleeper)
+        return drain(tenant, job_id, review_one, pause, sleeper, night=night)
 
     pending = [i for i in job_items(tenant, job_id) if i["state"] == "pending"]
     if not pending:
         return _finalize(tenant, job_id)
 
-    first_state = _run_one(tenant, pending[0], review_one)   # cache warm-up
+    first_state = _run_one(tenant, pending[0], review_one, night=night)   # cache warm-up
     rest = pending[1:]
 
     lock = threading.Lock()
@@ -613,7 +648,7 @@ def drain_parallel(tenant, job_id: int, review_one: Callable,
             item = take()
             if item is None:
                 return
-            state = _run_one(tenant, item, review_one)
+            state = _run_one(tenant, item, review_one, night=night)
             with lock:
                 shared["consecutive"] = (shared["consecutive"] + 1
                                          if state == "failed" else 0)
@@ -637,12 +672,26 @@ def drain_parallel(tenant, job_id: int, review_one: Callable,
     return _finalize(tenant, job_id)
 
 
+def _workers_for(night: bool, workers: Optional[int] = None) -> Optional[int]:
+    """Pool size for one job: an explicit override, else the lane's default.
+    None means drain_parallel's WORKER_CONCURRENCY (the live ceiling)."""
+    if workers:
+        return workers
+    from app.services import batch_lane
+    return batch_lane.concurrency() if night else None
+
+
 def start_worker(tenant, job_id: int, review_one: Callable,
-                 live: bool = False) -> bool:
+                 live: bool = False, workers: Optional[int] = None,
+                 night: bool = False) -> bool:
     """Run drain() on a daemon thread. Returns False if one is already going.
 
     ONE at a time, process-wide. Two workers would race on the same rows and
     reintroduce exactly the contention this exists to remove.
+
+    `night` is the LANE for this job (see night_for): the sweep's batches
+    ride the half-price batch lane, everything else goes live. Each job the
+    worker picks up on its way out gets its own lane from its own note.
     """
     global _worker_running, _worker_job_id
     with _worker_lock:
@@ -650,17 +699,30 @@ def start_worker(tenant, job_id: int, review_one: Callable,
             return False
         _worker_running = True
         _worker_job_id = job_id
+    pool = _workers_for(night, workers)
+
+    def _drain_next(next_id: int, night: bool) -> None:
+        """Drain another job as THIS worker. It becomes 'ours' for the
+        duration so that nothing mistakes a long night-lane wait for a dead
+        worker (see orphaned_jobs)."""
+        global _worker_job_id
+        with _worker_lock:
+            _worker_job_id = next_id
+        drain_parallel(tenant, next_id, review_one,
+                       workers=_workers_for(night), night=night)
 
     def _run():
         global _worker_running, _worker_job_id
         try:
             print(f"[JOB {job_id}] worker started "
-                  f"(concurrency {WORKER_CONCURRENCY})")
+                  f"(concurrency {pool or WORKER_CONCURRENCY}"
+                  f"{', night lane' if night else ''})")
             # drain_parallel snapshots its work once. On a LIVE queue more
             # arrives while it runs, so look again — otherwise the last
             # student to submit waits for the next submission to wake us.
             for _round in range(LIVE_MAX_ROUNDS):
-                final = drain_parallel(tenant, job_id, review_one)
+                final = drain_parallel(tenant, job_id, review_one,
+                                       workers=pool, night=night)
                 if not live or not has_pending(tenant, job_id):
                     break
                 set_job_state(tenant, job_id, "running", LIVE_NOTE)
@@ -676,15 +738,25 @@ def start_worker(tenant, job_id: int, review_one: Callable,
                         break
                     print(f"[JOB {job_id}] draining live queue (job {live_id}) "
                           f"before exit")
-                    drain_parallel(tenant, live_id, review_one)
+                    _drain_next(live_id, night=False)
             # A BATCH PARKED BEHIND US (04 Sep 2026, job 855 live). The sweep
             # queued 388 rows while a one-item live worker was busy, and
             # nothing picked the batch up until the next 3-hour tick. Whoever
             # exits last looks for a queued batch with pending rows and
             # drains it — the same worker, one job after another.
-            for parked in parked_jobs(tenant, exclude=job_id):
-                print(f"[JOB {job_id}] picking up parked job {parked} before exit")
-                drain_parallel(tenant, parked, review_one)
+            # THE QUEUE (07 Sep 2026): Grade-all batches now park behind a
+            # running worker instead of answering 409, so several may be
+            # waiting. Drain them oldest-first until none is left — a fixed
+            # "first three" would strand the fourth until the next tick.
+            drained = set()
+            while True:
+                parked = [j for j in parked_jobs(tenant, exclude=job_id)
+                          if j not in drained]
+                if not parked:
+                    break
+                print(f"[JOB {job_id}] picking up parked job {parked[0]} before exit")
+                drained.add(parked[0])
+                _drain_next(parked[0], night_for(tenant, parked[0]))
         except Exception as e:
             print(f"[JOB {job_id}] worker crashed: {type(e).__name__}: {e}")
             try:
