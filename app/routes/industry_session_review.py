@@ -544,7 +544,17 @@ def submit_industry_session(req: IndustrySessionInsightRequest,
         artefacts = []
         if insight:
             artefacts.append(intake.from_typed(insight))
-            artefacts.extend(intake.from_links_in(insight))
+            # Same target rule as the other three routes: the picture AiRev
+            # takes of a published link is filed against THIS learner's
+            # session, so the LMS share card can find it. Without a target
+            # set, remember() returns early and the render is discarded.
+            # (16 Sep 2026)
+            from app.services import link_shot_store
+            link_shot_store.set_target("session", req.sessionId, req.studentId)
+            try:
+                artefacts.extend(intake.from_links_in(insight))
+            finally:
+                link_shot_store.clear_target()
         if req.fileData or req.fileUrl:
             artefacts.append(intake.from_upload(req.fileData, req.fileUrl, req.fileName or ""))
         if artefacts:

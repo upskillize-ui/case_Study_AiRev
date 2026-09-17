@@ -104,7 +104,21 @@ def submit_and_review(req: SubmitAnswerRequest, background_tasks: BackgroundTask
 
     if cleaned_typed:
         artefacts.append(intake.from_typed(cleaned_typed))
-        artefacts.extend(intake.from_links_in(cleaned_typed))
+        # WHOSE SUBMISSION THE LINKS BELONG TO (16 Sep 2026).
+        # intake calls link_shot_store.remember() for every link it opens, but
+        # remember() returns early unless a target is set. The assignment route
+        # set one; this route never did, so a case study submitted as a link
+        # was photographed and the photograph thrown away — submission_renders
+        # stayed empty and the LMS share card had no picture to draw. Same
+        # target rule as assignment_review: set before the links are read,
+        # cleared after, so one review's pictures can never be filed against
+        # the next review's row.
+        from app.services import link_shot_store
+        link_shot_store.set_target("casestudy", req.caseStudyId, req.studentId)
+        try:
+            artefacts.extend(intake.from_links_in(cleaned_typed))
+        finally:
+            link_shot_store.clear_target()
 
     if req.fileData or req.fileUrl:
         artefacts.append(intake.from_upload(req.fileData, req.fileUrl, req.fileName or ""))
@@ -113,8 +127,15 @@ def submit_and_review(req: SubmitAnswerRequest, background_tasks: BackgroundTask
         prior = db_service.get_latest_submission_file(req.caseStudyId, req.studentId)
         if prior:
             if prior.get("file_url"):
-                artefacts.append(intake.from_stored_file(
-                    prior["file_url"], prior.get("file_name", "")))
+                # A stored "file" may be a link, which opens a browser now.
+                # Same target rule as the notes scan above.
+                from app.services import link_shot_store
+                link_shot_store.set_target("casestudy", req.caseStudyId, req.studentId)
+                try:
+                    artefacts.append(intake.from_stored_file(
+                        prior["file_url"], prior.get("file_name", "")))
+                finally:
+                    link_shot_store.clear_target()
             db_notes = clean_text(prior.get("notes") or "")
             if db_notes:
                 # No link scan: stored notes are already-assembled intake
@@ -1056,7 +1077,15 @@ def submit_capstone_review(req: dict, x_admin_key: str = Header(default="")):
     artefacts: list[intake.Artefact] = []
     if answer_text:
         artefacts.append(intake.from_typed(answer_text))
-        artefacts.extend(intake.from_links_in(answer_text))
+        # A capstone is the submission most likely to BE a link — a deployed
+        # app, a published notebook — so filing its render matters most here.
+        # See the note on the case-study route above.
+        from app.services import link_shot_store
+        link_shot_store.set_target("capstone", capstone["id"], student_id)
+        try:
+            artefacts.extend(intake.from_links_in(answer_text))
+        finally:
+            link_shot_store.clear_target()
     if file_data or file_url:
         artefacts.append(intake.from_upload(file_data, file_url, file_name or ""))
 
