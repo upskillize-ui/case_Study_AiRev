@@ -153,7 +153,22 @@ def ensure_schema() -> None:
 
 def _upload(shot_b64: str, kind: str, item_id: int, student_id: int,
             url: str) -> str:
-    """Put the JPEG in Cloudinary, return its URL. "" on any failure."""
+    """Put the JPEG in Cloudinary, return its URL. "" on any failure.
+
+    A DATA URI IS A STRING (17 Sep 2026). This sent bytes, and the Cloudinary
+    SDK dispatches on type: a *str* matching its data-URI pattern is forwarded
+    as a data URI, while bytes are treated as raw file content. So Cloudinary
+    was handed the literal characters "data:image/jpeg;base64,/9j/4AAQ..." as
+    though they were the image file, could not decode them, and raised on every
+    single call since this shipped.
+
+    The damage was invisible because every caller is defensive: the exception
+    was caught here, "" was returned, remember() wrote its row anyway with a
+    NULL shot_url, and the LMS — which selects WHERE shot_url IS NOT NULL —
+    quietly found nothing. Rows accumulated, screenshots were taken, and not
+    one picture was ever stored. Found by reading the table rather than the
+    log: five rows, five NULLs, no reason recorded in any of them.
+    """
     if not shot_b64 or not cloudinary_ready():
         return ""
     try:
@@ -165,15 +180,21 @@ def _upload(shot_b64: str, kind: str, item_id: int, student_id: int,
             api_secret=os.getenv("CLOUDINARY_API_SECRET"),
             secure=True,
         )
+        # str, not bytes. Whitespace stripped because the SDK's data-URI
+        # pattern anchors at the end of the string, and a trailing newline
+        # from whatever produced the base64 is enough to miss it.
         res = cloudinary.uploader.upload(
-            b"data:image/jpeg;base64," + shot_b64.encode("ascii"),
+            "data:image/jpeg;base64," + shot_b64.strip(),
             public_id=public_id(kind, item_id, student_id, url),
             overwrite=True,
             resource_type="image",
         )
         return str(res.get("secure_url") or "")
     except Exception as e:
-        logger.warning("link shot upload failed (%s)", type(e).__name__)
+        # The message, not just the class. "Error" told us nothing for three
+        # weeks; "Invalid image file" would have named this on day one.
+        logger.warning("link shot upload failed (%s: %s)",
+                       type(e).__name__, str(e)[:200])
         return ""
 
 
